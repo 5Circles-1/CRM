@@ -3,16 +3,17 @@
 Internal sales-floor CRM: lead distribution, calling pipeline, attendance,
 scoring, collections and dashboards.
 
-**Status:** database layer complete and tested. API, UI and the ingestion worker
-are not built yet.
+**Status:** database, HTTP API and ingestion worker complete and tested. Web UI
+and the Android call-log sync app are not built yet.
 
 ## What is here
 
 ```
-db/migrations/   12 forward-only SQL migrations — schema, engines, RLS
+db/migrations/   13 forward-only SQL migrations — schema, engines, RLS, auth
 db/seed/         development seed data
 db/tests/        52 assertions, one group per stated requirement
 db/rebuild.sh    drop + recreate + migrate + seed + test
+api/             TypeScript / Node 22 / Fastify + ingestion worker (see api/README.md)
 CLAUDE.md        scope boundary and the design decisions that are load-bearing
 docs/            open questions and decisions made on your behalf
 ```
@@ -107,7 +108,34 @@ penetration testing, incident response, and offboarding discipline. The goal is
 **hard to breach, impossible to breach quietly, quick to recover** — not a claim
 that breach is impossible.
 
+## The API
+
+TypeScript / Node 22 / Fastify, no ORM. Full detail in `api/README.md`.
+
+```bash
+cd api && npm install
+export DATABASE_URL="postgresql://crm_api:pw@localhost:5432/crm"
+export SERVICE_USER_ID="<uuid of a user with the ops role>"
+npm test     # 32 integration tests against a real database
+npm start
+```
+
+The API deliberately does no ownership filtering of its own — RLS does that, and
+duplicating it in route handlers would give the rule two homes. The server
+refuses to boot if `DATABASE_URL` points at a role that can see through RLS,
+because that misconfiguration is silent and total.
+
+Ingestion runs from the same codebase:
+
+```bash
+node --experimental-strip-types src/ingest/cli.ts --source <uuid>
+```
+
 ## Next
 
-See `docs/open-questions.md`. Five answers are needed before the API layer is
-worth writing; none of them change the schema.
+The web UI and the Android call-log sync app.
+
+See `docs/open-questions.md`. Question 2 — Android or iPhone — should be
+answered before the mobile app is built: iOS gives no call-log access, which
+means `call_attempts.is_verified` is always false and the honest-dial-count part
+of the score has to be dropped.

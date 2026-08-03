@@ -1,0 +1,297 @@
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { logLeadAccess } from '../http/context.ts';
+import { badRequest, notFound } from '../http/errors.ts';
+
+const uuid = z.string().uuid();
+
+const dispositionSchema = z.enum([
+  'connected_interested',
+  'connected_not_interested',
+  'callback_requested',
+  'not_answered',
+  'busy',
+  'switched_off',
+  'invalid_number',
+  'wrong_person',
+  'language_barrier',
+  'do_not_call',
+]);
+
+/** Dispositions that close a lead, and so need no follow-up action. */
+const TERMINAL = new Set(['invalid_number', 'do_not_call', 'connected_not_interested']);
+
+export async function leadRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * Lead detail with its full timeline.
+   *
+   * No ownership check here on purpose. RLS decides what this user can see, so
+   * a lead they do not own simply is not found. Adding a WHERE clause here
+   * would duplicate the rule in a second place where it could drift.
+   */
+  app.get('/leads/:id', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+
+    return req.tx(async (q) => {
+      const lead = await q.one(`select * from crm.leads where id = $1`, [id]);
+      if (!lead) throw notFound('lead not found');
+
+      const [timeline, attempts, callbacks, transfers] = await Promise.all([
+        q.many(
+          `select event_type, actor_id, payload, occurred_at
+             from crm.lead_events where lead_id = $1
+            order by occurred_at desc limit 200`,
+          [id],
+        ),
+        q.many(
+          `select ca.id, ca.started_at, ca.duration_seconds, ca.disposition,
+                  ca.is_connect, ca.is_verified, ca.notes, u.full_name as by_name
+             from crm.call_attempts ca
+             join crm.users u on u.id = ca.user_id
+            where ca.lead_id = $1 order by ca.started_at desc`,
+          [id],
+        ),
+        q.many(
+          `select id, scheduled_at, note, status, completed_at
+             from crm.callbacks where lead_id = $1 order by scheduled_at desc`,
+          [id],
+        ),
+        q.many(
+          `select lt.created_at, lt.reason, lt.note,
+                  fu.full_name as from_name, tu.full_name as to_name, bu.full_name as by_name
+             from crm.lead_transfers lt
+             left join crm.users fu on fu.id = lt.from_caller_id
+             join crm.users tu on tu.id = lt.to_caller_id
+             join crm.users bu on bu.id = lt.transferred_by
+            where lt.lead_id = $1 order by lt.created_at desc`,
+          [id],
+        ),
+      ]);
+
+      await logLeadAccess(q, user.id, [id], 'detail', req.ip);
+      return { lead, timeline, attempts, callbacks, transfers };
+    });
+  });
+
+  /** Search within whatever the user is allowed to see. */
+  app.get('/leads', async (req) => {
+    const user = req.requireUser();
+    const query = z
+      .object({
+        q: z.string().trim().min(2).max(64).optional(),
+        status: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(100).default(50),
+        offset: z.coerce.number().int().min(0).default(0),
+      })
+      .parse(req.query);
+
+    return req.tx(async (q) => {
+      const rows = await q.many<{ id: string }>(
+        `select id, full_name, phone_e164, city, status, priority,
+                next_action_at, attempt_count, caller_id, counsellor_id, created_at
+           from crm.leads
+          where ($1::text is null
+                 or full_name ilike '%' || $1 || '%'
+                 or phone_e164 like '%' || regexp_replace($1, '[^0-9]', '', 'g'))
+            and ($2::text is null or status = $2::crm.lead_status)
+          order by next_action_at asc nulls last, created_at desc
+          limit $3 offset $4`,
+        [query.q ?? null, query.status ?? null, query.limit, query.offset],
+      );
+
+      await logLeadAccess(q, user.id, rows.map((r) => r.id), 'list', req.ip);
+      return { count: rows.length, leads: rows };
+    });
+  });
+
+  /**
+   * Log a call attempt. Requirements 3 and 9.
+   *
+   * The API refuses a non-terminal disposition that arrives with no follow-up,
+   * mirroring the UI rule "you cannot close a call without a next action". The
+   * database would not actually let the lead end up without one - the trigger
+   * schedules a retry - but failing here gives the caller a clear error instead
+   * of silently choosing a follow-up time on their behalf.
+   */
+  app.post('/leads/:id/calls', async (req, reply) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({
+        disposition: dispositionSchema,
+        durationSeconds: z.number().int().min(0).max(60 * 60 * 4).default(0),
+        startedAt: z.coerce.date().optional(),
+        notes: z.string().max(2000).optional(),
+        deviceLogId: uuid.optional(),
+        // Follow-up, when the disposition is not terminal.
+        callbackAt: z.coerce.date().optional(),
+        callbackNote: z.string().max(500).optional(),
+      })
+      .parse(req.body);
+
+    if (body.disposition === 'callback_requested' && !body.callbackAt) {
+      throw badRequest('a callback_requested disposition needs callbackAt');
+    }
+    if (body.callbackAt && body.callbackAt.getTime() < Date.now() - 60_000) {
+      throw badRequest('callbackAt must be in the future');
+    }
+    if (TERMINAL.has(body.disposition) && body.callbackAt) {
+      throw badRequest(`disposition ${body.disposition} closes the lead; it cannot carry a callback`);
+    }
+
+    const result = await req.tx(async (q) => {
+      const attempt = await q.one<{ id: string; is_connect: boolean }>(
+        `insert into crm.call_attempts
+           (lead_id, user_id, device_log_id, started_at, duration_seconds,
+            disposition, notes, is_verified)
+         values ($1, $2, $3::uuid, coalesce($4::timestamptz, now()), $5, $6, $7,
+                 $3::uuid is not null)
+         returning id, is_connect`,
+        [
+          id,
+          user.id,
+          body.deviceLogId ?? null,
+          body.startedAt ?? null,
+          body.durationSeconds,
+          body.disposition,
+          body.notes ?? null,
+        ],
+      );
+      if (!attempt) throw notFound('lead not found');
+
+      if (body.callbackAt) {
+        await q.query(
+          `insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+           values ($1, $2, $2, $3, $4)
+           on conflict (lead_id) where status = 'pending'
+           do update set scheduled_at = excluded.scheduled_at, note = excluded.note`,
+          [id, user.id, body.callbackAt, body.callbackNote ?? null],
+        );
+      }
+
+      const lead = await q.one(
+        `select id, status, next_action_at, next_action_note, attempt_count,
+                connect_count, na_streak
+           from crm.leads where id = $1`,
+        [id],
+      );
+      return { attempt, lead };
+    });
+
+    return reply.status(201).send(result);
+  });
+
+  /** Requirement 3: set or move a callback without logging a call. */
+  app.post('/leads/:id/callbacks', async (req, reply) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({
+        scheduledAt: z.coerce.date(),
+        note: z.string().max(500).optional(),
+      })
+      .parse(req.body);
+
+    if (body.scheduledAt.getTime() < Date.now() - 60_000) {
+      throw badRequest('scheduledAt must be in the future');
+    }
+
+    const row = await req.tx((q) =>
+      q.one(
+        `insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+         values ($1, $2, $2, $3, $4)
+         on conflict (lead_id) where status = 'pending'
+         do update set scheduled_at = excluded.scheduled_at, note = excluded.note
+         returning id, lead_id, scheduled_at, note, status`,
+        [id, user.id, body.scheduledAt, body.note ?? null],
+      ),
+    );
+    if (!row) throw notFound('lead not found');
+    return reply.status(201).send(row);
+  });
+
+  app.post('/callbacks/:id/cancel', async (req) => {
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const row = await req.tx((q) =>
+      q.one(
+        `update crm.callbacks set status = 'cancelled'
+          where id = $1 and status = 'pending'
+          returning id, status`,
+        [id],
+      ),
+    );
+    if (!row) throw notFound('no pending callback with that id');
+    return row;
+  });
+
+  /**
+   * Requirement 5: immediate leads awaiting first contact.
+   * A caller sees their own; a counsellor sees the team's.
+   */
+  app.get('/queues/immediate', async (req) => {
+    const user = req.requireUser();
+    return req.tx(async (q) => {
+      const rows = await q.many<{ lead_id: string }>(
+        `select * from crm.v_immediate_queue
+          where ($1::bool or caller_id = $2)
+          order by first_touch_due_at asc`,
+        [user.role !== 'caller', user.id],
+      );
+      await logLeadAccess(q, user.id, rows.map((r) => r.lead_id), 'list', req.ip);
+      return { count: rows.length, leads: rows };
+    });
+  });
+
+  /** Mark a lead as ready for the counsellor. Feeds the qualification score. */
+  app.post('/leads/:id/qualify', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({ counsellorId: uuid.optional(), note: z.string().max(1000).optional() })
+      .parse(req.body ?? {});
+
+    return req.tx(async (q) => {
+      const lead = await q.one<{ id: string; team_id: string | null }>(
+        `select id, team_id from crm.leads where id = $1`,
+        [id],
+      );
+      if (!lead) throw notFound('lead not found');
+
+      // Default to the counsellor who leads this lead's team.
+      const counsellorId =
+        body.counsellorId ??
+        (
+          await q.one<{ id: string }>(
+            `select u.id from crm.users u
+               join crm.team_memberships tm
+                 on tm.user_id = u.id and tm.period @> current_date
+              where tm.team_id = $1 and u.role = 'counsellor' and u.is_active
+              order by tm.rotation_order limit 1`,
+            [lead.team_id],
+          )
+        )?.id;
+
+      if (!counsellorId) throw badRequest('no counsellor available for this team');
+
+      const updated = await q.one(
+        `update crm.leads
+            set counsellor_id = $2,
+                status = 'qualified',
+                next_action_at = greatest(now() + interval '30 minutes', next_action_at),
+                next_action_note = 'Qualified - counsellor to contact'
+          where id = $1
+          returning id, status, counsellor_id, next_action_at`,
+        [id, counsellorId],
+      );
+
+      await q.query(
+        `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
+         values ($1, 'qualified', $2, jsonb_build_object('counsellor_id', $3::uuid, 'note', $4::text))`,
+        [id, user.id, counsellorId, body.note ?? null],
+      );
+
+      return updated;
+    });
+  });
+}

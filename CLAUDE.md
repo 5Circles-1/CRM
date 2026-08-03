@@ -95,6 +95,11 @@ db/
   seed/          dev seed: 2 teams, 4 callers, 2 counsellors
   tests/         requirement tests, tagged R1..R9
   rebuild.sh     drop + recreate + migrate + seed [+ test]
+api/             TypeScript / Node 22 / Fastify. See api/README.md
+  src/db/        the RLS session contract - read this first
+  src/routes/    one file per requirement area
+  src/ingest/    Google Sheets -> ingested_rows -> assign_lead
+  src/jobs/      scheduled calls into the database engines
 docs/            requirement traceability, open questions
 ```
 
@@ -103,7 +108,26 @@ docs/            requirement traceability, open questions
 ```bash
 # needs a running postgres 16 and PGHOST/PGPORT/PGUSER set
 ./db/rebuild.sh --with-tests
+
+cd api && npm install && npm test
 ```
+
+## API rules that matter
+
+- **The API never filters by ownership.** RLS does. A route that adds its own
+  `WHERE owner = me` puts the rule in a second place where it will drift. A lead
+  the user cannot see reads as 404, which is the correct behaviour.
+- **All query access goes through `Database.withUser()`**, which sets
+  `app.user_id` transaction-locally. There is no exported way to query outside
+  it, so a pooled connection cannot leak one user's identity into the next
+  request.
+- **The server refuses to boot on a role that bypasses RLS** — superuser,
+  `BYPASSRLS`, or table owner. That misconfiguration is otherwise silent and
+  total.
+- **Business rules stay in SQL.** Routes call `crm.transfer_lead()` and map the
+  SQLSTATE (`42501 → 403`, `23514 → 409`) rather than re-implementing the check.
+- **`bigint` is parsed to a JS number; `numeric` is not.** Money stays an exact
+  string — turning INR into a float is the mistake the schema exists to avoid.
 
 `rebuild.sh` **drops the database**. It is a development tool; never point it at
 anything real.
@@ -121,8 +145,12 @@ anything real.
 
 ## Not built yet
 
-The database and its engines are complete and tested. Still to come: the
-ingestion worker (Google Sheets → `crm.ingested_rows` → `crm.assign_lead`), the
-HTTP API, the web UI, and the Android call-log sync app. See
-`docs/open-questions.md` — five answers are needed before the API layer is worth
-writing, and the stack for it has not been chosen.
+The database, its engines, the HTTP API and the ingestion worker are complete
+and tested (52 database assertions, 32 API integration tests). Still to come:
+the web UI and the Android call-log sync app.
+
+The Android app is what makes `call_attempts.is_verified` meaningful, and
+therefore what makes the scoring honest. See `docs/open-questions.md` —
+question 2 (Android or iPhone) should be answered before it is built, because
+iOS gives no call-log access and the `data_integrity` score component would have
+to be dropped.
