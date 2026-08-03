@@ -1,0 +1,4 @@
+*.log
+pgdata/
+.env
+.env.*
