@@ -2,7 +2,19 @@
 # Install caddy, put this at /etc/caddy/Caddyfile, replace the domain,
 # then: sudo systemctl reload caddy
 crm.yourcompany.in {
+    # ---- OPTIONAL: office-only access (runbook Phase 4b) -------------------
+    # Uncomment the two lines below and replace the IP with your office's
+    # STATIC public IP (ask your ISP; check it from the office at
+    # https://ifconfig.me). Everyone outside the office then gets a refusal
+    # before even seeing the login page. Multiple IPs: list them separated
+    # by spaces.
+    #
+    # @outside not remote_ip 203.0.113.7
+    # abort @outside
+    # ------------------------------------------------------------------------
+
     reverse_proxy 127.0.0.1:8080
+
     # The CRM holds client PII: no indexing, no sniffing, no framing.
     header {
         X-Content-Type-Options nosniff

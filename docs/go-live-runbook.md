@@ -158,6 +158,27 @@ Caddy fetches and renews the TLS certificate automatically.
 network) shows the login screen with a padlock. Log in as the admin, set your
 real password when prompted.
 
+### Phase 4b (optional) — restrict who can even reach the login page
+
+The standard setup above is the same model as your bank or any SaaS CRM: the
+login page is publicly reachable, the data is not - authentication and
+row-level security are the locks. If you want the login page itself
+unreachable from outside the office, two options, in order of preference:
+
+- **Office IP allowlist.** Requires a static public IP from your office ISP.
+  Uncomment the two `@outside` lines in `/etc/caddy/Caddyfile`, put your
+  office IP in, `sudo systemctl reload caddy`. Trade-offs: no phone/home
+  access for anyone (including you), and access breaks silently if the ISP
+  changes the IP - keep this in mind before blaming the server.
+- **Tailscale private network.** The CRM disappears from the public internet
+  entirely; every staff device joins a free private network once. Strongest
+  isolation, but with 40-60 people the device enrolment is real ongoing admin
+  work. Do this only if you have someone who will own it.
+
+Recommendation: run the pilot on the standard setup; add the allowlist after
+cutover if your office has a static IP. Do not start with Tailscale unless
+device management already exists in your company.
+
 ---
 
 ## Phase 5 — Backups (~10 minutes; do NOT postpone this)
