@@ -532,3 +532,180 @@ describe('settings', () => {
     assert.equal(res.statusCode, 403);
   });
 });
+
+describe('web ui shell', () => {
+  it('serves the app shell without a session', async () => {
+    const res = await h.app.inject({ url: '/ui/' });
+    assert.equal(res.statusCode, 200);
+    assert.match(res.headers['content-type'] ?? '', /text\/html/);
+    assert.match(res.body, /5 Circles CRM/);
+  });
+
+  it('still refuses API data without a session', async () => {
+    const res = await h.app.inject({ url: '/me/day' });
+    assert.equal(res.statusCode, 401);
+  });
+});
+
+describe('device call-log sync (the Android contract)', () => {
+  let leadId: string;
+  let leadPhone: string;
+
+  before(() => {
+    leadId = makeLeadFor(USERS.callerA1, 'Device Sync');
+    leadPhone = fixtureSql(`select phone_e164 from crm.leads where id = '${leadId}';`).trim();
+  });
+
+  it('stores entries, matches the lead, and is idempotent on re-upload', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const entries = [
+      {
+        deviceRowKey: 'dev1:row:1',
+        msisdn: leadPhone,
+        direction: 'outgoing',
+        startedAt: new Date().toISOString(),
+        durationSeconds: 222,
+      },
+      {
+        deviceRowKey: 'dev1:row:2',
+        msisdn: '+919999888877', // personal call, matches nothing
+        direction: 'outgoing',
+        startedAt: new Date().toISOString(),
+        durationSeconds: 33,
+      },
+    ];
+
+    const first = await h.app.inject({
+      method: 'POST', url: '/device-logs/sync', headers: auth(a1), payload: { entries },
+    });
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.json().inserted, 2);
+    assert.equal(first.json().matched, 1, 'the lead call must match, the personal one must not');
+
+    const again = await h.app.inject({
+      method: 'POST', url: '/device-logs/sync', headers: auth(a1), payload: { entries },
+    });
+    assert.equal(again.json().inserted, 0, 're-uploading the same rows must insert nothing');
+  });
+
+  it('suggests the device call when logging, and the linked attempt is verified', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+
+    const sugg = await h.app.inject({ url: `/leads/${leadId}/device-log-suggestion`, headers: auth(a1) });
+    assert.equal(sugg.statusCode, 200);
+    const suggestion = sugg.json().suggestion;
+    assert.ok(suggestion, 'the synced call should be offered');
+    assert.equal(suggestion.duration_seconds, 222);
+
+    const logged = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'not_answered', durationSeconds: 0, deviceLogId: suggestion.id },
+    });
+    assert.equal(logged.statusCode, 201);
+
+    const verified = fixtureSql(
+      `select is_verified from crm.call_attempts where device_log_id = '${suggestion.id}';`,
+    ).trim();
+    assert.equal(verified, 't', 'an attempt linked to a device row is verified');
+
+    const gone = await h.app.inject({ url: `/leads/${leadId}/device-log-suggestion`, headers: auth(a1) });
+    assert.equal(gone.json().suggestion, null, 'a claimed device row is not offered twice');
+  });
+});
+
+describe('deals and collections', () => {
+  let leadId: string;
+  let dealId: string;
+  let firstInstalment: string;
+
+  before(() => {
+    leadId = makeLeadFor(USERS.callerA1, 'Deal Lead');
+    fixtureSql(`update crm.leads set counsellor_id = '${USERS.counsellorA}', status = 'qualified' where id = '${leadId}';`);
+  });
+
+  it('rejects a schedule that does not sum to the booked amount', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/deals`, headers: auth(ca),
+      payload: {
+        productId: '44444444-0000-0000-0000-000000000002',
+        bookedAmount: 75000,
+        instalments: [{ dueDate: '2026-08-03', amount: 40000 }, { dueDate: '2026-09-02', amount: 30000 }],
+      },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().message, /must sum/);
+  });
+
+  it('does not let a caller book a deal', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/deals`, headers: auth(a1),
+      payload: {
+        productId: '44444444-0000-0000-0000-000000000002',
+        bookedAmount: 75000,
+        instalments: [{ dueDate: '2026-08-03', amount: 75000 }],
+      },
+    });
+    assert.equal(res.statusCode, 403);
+  });
+
+  it('books a deal, closes the lead, and schedules the instalments', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/deals`, headers: auth(ca),
+      payload: {
+        productId: '44444444-0000-0000-0000-000000000002',
+        bookedAmount: 75000,
+        discountAmount: 5000,
+        instalments: [{ dueDate: '2026-08-03', amount: 40000 }, { dueDate: '2026-09-02', amount: 35000 }],
+      },
+    });
+    assert.equal(res.statusCode, 201);
+    dealId = res.json().deal.id;
+    firstInstalment = res.json().instalments[0].id;
+
+    const lead = fixtureSql(`select status || ':' || coalesce(next_action_at::text, 'none') from crm.leads where id = '${leadId}';`).trim();
+    assert.match(lead, /^won:none$/, 'a booked deal closes the lead and clears its next action');
+  });
+
+  it('shows the instalments in the collections queue with a promise', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+
+    const promise = await h.app.inject({
+      method: 'POST', url: `/instalments/${firstInstalment}/promise`, headers: auth(ca),
+      payload: { promisedDate: '2026-08-05', amount: 40000, confidence: 'high' },
+    });
+    assert.equal(promise.statusCode, 201);
+
+    const due = await h.app.inject({ url: '/collections/due', headers: auth(ca) });
+    assert.equal(due.statusCode, 200);
+    const row = (due.json() as Array<Record<string, unknown>>).find((r) => r.instalment_id === firstInstalment);
+    assert.ok(row, 'the open instalment must appear in the dues queue');
+    assert.equal(row!.confidence, 'high', 'the open promise rides along');
+  });
+
+  it('records a payment, settles the instalment and the promise', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+
+    const over = await h.app.inject({
+      method: 'POST', url: `/deals/${dealId}/payments`, headers: auth(ca),
+      payload: { instalmentId: firstInstalment, amount: 50000, mode: 'upi' },
+    });
+    assert.equal(over.statusCode, 400, 'overpaying an instalment is rejected');
+
+    const pay = await h.app.inject({
+      method: 'POST', url: `/deals/${dealId}/payments`, headers: auth(ca),
+      payload: { instalmentId: firstInstalment, amount: 40000, mode: 'upi', reference: 'UTR123' },
+    });
+    assert.equal(pay.statusCode, 201);
+    assert.equal(pay.json().instalment.status, 'paid');
+
+    const outcome = fixtureSql(`select outcome from crm.promises_to_pay where instalment_id = '${firstInstalment}';`).trim();
+    assert.equal(outcome, 'kept', 'paying in full marks the promise kept');
+
+    const mtd = await h.app.inject({ url: '/dashboards/counsellors', headers: auth(ca) });
+    const me = (mtd.json() as Array<Record<string, unknown>>).find((r) => r.user_id === USERS.counsellorA);
+    assert.equal(Number(me!.collected_amount), 40000, 'the collection lands on the counsellor dashboard');
+  });
+});

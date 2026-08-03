@@ -615,6 +615,30 @@ end $$;
 
 reset role;
 
+-- The engines must work when run the way the scheduler actually runs them:
+-- as the ops service account, through crm_app, under RLS. Before 0014 these
+-- silently under-executed (RLS filtered rows before the statements acted).
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-00000000000b', false) as _ \gset
+
+select crm.snapshot_scores(crm.ist_date(now())) as ops_scored \gset
+select crm_test.check(
+  'R9', 'scheduler identity (ops) can snapshot every score',
+  (:ops_scored = 6), 'scored ' || :ops_scored);
+
+do $$
+begin
+  perform crm.expire_missed_callbacks();
+  perform crm.mark_overdue_instalments();
+  perform crm.detect_bulk_access();
+  perform crm.detect_off_hours_access();
+  perform crm_test.check('R9', 'scheduler engines run under RLS without privilege errors', true, null);
+exception when others then
+  perform crm_test.check('R9', 'scheduler engines run under RLS without privilege errors', false, sqlerrm);
+end $$;
+
+reset role;
+
 -- Bulk-read detection.
 insert into crm.lead_access_log (user_id, lead_id, context)
 select :A1, id, 'detail' from crm.leads limit 20;

@@ -12,10 +12,12 @@
     "dev": "node --watch --experimental-strip-types src/index.ts",
     "start": "node --experimental-strip-types src/index.ts",
     "ingest": "node --experimental-strip-types src/ingest/cli.ts",
-    "test": "node --experimental-strip-types --test test/*.test.ts"
+    "test": "node --experimental-strip-types --test test/api.test.ts",
+    "test:e2e": "node --experimental-strip-types --test --test-timeout=180000 test/e2e.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
+    "@fastify/static": "^10.1.2",
     "argon2": "^0.41.1",
     "fastify": "^5.2.0",
     "fastify-plugin": "^6.0.0",
@@ -26,6 +28,7 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
+    "playwright": "^1.62.1",
     "typescript": "^5.7.2"
   }
 }

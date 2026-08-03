@@ -18,7 +18,22 @@ declare module 'fastify' {
   }
 }
 
-const PUBLIC_PATHS = new Set(['/health', '/auth/login']);
+/**
+ * Paths served without a session: health, login, and the UI shell. The UI is
+ * static files only - every piece of data it renders comes from the API under
+ * a session, so serving the shell publicly exposes markup, not records.
+ */
+function isPublicPath(url: string): boolean {
+  const path = url.split('?')[0] ?? '';
+  return (
+    path === '/health' ||
+    path === '/auth/login' ||
+    path === '/' ||
+    path === '/favicon.ico' ||
+    path === '/ui' ||
+    path.startsWith('/ui/')
+  );
+}
 
 function bearerFrom(req: FastifyRequest): string | null {
   const header = req.headers.authorization;
@@ -53,7 +68,7 @@ export const contextPlugin = fp(
     });
 
     app.addHook('onRequest', async (req) => {
-      if (PUBLIC_PATHS.has(req.url.split('?')[0] ?? '')) return;
+      if (isPublicPath(req.url)) return;
 
       const token = (req.cookies?.[cookieName] as string | undefined) ?? bearerFrom(req);
       if (!token) throw unauthorized();

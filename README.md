@@ -3,17 +3,19 @@
 Internal sales-floor CRM: lead distribution, calling pipeline, attendance,
 scoring, collections and dashboards.
 
-**Status:** database, HTTP API and ingestion worker complete and tested. Web UI
-and the Android call-log sync app are not built yet.
+**Status:** database, HTTP API, ingestion worker and web UI complete and tested
+end to end (54 database assertions, 41 API integration tests, 3 real-browser
+E2E flows). The only piece not built is the Android call-log sync app — its
+server contract is live and tested.
 
 ## What is here
 
 ```
-db/migrations/   13 forward-only SQL migrations — schema, engines, RLS, auth
+db/migrations/   14 forward-only SQL migrations — schema, engines, RLS, auth
 db/seed/         development seed data
 db/tests/        52 assertions, one group per stated requirement
 db/rebuild.sh    drop + recreate + migrate + seed + test
-api/             TypeScript / Node 22 / Fastify + ingestion worker (see api/README.md)
+api/             TypeScript / Node 22 / Fastify + ingestion worker + web UI (see api/README.md)
 CLAUDE.md        scope boundary and the design decisions that are load-bearing
 docs/            open questions and decisions made on your behalf
 ```
@@ -116,8 +118,9 @@ TypeScript / Node 22 / Fastify, no ORM. Full detail in `api/README.md`.
 cd api && npm install
 export DATABASE_URL="postgresql://crm_api:pw@localhost:5432/crm"
 export SERVICE_USER_ID="<uuid of a user with the ops role>"
-npm test     # 32 integration tests against a real database
-npm start
+npm test           # 41 integration tests against a real database
+npm run test:e2e   # 3 Playwright flows driving the real UI in Chromium
+npm start          # one process serves API and UI; open http://host:8080/ui/
 ```
 
 The API deliberately does no ownership filtering of its own — RLS does that, and
@@ -133,9 +136,10 @@ node --experimental-strip-types src/ingest/cli.ts --source <uuid>
 
 ## Next
 
-The web UI and the Android call-log sync app.
-
-See `docs/open-questions.md`. Question 2 — Android or iPhone — should be
-answered before the mobile app is built: iOS gives no call-log access, which
-means `call_attempts.is_verified` is always false and the honest-dial-count part
-of the score has to be dropped.
+The Android call-log sync app is the one unbuilt piece. Its server contract is
+already live: `POST /device-logs/sync` (idempotent bulk upload), and the
+log-call form already offers the matching device call so one click makes the
+attempt verified. Question 2 in `docs/open-questions.md` — Android or iPhone —
+should be answered before building it: iOS gives no call-log access, which
+means `is_verified` stays false and the honest-dial-count part of the score has
+to be dropped.

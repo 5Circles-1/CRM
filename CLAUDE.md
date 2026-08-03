@@ -84,6 +84,12 @@ Do not undo these without understanding why they exist.
   blocked by trigger. RLS filters before triggers fire, so a denied update would
   otherwise silently affect zero rows and read as success.
 
+- **Engine functions run by the scheduler are `SECURITY DEFINER`** (migration
+  0014): payment rollups, callback expiry, score snapshots, security detection.
+  Run as the invoker they silently under-execute — the ops account cannot read
+  the admin-only access log, so bulk-read detection would never fire. Authority-
+  checking functions (`crm.transfer_lead`) deliberately stay invoker-rights.
+
 - **Every tunable number lives in `crm.settings`**, not in code — SLA minutes,
   dial targets, breakeven, transfer caps. Changing a target is an ops action.
 
@@ -100,6 +106,8 @@ api/             TypeScript / Node 22 / Fastify. See api/README.md
   src/routes/    one file per requirement area
   src/ingest/    Google Sheets -> ingested_rows -> assign_lead
   src/jobs/      scheduled calls into the database engines
+  public/        the web UI: dependency-free ES modules, no build step
+  test/          41 API integration tests + 3 Playwright browser flows
 docs/            requirement traceability, open questions
 ```
 
@@ -109,7 +117,9 @@ docs/            requirement traceability, open questions
 # needs a running postgres 16 and PGHOST/PGPORT/PGUSER set
 ./db/rebuild.sh --with-tests
 
-cd api && npm install && npm test
+cd api && npm install && npm test   # API integration tests
+npm run test:e2e                    # real Chromium driving the real UI
+npm start                           # serves API + UI on one port; open /ui/
 ```
 
 ## API rules that matter
@@ -145,12 +155,13 @@ anything real.
 
 ## Not built yet
 
-The database, its engines, the HTTP API and the ingestion worker are complete
-and tested (52 database assertions, 32 API integration tests). Still to come:
-the web UI and the Android call-log sync app.
+Database, engines, HTTP API, ingestion worker and the web UI are complete and
+tested (54 database assertions, 41 API integration tests, 3 browser E2E flows).
 
-The Android app is what makes `call_attempts.is_verified` meaningful, and
-therefore what makes the scoring honest. See `docs/open-questions.md` —
-question 2 (Android or iPhone) should be answered before it is built, because
-iOS gives no call-log access and the `data_integrity` score component would have
-to be dropped.
+The one remaining piece is the **Android call-log sync app**. Its server
+contract is already live and tested — `POST /device-logs/sync`, idempotent on
+`(user_id, device_row_key)` — and the UI already consumes the result: when a
+synced device call matches the lead being logged, one click links it and the
+attempt becomes `is_verified`. See `docs/open-questions.md` question 2
+(Android or iPhone) before building the app: iOS gives no call-log access, and
+without it the `data_integrity` score component must be dropped.

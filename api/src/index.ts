@@ -5,8 +5,8 @@ import { Scheduler } from './jobs/scheduler.ts';
 const config = loadConfig();
 const app = await buildServer(config);
 
-// The background jobs run as a service account with the `ops` role, so they
-// are subject to RLS like everything else rather than sitting above it.
+// Background jobs run as the ops service account; the engines they call are
+// SECURITY DEFINER system actions (migration 0014).
 const serviceUserId = process.env.SERVICE_USER_ID;
 let scheduler: Scheduler | null = null;
 

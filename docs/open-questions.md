@@ -29,6 +29,11 @@ If the floor is on iPhone, `is_verified` is always false and the
 `data_integrity` score component must be dropped — or calls must route through
 CRM telephony instead of personal SIMs, which is a different and larger build.
 
+The server side no longer waits on this answer: `POST /device-logs/sync` is
+live, idempotent, and tested, and the log-call form already offers the matching
+device call so one click makes the attempt verified. What remains is the thin
+Android uploader itself.
+
 **Affects:** whether requirement 7 can be honest. Answer this one first.
 
 ## 3. What is the daily dial target per caller?

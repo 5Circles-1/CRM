@@ -1,5 +1,7 @@
+import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
+import fastifyStatic from '@fastify/static';
 import type { Config } from './config.ts';
 import { Database } from './db/pool.ts';
 import { contextPlugin } from './http/context.ts';
@@ -12,6 +14,8 @@ import { attendanceRoutes } from './routes/attendance.ts';
 import { dashboardRoutes } from './routes/dashboards.ts';
 import { adminRoutes } from './routes/admin.ts';
 import { ingestRoutes } from './routes/ingest.ts';
+import { deviceLogRoutes } from './routes/deviceLogs.ts';
+import { dealRoutes } from './routes/deals.ts';
 
 export async function buildServer(config: Config, db?: Database): Promise<FastifyInstance> {
   const database = db ?? new Database(config.databaseUrl);
@@ -34,6 +38,17 @@ export async function buildServer(config: Config, db?: Database): Promise<Fastif
 
   app.get('/health', async () => ({ ok: true }));
 
+  // The web UI: static files under /ui/, same origin as the API so cookies
+  // just work and no CORS surface exists. Routing inside the app is
+  // hash-based, so no server-side SPA fallback is needed.
+  await app.register(fastifyStatic, {
+    root: path.join(import.meta.dirname, '..', 'public'),
+    prefix: '/ui/',
+    index: 'index.html',
+    redirect: true,
+  });
+  app.get('/', async (_req, reply) => reply.redirect('/ui/'));
+
   await app.register(async (scope) => {
     await authRoutes(scope, {
       cookieName: config.cookieName,
@@ -46,6 +61,8 @@ export async function buildServer(config: Config, db?: Database): Promise<Fastif
     await dashboardRoutes(scope);
     await adminRoutes(scope);
     await ingestRoutes(scope);
+    await deviceLogRoutes(scope);
+    await dealRoutes(scope);
   });
 
   app.addHook('onClose', async () => {

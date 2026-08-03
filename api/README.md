@@ -1,7 +1,13 @@
-# CRM API
+# CRM API + Web UI
 
 TypeScript / Node 22 / Fastify over PostgreSQL 16. No ORM — the schema and its
 engines are the source of truth, and an ORM would fight the RLS session model.
+
+The web UI lives in `public/` and is served by the same process at `/ui/`:
+dependency-free ES modules, no build step, no supply chain, same origin as the
+API so cookies just work and no CORS surface exists. Routing is hash-based.
+Every piece of data on every screen comes from the API under a session — the
+shell itself is just markup.
 
 ## The one thing to understand before changing anything
 
@@ -88,6 +94,19 @@ a database trigger, not at token expiry.
 **Ingestion** (R1) — `POST /ingest/sources/:id/run`, `POST /ingest/sources/:id/csv`,
 `GET /ingest/runs`, `POST /ingest/quarantine/:rowId/replay`.
 
+**Money** — `GET /products`, `POST /leads/:id/deals` (books the deal, closes the
+lead, schedules instalments; the schedule must sum to the booked amount, checked
+in paise), `GET /collections/due` (the dues queue with the latest open promise),
+`POST /deals/:id/payments` (overpay rejected), `POST /instalments/:id/promise`.
+
+**Device call log** (the Android contract) — `POST /device-logs/sync` bulk-uploads
+the handset call log, idempotent on `(user_id, device_row_key)`; rows matching a
+visible lead get linked. `GET /leads/:id/device-log-suggestion` returns the most
+recent unclaimed device call to that lead's number; attaching its id to a logged
+call is what flips `is_verified`. A caller's raw device log stays visible only
+to them and admin — supervision sees the reconciled attempts, not the personal
+log.
+
 **Admin** — users, teams, sources, quarantine, per-record audit trail, and
 `PUT /admin/settings/:key` for every tunable number in the system.
 
@@ -122,9 +141,12 @@ node --experimental-strip-types src/ingest/cli.ts --csv leads.csv --source <uuid
 
 ## Background jobs
 
-`src/jobs/scheduler.ts` calls the database engines on a cadence. They run as the
-`ops` service account, so they are subject to RLS like everything else. All are
-idempotent — a missed tick delays work, it never corrupts it.
+`src/jobs/scheduler.ts` calls the database engines on a cadence, as the `ops`
+service account. The engines themselves are `SECURITY DEFINER` (migration 0014)
+because they are system invariants that must cross role boundaries — score
+snapshots write rows for everyone, security detection reads the admin-only
+access log. All are idempotent — a missed tick delays work, it never corrupts
+it.
 
 Lead assignment sweeps every minute during shift hours (this is what hands out
 leads that arrived overnight), callbacks expire and security detection runs
@@ -135,12 +157,19 @@ Without `SERVICE_USER_ID` the jobs are disabled and the server logs a warning.
 ## Tests
 
 `npm test` rebuilds a test database from `db/migrations`, seeds it, and drives
-the real Fastify app with `app.inject()` against a real Postgres. 32 tests:
+the real Fastify app with `app.inject()` against a real Postgres. 41 tests:
 auth and lockout, RLS boundaries through HTTP, ingestion idempotency and
-quarantine, the calling pipeline, transfer authority and cap, attendance, the
-dashboards, and the boot-time RLS guard.
+quarantine, the calling pipeline, transfer authority and cap, attendance,
+dashboards, deals/collections/promises, the device-log sync contract, and the
+boot-time RLS guard.
 
-Requires a running Postgres 16 and `PGHOST` / `PGPORT` set.
+`npm run test:e2e` goes one layer further: it boots the server on a real port
+and drives the real UI in headless Chromium — caller logs a call with a
+callback, counsellor transfers a Not Answered lead from the queue, admin reads
+the breakeven thermometer. Screenshots land in `test/shots/` (or
+`E2E_SHOT_DIR`).
+
+Both require a running Postgres 16 and `PGHOST` / `PGPORT` set.
 
 ## Deliberate omissions
 
@@ -155,6 +184,7 @@ Requires a running Postgres 16 and `PGHOST` / `PGPORT` set.
 
 ## Not built
 
-The web UI and the Android call-log sync app. The Android app is what makes
-`call_attempts.is_verified` meaningful — see `docs/open-questions.md`, question
-2, which needs answering first.
+The Android call-log sync app — the client for `POST /device-logs/sync`. The
+endpoint, matching, suggestion flow and verified-dial loop are all live and
+tested; the app is a thin uploader. See `docs/open-questions.md`, question 2
+(Android or iPhone), which needs answering first.
