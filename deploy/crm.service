@@ -1,0 +1,25 @@
+# systemd unit for the CRM. Install:
+#   sudo cp deploy/crm.service /etc/systemd/system/crm.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now crm
+[Unit]
+Description=5 Circles CRM (API + UI)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=crm
+WorkingDirectory=/opt/crm/api
+EnvironmentFile=/opt/crm/api/.env
+ExecStart=/usr/bin/node --experimental-strip-types src/index.ts
+Restart=always
+RestartSec=3
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/crm/api
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

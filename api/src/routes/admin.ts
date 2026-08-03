@@ -158,6 +158,107 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
+  const sourceBody = z.object({
+    name: z.string().min(1).max(120),
+    spreadsheetId: z.string().max(120).optional(),
+    worksheetName: z.string().max(120).optional(),
+    columnMap: z.record(z.string()).optional(),
+    pinnedTeamId: uuid.nullable().optional(),
+    defaultPriority: z.enum(['immediate', 'normal']).default('normal'),
+    isActive: z.boolean().default(true),
+  });
+
+  app.post('/admin/sources', async (req, reply) => {
+    req.requireRole('admin', 'ops');
+    const body = sourceBody.parse(req.body);
+    const row = await req.tx((q) =>
+      q.one(
+        `insert into crm.lead_sources
+           (name, spreadsheet_id, worksheet_name, column_map, pinned_team_id, default_priority, is_active)
+         values ($1, $2, $3, coalesce($4::jsonb, '{}'::jsonb), $5, $6, $7)
+         returning id, name, spreadsheet_id, worksheet_name, column_map, default_priority, is_active`,
+        [
+          body.name,
+          body.spreadsheetId ?? null,
+          body.worksheetName ?? null,
+          body.columnMap ? JSON.stringify(body.columnMap) : null,
+          body.pinnedTeamId ?? null,
+          body.defaultPriority,
+          body.isActive,
+        ],
+      ),
+    );
+    return reply.status(201).send(row);
+  });
+
+  app.put('/admin/sources/:id', async (req) => {
+    req.requireRole('admin', 'ops');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = sourceBody.partial().parse(req.body);
+    const row = await req.tx((q) =>
+      q.one(
+        `update crm.lead_sources set
+           name             = coalesce($2, name),
+           spreadsheet_id   = coalesce($3, spreadsheet_id),
+           worksheet_name   = coalesce($4, worksheet_name),
+           column_map       = coalesce($5::jsonb, column_map),
+           pinned_team_id   = coalesce($6, pinned_team_id),
+           default_priority = coalesce($7::crm.lead_priority, default_priority),
+           is_active        = coalesce($8, is_active),
+           updated_at       = now()
+         where id = $1
+         returning id, name, spreadsheet_id, worksheet_name, column_map, default_priority, is_active`,
+        [
+          id,
+          body.name ?? null,
+          body.spreadsheetId ?? null,
+          body.worksheetName ?? null,
+          body.columnMap ? JSON.stringify(body.columnMap) : null,
+          body.pinnedTeamId ?? null,
+          body.defaultPriority ?? null,
+          body.isActive ?? null,
+        ],
+      ),
+    );
+    if (!row) throw notFound('no source with that id');
+    return row;
+  });
+
+  app.post('/admin/products', async (req, reply) => {
+    req.requireRole('admin');
+    const body = z
+      .object({
+        name: z.string().min(1).max(120),
+        code: z.string().min(1).max(30),
+        listPriceInr: z.number().positive().max(99_999_999),
+        isSebiRegulated: z.boolean().default(true),
+      })
+      .parse(req.body);
+    const row = await req.tx((q) =>
+      q.one(
+        `insert into crm.products (name, code, list_price_inr, is_sebi_regulated)
+         values ($1, $2, $3, $4)
+         returning id, name, code, list_price_inr, is_sebi_regulated, is_active`,
+        [body.name, body.code, body.listPriceInr, body.isSebiRegulated],
+      ),
+    );
+    return reply.status(201).send(row);
+  });
+
+  app.post('/admin/products/:id/deactivate', async (req) => {
+    req.requireRole('admin');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const row = await req.tx((q) =>
+      q.one(
+        `update crm.products set is_active = false where id = $1 and is_active
+         returning id, name, is_active`,
+        [id],
+      ),
+    );
+    if (!row) throw notFound('no active product with that id');
+    return row;
+  });
+
   app.get('/admin/quarantine', async (req) => {
     req.requireRole('admin', 'ops');
     return req.tx((q) =>

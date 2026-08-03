@@ -1,11 +1,12 @@
 import { get, post, put } from '../api.js';
-import { esc, fmtDT, h, openModal, toast } from '../util.js';
+import { esc, fmtDT, fmtINR, h, openModal, toast } from '../util.js';
 
 /** Ops/admin surface: settings, users, ingestion, quarantine, security alerts. */
 const TABS = [
   ['settings', 'Settings'],
   ['users', 'Users'],
   ['ingest', 'Ingestion'],
+  ['products', 'Products'],
   ['quarantine', 'Quarantine'],
   ['alerts', 'Security alerts'],
 ];
@@ -18,7 +19,7 @@ export async function render(outlet, me) {
   outlet.appendChild(tabs);
   outlet.appendChild(body);
 
-  const draw = { settings, users, ingest, quarantine, alerts };
+  const draw = { settings, users, ingest, products, quarantine, alerts };
   tabs.addEventListener('click', (e) => {
     const tab = e.target?.dataset?.tab;
     if (!tab) return;
@@ -163,6 +164,39 @@ function newUserModal(teams, onDone) {
 async function ingest(body) {
   const [sources, runs] = await Promise.all([get('/admin/sources'), get('/ingest/runs')]);
   body.innerHTML = '';
+
+  if (sources.length === 0) {
+    body.appendChild(h(`
+      <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
+        No lead sources yet — create one below before importing anything.
+      </div>`));
+  }
+
+  const srcPanel = h(`
+    <div class="panel">
+      <div class="row spread">
+        <h2 class="mt0">Lead sources <small>${sources.length}</small></h2>
+        <button class="btn primary" id="new-source">New source</button>
+      </div>
+      ${sources.length === 0 ? '' : `
+      <table class="table"><thead><tr>
+        <th>Name</th><th>Sheet</th><th>Priority</th><th>Last synced</th><th>Active</th>
+      </tr></thead><tbody>
+      ${sources.map((s) => `
+        <tr>
+          <td><b>${esc(s.name)}</b></td>
+          <td>${s.spreadsheet_id ? `${esc(s.spreadsheet_id.slice(0, 18))}… / ${esc(s.worksheet_name ?? '')}` : '<span class="hint">manual CSV only</span>'}</td>
+          <td>${esc(s.default_priority)}</td>
+          <td>${esc(fmtDT(s.last_synced_at))}</td>
+          <td>${s.is_active ? '<span class="badge b-ok">yes</span>' : '<span class="badge b-mute">no</span>'}</td>
+        </tr>`).join('')}
+      </tbody></table>`}
+    </div>`);
+  body.appendChild(srcPanel);
+  srcPanel.querySelector('#new-source').addEventListener('click', () => newSourceModal(() => ingest(body)));
+
+  if (sources.length === 0) return;
+
   const panel = h(`
     <div class="panel">
       <h2>Run an import</h2>
@@ -228,6 +262,125 @@ async function ingest(body) {
         </tr>`).join('')}
       </tbody></table>`}
     </div>`));
+}
+
+function newSourceModal(onDone) {
+  const bodyEl = h(`
+    <div>
+      <label class="f">Name <input name="name" required placeholder="Meta Lead Ads — Main Sheet"></label>
+      <div class="frow">
+        <label class="f">Google Sheet ID <span class="hint">(from the sheet URL; blank = CSV-only source)</span>
+          <input name="sheet" placeholder="1AbC…"></label>
+        <label class="f">Worksheet tab <input name="tab" placeholder="Leads"></label>
+      </div>
+      <label class="f">Default priority
+        <select name="priority">
+          <option value="normal">normal</option>
+          <option value="immediate">immediate (5-minute first-touch SLA)</option>
+        </select>
+      </label>
+      <label class="f">Column map <span class="hint">(optional JSON: field → sheet header; common headers are auto-detected)</span>
+        <textarea name="map" rows="3" placeholder='{"full_name":"Full Name","phone":"Phone Number"}'></textarea>
+      </label>
+    </div>`);
+  const footer = h('<div><button class="btn primary">Create source</button></div>');
+  const { close } = openModal('New lead source', bodyEl, footer);
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    const mapRaw = bodyEl.querySelector('[name=map]').value.trim();
+    let columnMap;
+    if (mapRaw) {
+      try { columnMap = JSON.parse(mapRaw); } catch { toast('The column map is not valid JSON.', 'err'); return; }
+    }
+    const sheet = bodyEl.querySelector('[name=sheet]').value.trim();
+    const tab = bodyEl.querySelector('[name=tab]').value.trim();
+    if (sheet && !tab) { toast('A sheet source also needs the worksheet tab name.', 'err'); return; }
+    try {
+      await post('/admin/sources', {
+        name: bodyEl.querySelector('[name=name]').value.trim(),
+        spreadsheetId: sheet || undefined,
+        worksheetName: tab || undefined,
+        defaultPriority: bodyEl.querySelector('[name=priority]').value,
+        columnMap,
+      });
+      toast('Source created.');
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+}
+
+/* ---------------- products ---------------- */
+
+async function products(body, me) {
+  const list = await get('/products');
+  body.innerHTML = '';
+  const panel = h(`
+    <div class="panel">
+      <div class="row spread">
+        <h2 class="mt0">Products <small>what counsellors can book deals against</small></h2>
+        ${me.role === 'admin' ? '<button class="btn primary" id="new-product">New product</button>' : ''}
+      </div>
+      ${list.length === 0 ? '<div class="empty">No products yet — counsellors cannot book a deal until one exists.</div>' : `
+      <table class="table"><thead><tr>
+        <th>Name</th><th>Code</th><th class="num">List price</th><th>SEBI-regulated</th><th></th>
+      </tr></thead><tbody>
+      ${list.map((p) => `
+        <tr>
+          <td>${esc(p.name)}</td><td class="mono">${esc(p.code)}</td>
+          <td class="num">${fmtINR(p.list_price_inr)}</td>
+          <td>${p.is_sebi_regulated ? '<span class="badge b-info">yes</span>' : '<span class="badge b-mute">no — needs the non-SEBI disclaimer</span>'}</td>
+          <td class="right">${me.role === 'admin'
+            ? `<button class="btn small danger p-deact" data-id="${esc(p.id)}">Retire</button>` : ''}</td>
+        </tr>`).join('')}
+      </tbody></table>`}
+    </div>`);
+  body.appendChild(panel);
+
+  panel.querySelector('#new-product')?.addEventListener('click', () => {
+    const bodyEl = h(`
+      <div>
+        <label class="f">Name <input name="name" required placeholder="Advisory — Annual"></label>
+        <div class="frow">
+          <label class="f">Code <input name="code" required placeholder="ADV-A"></label>
+          <label class="f">List price (₹) <input name="price" type="number" min="1" step="0.01" required></label>
+        </div>
+        <label class="f">SEBI-regulated product?
+          <select name="sebi"><option value="true">Yes — advisory</option><option value="false">No — course / other activity</option></select>
+        </label>
+      </div>`);
+    const footer = h('<div><button class="btn primary">Create product</button></div>');
+    const { close } = openModal('New product', bodyEl, footer);
+    footer.querySelector('button').addEventListener('click', async () => {
+      try {
+        await post('/admin/products', {
+          name: bodyEl.querySelector('[name=name]').value.trim(),
+          code: bodyEl.querySelector('[name=code]').value.trim(),
+          listPriceInr: Number(bodyEl.querySelector('[name=price]').value),
+          isSebiRegulated: bodyEl.querySelector('[name=sebi]').value === 'true',
+        });
+        toast('Product created.');
+        close();
+        products(body, me);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    });
+  });
+
+  panel.addEventListener('click', async (e) => {
+    if (!e.target.classList?.contains('p-deact')) return;
+    if (!confirm('Retire this product? Existing deals keep it; new deals cannot use it.')) return;
+    try {
+      await post(`/admin/products/${e.target.dataset.id}/deactivate`);
+      toast('Product retired.');
+      products(body, me);
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
 }
 
 /* ---------------- quarantine ---------------- */

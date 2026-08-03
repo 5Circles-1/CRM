@@ -1,0 +1,13 @@
+# Caddy reverse proxy: automatic HTTPS with Let's Encrypt.
+# Install caddy, put this at /etc/caddy/Caddyfile, replace the domain,
+# then: sudo systemctl reload caddy
+crm.yourcompany.in {
+    reverse_proxy 127.0.0.1:8080
+    # The CRM holds client PII: no indexing, no sniffing, no framing.
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        X-Robots-Tag "noindex, nofollow"
+    }
+}

@@ -709,3 +709,58 @@ describe('deals and collections', () => {
     assert.equal(Number(me!.collected_amount), 40000, 'the collection lands on the counsellor dashboard');
   });
 });
+
+describe('go-live provisioning endpoints', () => {
+  it('lets ops create a lead source and import through it immediately', async () => {
+    const ops = await login(h.app, EMAILS.ops);
+    const created = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(ops),
+      payload: { name: 'Provisioned Source', defaultPriority: 'immediate' },
+    });
+    assert.equal(created.statusCode, 201);
+    const sourceId = created.json().id;
+
+    const run = await h.app.inject({
+      method: 'POST', url: `/ingest/sources/${sourceId}/csv`, headers: auth(ops),
+      payload: { csv: 'Full Name,Phone Number\nProv Lead,9811400001' },
+    });
+    assert.equal(run.json().created, 1);
+
+    const lead = fixtureSql(`select priority from crm.leads where phone_e164 = '+919811400001';`).trim();
+    assert.equal(lead, 'immediate', 'the source default priority carries onto the lead');
+  });
+
+  it('lets admin create a product and a counsellor book against it', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const created = await h.app.inject({
+      method: 'POST', url: '/admin/products', headers: auth(admin),
+      payload: { name: 'Course L2', code: 'CRS-2', listPriceInr: 20000, isSebiRegulated: false },
+    });
+    assert.equal(created.statusCode, 201);
+
+    const leadId = makeLeadFor(USERS.callerA1, 'Product Buyer');
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const deal = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/deals`, headers: auth(ca),
+      payload: {
+        productId: created.json().id, bookedAmount: 20000,
+        instalments: [{ dueDate: '2026-08-10', amount: 20000 }],
+      },
+    });
+    assert.equal(deal.statusCode, 201);
+  });
+
+  it('does not let a caller create sources or products', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const src = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(a1),
+      payload: { name: 'Nope' },
+    });
+    const prod = await h.app.inject({
+      method: 'POST', url: '/admin/products', headers: auth(a1),
+      payload: { name: 'Nope', code: 'N', listPriceInr: 1 },
+    });
+    assert.equal(src.statusCode, 403);
+    assert.equal(prod.statusCode, 403);
+  });
+});
