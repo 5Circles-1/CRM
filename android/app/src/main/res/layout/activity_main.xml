@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F2F5F9"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="#16202E"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="20dp"
+            android:text="@string/app_tagline"
+            android:textColor="#5B6B7F"
+            android:textSize="14sp" />
+
+        <!-- ============ not signed in ============ -->
+        <LinearLayout
+            android:id="@+id/setupGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <EditText
+                android:id="@+id/serverInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_server"
+                android:inputType="textUri"
+                android:autofillHints="url" />
+
+            <EditText
+                android:id="@+id/emailInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_email"
+                android:inputType="textEmailAddress"
+                android:autofillHints="emailAddress" />
+
+            <EditText
+                android:id="@+id/passwordInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_password"
+                android:inputType="textPassword"
+                android:autofillHints="password" />
+
+            <TextView
+                android:id="@+id/setupError"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="#B91C1C"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/connectButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:backgroundTint="#1D4ED8"
+                android:text="@string/btn_connect"
+                android:textColor="#FFFFFF" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/privacy_note"
+                android:textColor="#5B6B7F"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <!-- ============ signed in ============ -->
+        <LinearLayout
+            android:id="@+id/statusGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView style="@style/Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/label_signed_in" />
+            <TextView
+                android:id="@+id/whoText"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:textColor="#16202E" android:textSize="18sp" android:textStyle="bold" />
+
+            <TextView style="@style/Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/label_server" />
+            <TextView
+                android:id="@+id/serverText"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:textColor="#16202E" android:textSize="15sp" />
+
+            <TextView style="@style/Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/label_permission" />
+            <TextView
+                android:id="@+id/permText"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:textColor="#16202E" android:textSize="15sp" />
+            <Button
+                android:id="@+id/permButton"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/btn_grant" />
+
+            <TextView style="@style/Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/label_last_sync" />
+            <TextView
+                android:id="@+id/lastSyncText"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:textColor="#16202E" android:textSize="15sp" />
+            <TextView
+                android:id="@+id/resultText"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="#5B6B7F" android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/syncButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:backgroundTint="#1D4ED8"
+                android:text="@string/btn_sync"
+                android:textColor="#FFFFFF" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/sync_note"
+                android:textColor="#5B6B7F"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/logoutButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="26dp"
+                style="?android:attr/borderlessButtonStyle"
+                android:text="@string/btn_logout"
+                android:textColor="#B91C1C" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

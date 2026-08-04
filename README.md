@@ -3,10 +3,11 @@
 Internal sales-floor CRM: lead distribution, calling pipeline, attendance,
 scoring, collections and dashboards.
 
-**Status:** database, HTTP API, ingestion worker and web UI complete and tested
-end to end (54 database assertions, 41 API integration tests, 3 real-browser
-E2E flows). The only piece not built is the Android call-log sync app — its
-server contract is live and tested.
+**Status:** database, HTTP API, ingestion worker, web UI and the Android
+call-log companion app are all built (54 database assertions, 44 API
+integration tests, 3 real-browser E2E flows; the APK compiles and its package
+is verified). The one step not doable from this repository is running the app
+on a physical handset — a ten-minute test described in `android/README.md`.
 
 ## What is here
 
@@ -16,6 +17,7 @@ db/seed/         development seed data
 db/tests/        52 assertions, one group per stated requirement
 db/rebuild.sh    drop + recreate + migrate + seed + test
 api/             TypeScript / Node 22 / Fastify + ingestion worker + web UI (see api/README.md)
+android/         the call-log sync companion app — plain Java, zero dependencies (see android/README.md)
 CLAUDE.md        scope boundary and the design decisions that are load-bearing
 docs/            open questions and decisions made on your behalf
 ```
@@ -136,10 +138,8 @@ node --experimental-strip-types src/ingest/cli.ts --source <uuid>
 
 ## Next
 
-The Android call-log sync app is the one unbuilt piece. Its server contract is
-already live: `POST /device-logs/sync` (idempotent bulk upload), and the
-log-call form already offers the matching device call so one click makes the
-attempt verified. Question 2 in `docs/open-questions.md` — Android or iPhone —
-should be answered before building it: iOS gives no call-log access, which
-means `is_verified` stays false and the honest-dial-count part of the score has
-to be dropped.
+Everything is built. Remaining are the human steps: deploy the server
+(docs/go-live-runbook.md), test the Android app on one real handset
+(android/README.md), and run the two-week pilot. The Android-or-iPhone
+question in `docs/open-questions.md` still matters for the floor's handsets —
+iOS cannot run the companion app, so verified dials require Android.

@@ -1,0 +1,26 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'in.fivecircles.crmsync'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'in.fivecircles.crmsync'
+        // Android 8.0 and up: effectively every handset on an Indian sales floor.
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+    buildTypes {
+        release { minifyEnabled false }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// Deliberately empty: no third-party dependencies at all. Everything the app
+// needs - UI, HTTP, JSON, the call log, the job scheduler - ships with Android.
+dependencies { }

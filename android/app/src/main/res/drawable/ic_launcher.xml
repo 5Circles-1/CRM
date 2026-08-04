@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#1D4ED8"
+        android:pathData="M20,8 h68 a12,12 0 0 1 12,12 v68 a12,12 0 0 1 -12,12 h-68 a12,12 0 0 1 -12,-12 v-68 a12,12 0 0 1 12,-12 z" />
+    <!-- handset -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,30 c-2,-2 -5,-2 -7,0 l-4,4 c-2,2 -2,5 -1,8 c4,10 10,19 18,27 c8,8 17,14 27,18 c3,1 6,1 8,-1 l4,-4 c2,-2 2,-5 0,-7 l-8,-8 c-2,-2 -5,-2 -7,0 l-2,2 c-6,-3 -12,-8 -16,-14 c-4,-5 -7,-10 -9,-15 l2,-2 c2,-2 2,-5 0,-7 z" />
+    <!-- sync arc -->
+    <path
+        android:fillColor="#7EA2F0"
+        android:pathData="M66,26 a16,16 0 0 1 16,16 h6 l-9,11 -9,-11 h6 a10,10 0 0 0 -10,-10 z" />
+</vector>

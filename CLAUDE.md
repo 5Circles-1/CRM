@@ -153,15 +153,16 @@ anything real.
   one once it has run anywhere real.
 - Nothing is hard-deleted by the application; `DELETE` is revoked from `crm_app`.
 
-## Not built yet
+## Build status
 
-Database, engines, HTTP API, ingestion worker and the web UI are complete and
-tested (54 database assertions, 41 API integration tests, 3 browser E2E flows).
+Everything is built: database, engines, HTTP API, ingestion worker, web UI
+(54 database assertions, 44 API integration tests, 3 browser E2E flows) and
+the **Android call-log companion app** (`android/` — plain Java, zero
+third-party dependencies, compiles to a verified APK). The app implements the
+tested `POST /device-logs/sync` contract; the log-call form offers the
+matching device call and one click makes the attempt `is_verified`.
 
-The one remaining piece is the **Android call-log sync app**. Its server
-contract is already live and tested — `POST /device-logs/sync`, idempotent on
-`(user_id, device_row_key)` — and the UI already consumes the result: when a
-synced device call matches the lead being logged, one click links it and the
-attempt becomes `is_verified`. See `docs/open-questions.md` question 2
-(Android or iPhone) before building the app: iOS gives no call-log access, and
-without it the `data_integrity` score component must be dropped.
+Not verifiable from this repository: the app running on a physical handset
+(ten-minute test in android/README.md), and anything in the go-live runbook
+that needs a real server. iOS cannot run the companion app (no call-log
+access) — see docs/open-questions.md question 2.

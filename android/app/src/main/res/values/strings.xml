@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">5C Call Sync</string>
+    <string name="app_tagline">Verifies your dials with the CRM — automatically</string>
+
+    <string name="hint_server">Server (https://crm.yourcompany.in)</string>
+    <string name="hint_email">Your CRM email</string>
+    <string name="hint_password">Your CRM password</string>
+    <string name="btn_connect">Connect</string>
+
+    <string name="label_signed_in">SIGNED IN AS</string>
+    <string name="label_server">SERVER</string>
+    <string name="label_permission">CALL LOG ACCESS</string>
+    <string name="label_last_sync">LAST SYNC</string>
+    <string name="btn_grant">Grant access</string>
+    <string name="btn_sync">Sync now</string>
+    <string name="btn_logout">Sign out on this phone</string>
+
+    <string name="privacy_note">Privacy: this app uploads your phone\'s call
+        list to your company\'s own CRM server. Only calls that match a lead
+        already assigned to you are ever shown to anyone — personal calls
+        match nothing and appear nowhere.</string>
+    <string name="sync_note">Syncs by itself every time you open this app,
+        and about once an hour in the background. Two syncs can never
+        double-count a call.</string>
+</resources>
