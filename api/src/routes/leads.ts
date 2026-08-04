@@ -81,6 +81,24 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
       .object({
         q: z.string().trim().min(2).max(64).optional(),
         status: z.string().optional(),
+        // Re-tap filters. "Show me everyone who did not answer" and "show me
+        // everyone who asked to be called back" are the two lists a caller
+        // actually works from, and neither was reachable before.
+        lastDisposition: z
+          .enum([
+            'connected_interested',
+            'connected_not_interested',
+            'callback_requested',
+            'not_answered',
+            'busy',
+            'switched_off',
+            'invalid_number',
+            'wrong_person',
+            'language_barrier',
+            'do_not_call',
+          ])
+          .optional(),
+        due: z.enum(['overdue', 'today', 'untouched']).optional(),
         limit: z.coerce.number().int().min(1).max(100).default(50),
         offset: z.coerce.number().int().min(0).default(0),
       })
@@ -88,16 +106,37 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
 
     return req.tx(async (q) => {
       const rows = await q.many<{ id: string }>(
-        `select id, full_name, phone_e164, city, status, priority,
-                next_action_at, attempt_count, caller_id, counsellor_id, created_at
-           from crm.leads
+        `select l.id, l.full_name, l.phone_e164, l.city, l.status, l.priority,
+                l.next_action_at, l.attempt_count, l.na_streak, l.caller_id,
+                l.counsellor_id, l.created_at, l.first_touched_at,
+                (select ca.disposition from crm.call_attempts ca
+                  where ca.lead_id = l.id order by ca.started_at desc limit 1) as last_disposition
+           from crm.leads l
           where ($1::text is null
-                 or full_name ilike '%' || $1 || '%'
-                 or phone_e164 like '%' || regexp_replace($1, '[^0-9]', '', 'g'))
-            and ($2::text is null or status = $2::crm.lead_status)
-          order by next_action_at asc nulls last, created_at desc
+                 or l.full_name ilike '%' || $1 || '%'
+                 or l.phone_e164 like '%' || regexp_replace($1, '[^0-9]', '', 'g'))
+            and ($2::text is null or l.status = $2::crm.lead_status)
+            and ($5::text is null or exists (
+                  select 1 from crm.call_attempts ca
+                   where ca.lead_id = l.id
+                     and ca.disposition = $5::crm.disposition
+                     and ca.started_at = (select max(ca2.started_at) from crm.call_attempts ca2
+                                           where ca2.lead_id = l.id)))
+            and ($6::text is null or case $6
+                   when 'overdue'   then l.next_action_at < now()
+                   when 'today'     then crm.ist_date(l.next_action_at) = crm.ist_date(now())
+                   when 'untouched' then l.first_touched_at is null
+                 end)
+          order by l.next_action_at asc nulls last, l.created_at desc
           limit $3 offset $4`,
-        [query.q ?? null, query.status ?? null, query.limit, query.offset],
+        [
+          query.q ?? null,
+          query.status ?? null,
+          query.limit,
+          query.offset,
+          query.lastDisposition ?? null,
+          query.due ?? null,
+        ],
       );
 
       await logLeadAccess(q, user.id, rows.map((r) => r.id), 'list', req.ip);

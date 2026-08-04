@@ -61,6 +61,32 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  /**
+   * Everything demanding this person's attention, newest deadline first.
+   *
+   * No ownership filter here on purpose - RLS decides what a caller can see and
+   * what a counsellor can see, so this one endpoint serves both without the
+   * route needing to know the difference.
+   */
+  app.get('/me/alerts', async (req) => {
+    req.requireUser();
+    return req.tx(async (q) => {
+      const alerts = await q.many(
+        `select kind, severity, lead_id, lead_name, phone_e164, due_at, title, callback_id,
+                round(extract(epoch from (now() - due_at)) / 60)::int as minutes_late
+           from crm.v_my_alerts
+          order by case severity when 'critical' then 0 when 'warning' then 1 else 2 end,
+                   due_at asc
+          limit 100`,
+      );
+      return {
+        count: alerts.length,
+        critical: alerts.filter((a) => (a as { severity: string }).severity === 'critical').length,
+        alerts,
+      };
+    });
+  });
+
   /** Counts for the header chips, without pulling the whole list. */
   app.get('/me/day/summary', async (req) => {
     const user = req.requireUser();

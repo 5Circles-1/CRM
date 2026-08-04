@@ -10,6 +10,7 @@ import * as collections from './views/collections.js';
 import * as dash from './views/dash.js';
 import * as admin from './views/admin.js';
 import * as leads from './views/leads.js';
+import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 
 const NAV = [
   { hash: '#/day', label: 'My Day', roles: ['caller'] },
@@ -43,6 +44,7 @@ let showingLogin = false;
 function showLogin() {
   if (showingLogin) return;
   showingLogin = true;
+  stopAlerts();
   me = null;
   renderLogin(document.getElementById('app'), () => {
     showingLogin = false;
@@ -81,6 +83,7 @@ function renderShell(app) {
         <div class="topbar">
           <h1 id="page-title"></h1>
           <div class="shift" id="shift-widget"></div>
+          ${bellMarkup()}
           <div class="userchip"><b>${esc(me.full_name)}</b>${esc(me.role)}${me.team_name ? ' · ' + esc(me.team_name) : ''}</div>
           <button class="btn small" id="logout-btn">Log out</button>
         </div>
@@ -90,11 +93,14 @@ function renderShell(app) {
 
   document.getElementById('logout-btn').addEventListener('click', async () => {
     await post('/auth/logout').catch(() => {});
+    stopAlerts();
     me = null;
     location.hash = '';
     boot();
   });
 
+  wireBell();
+  startAlerts();
   refreshShift();
 }
 

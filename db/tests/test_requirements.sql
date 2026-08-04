@@ -341,6 +341,65 @@ exception when check_violation then
   perform crm_test.check('R8', 'transfers are capped at 2 per lead', true, null);
 end $$;
 
+-- The automatic side of requirement 8: a lead nobody has touched moves on its
+-- own. This is not the supervisory rule relaxed - it only ever fires on leads
+-- with no contact at all, where nobody is choosing to keep them.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                       next_action_at, assigned_at)
+values (:SRC, 'Untouched Sweep', '+919555000001', :A1, crm.team_of(:A1, current_date),
+        'new', now(), now() - interval '11 minutes');
+
+-- With A2 away there is nobody in Team A to move it to. Handing it to another
+-- absent caller would look like progress and change nothing, so it stays put.
+update crm.attendance_sessions set ended_at = now()
+ where user_id = :A2 and ended_at is null;
+
+select crm_test.check(
+  'R8', 'an untouched lead is not moved when nobody else is on the floor',
+  (select crm.reassign_untouched_leads() = 0), null);
+
+select crm_test.check(
+  'R8', 'and it stays with the caller who has it',
+  (select caller_id = :A1 from crm.leads where full_name = 'Untouched Sweep'), null);
+
+-- A2 returns to the floor.
+insert into crm.attendance_sessions (user_id, started_at) values (:A2, now());
+
+select crm_test.check(
+  'R8', 'an untouched lead is swept off the caller who ignored it',
+  (select crm.reassign_untouched_leads() >= 1), null);
+
+select crm_test.check(
+  'R8', 'the swept lead now belongs to a different caller on the same team',
+  (select caller_id <> :A1 and team_id = crm.team_of(:A1, current_date)
+     from crm.leads where full_name = 'Untouched Sweep'), null);
+
+select crm_test.check(
+  'R8', 'the automatic move records no human actor',
+  (select is_automatic and transferred_by is null
+     from crm.lead_transfers
+    where lead_id = (select id from crm.leads where full_name = 'Untouched Sweep')
+    order by created_at desc limit 1), null);
+
+-- A lead being worked must never be taken away: that would be the supervisory
+-- rule broken, and a caller mid-conversation losing the record of it.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                       next_action_at, assigned_at, first_touched_at, attempt_count)
+values (:SRC, 'Being Worked', '+919555000002', :A1, crm.team_of(:A1, current_date),
+        'working', now(), now() - interval '45 minutes', now(), 1);
+
+select crm_test.check(
+  'R8', 'a lead already being worked is never swept away',
+  (select caller_id = :A1 from crm.leads where full_name = 'Being Worked'), null);
+
+-- R9: the alert list is filtered by RLS, not by a WHERE clause in the API.
+select crm_test.check(
+  'R9', 'every alert raised belongs to a real lead and a real user',
+  (select count(*) = 0 from crm.v_my_alerts a
+     left join crm.leads l on l.id = a.lead_id
+     left join crm.users u on u.id = a.user_id
+    where l.id is null or u.id is null), null);
+
 -- =============================================================================
 -- REQUIREMENT 6: a 9-hour login is visible per person per day
 -- =============================================================================

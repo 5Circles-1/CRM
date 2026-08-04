@@ -1184,3 +1184,151 @@ describe('a tab name that only differs by invisible characters still resolves', 
     assert.equal(resolveWorksheet('Sheet 1', TABS), null);
   });
 });
+
+describe('an untouched lead moves to another caller', () => {
+  it('moves it after the deadline, and off the first caller entirely', async () => {
+    // Requirement 9 in practice: a lead sitting on someone who has not started
+    // it is a pipeline leak, and the counsellor is not watching a stopwatch.
+    const leadId = makeLeadFor(USERS.callerA1, 'Untouched');
+    fixtureSql(`update crm.leads set assigned_at = now() - interval '11 minutes',
+                       first_touched_at = null, attempt_count = 0, status = 'new'
+                 where id = '${leadId}';`);
+
+    const moved = fixtureSql(`select crm.reassign_untouched_leads();`).trim();
+    assert.equal(moved, '1');
+
+    const after = fixtureSql(`select caller_id from crm.leads where id = '${leadId}';`).trim();
+    assert.notEqual(after, USERS.callerA1, 'it must leave the caller who ignored it');
+
+    // "must not reflect in the lost caller's tab" - RLS is what delivers that,
+    // so check through the API as the original caller rather than trusting it.
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const gone = await h.app.inject({ method: 'GET', url: `/leads/${leadId}`, headers: auth(a1) });
+    assert.equal(gone.statusCode, 404, 'the lead a caller lost must read as not found');
+  });
+
+  it('leaves a lead alone once someone has actually called it', async () => {
+    const leadId = makeLeadFor(USERS.callerB1, 'Already Worked');
+    fixtureSql(`update crm.leads set assigned_at = now() - interval '30 minutes',
+                       first_touched_at = now(), attempt_count = 1
+                 where id = '${leadId}';`);
+    fixtureSql(`select crm.reassign_untouched_leads();`);
+    const after = fixtureSql(`select caller_id from crm.leads where id = '${leadId}';`).trim();
+    assert.equal(after, USERS.callerB1, 'a lead being worked must not be taken away');
+  });
+
+  it('stops moving a lead nobody wants, rather than circulating it forever', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Hot Potato');
+    for (let i = 0; i < 4; i += 1) {
+      fixtureSql(`update crm.leads set assigned_at = now() - interval '11 minutes',
+                         first_touched_at = null, attempt_count = 0, status = 'new'
+                   where id = '${leadId}';`);
+      fixtureSql(`select crm.reassign_untouched_leads();`);
+    }
+    const count = fixtureSql(`select transfer_count from crm.leads where id = '${leadId}';`).trim();
+    assert.equal(count, '2', 'the automatic cap must hold at sla.untouched_reassign_max');
+  });
+
+  it('records the move as automatic, with no human blamed for it', async () => {
+    const row = fixtureSql(
+      `select is_automatic || ' ' || coalesce(transferred_by::text, 'null')
+         from crm.lead_transfers where is_automatic order by created_at desc limit 1;`,
+    ).trim();
+    assert.equal(row, 'true null');
+  });
+
+  it('is disabled by setting the minutes to zero', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    await h.app.inject({
+      method: 'PUT', url: '/admin/settings/sla.untouched_reassign_minutes',
+      headers: auth(admin), payload: { value: 0 },
+    });
+    const leadId = makeLeadFor(USERS.callerA1, 'Sweeper Off');
+    fixtureSql(`update crm.leads set assigned_at = now() - interval '99 minutes',
+                       first_touched_at = null, attempt_count = 0, status = 'new'
+                 where id = '${leadId}';`);
+    const moved = fixtureSql(`select crm.reassign_untouched_leads();`).trim();
+    assert.equal(moved, '0');
+    await h.app.inject({
+      method: 'PUT', url: '/admin/settings/sla.untouched_reassign_minutes',
+      headers: auth(admin), payload: { value: 10 },
+    });
+  });
+});
+
+describe('alerts tell a caller what needs them', () => {
+  it('raises a breached SLA and a due callback, and hides other people\'s', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Alerting');
+    fixtureSql(`update crm.leads set first_touch_due_at = now() - interval '5 minutes',
+                       first_touched_at = null, status = 'new' where id = '${leadId}';`);
+
+    const otherLead = makeLeadFor(USERS.callerB1, 'Not Mine');
+    fixtureSql(`update crm.leads set first_touch_due_at = now() - interval '5 minutes',
+                       first_touched_at = null, status = 'new' where id = '${otherLead}';`);
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+
+    const ids = res.json().alerts.map((a: { lead_id: string }) => a.lead_id);
+    assert.ok(ids.includes(leadId), 'my own breached lead must raise an alert');
+    assert.ok(!ids.includes(otherLead), 'another caller\'s alert must not leak');
+    assert.ok(res.json().critical >= 1);
+  });
+
+  it('marks how late each one is, so the list can be ordered by urgency', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const breach = res.json().alerts.find((a: { kind: string }) => a.kind === 'sla_breach');
+    assert.ok(breach, 'expected a breach alert');
+    assert.ok(Number(breach.minutes_late) >= 4, `expected a positive lateness, got ${breach.minutes_late}`);
+  });
+});
+
+describe('re-tap filters', () => {
+  it('finds the leads whose last outcome was Not Answered', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Did Not Answer');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'not_answered', durationSeconds: 0, nextActionAt: new Date(Date.now() + 3.6e6).toISOString() },
+    });
+
+    const res = await h.app.inject({
+      method: 'GET', url: '/leads?lastDisposition=not_answered', headers: auth(a1),
+    });
+    assert.equal(res.statusCode, 200);
+    const ids = res.json().leads.map((l: { id: string }) => l.id);
+    assert.ok(ids.includes(leadId));
+  });
+
+  it('does not return a lead whose latest call was something else', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Then Answered');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const next = new Date(Date.now() + 3.6e6).toISOString();
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'not_answered', durationSeconds: 0, nextActionAt: next },
+    });
+    // The filter is on the LATEST outcome. A lead that did not answer once and
+    // then picked up is not on the "did not answer" list any more.
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'connected_interested', durationSeconds: 120, nextActionAt: next },
+    });
+
+    const res = await h.app.inject({
+      method: 'GET', url: '/leads?lastDisposition=not_answered', headers: auth(a1),
+    });
+    const ids = res.json().leads.map((l: { id: string }) => l.id);
+    assert.ok(!ids.includes(leadId), 'the latest outcome is what counts');
+  });
+
+  it('lists leads never contacted at all', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Fresh Never Called');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/leads?due=untouched', headers: auth(a1) });
+    const ids = res.json().leads.map((l: { id: string }) => l.id);
+    assert.ok(ids.includes(leadId));
+  });
+});

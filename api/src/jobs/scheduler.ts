@@ -27,6 +27,14 @@ export const JOBS: Job[] = [
     shiftHoursOnly: true,
   },
   {
+    name: 'reassign_untouched_leads',
+    // Every minute, because the whole point is a ten-minute promise. Checking
+    // every five would make the real deadline anywhere from 10 to 15 minutes.
+    everyMs: 60_000,
+    sql: 'select crm.reassign_untouched_leads(200)',
+    shiftHoursOnly: true,
+  },
+  {
     name: 'expire_missed_callbacks',
     everyMs: 5 * 60_000,
     sql: 'select crm.expire_missed_callbacks()',
