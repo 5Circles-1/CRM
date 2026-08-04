@@ -18,6 +18,7 @@ import {
   errorMessage,
   isRangeFailure,
   normaliseSpreadsheetId,
+  resolveWorksheet,
   sheetRange,
 } from '../src/ingest/source.ts';
 import { Database } from '../src/db/pool.ts';
@@ -913,8 +914,11 @@ describe('Google Sheets range quoting', () => {
     assert.equal(sheetRange("Ayesha's leads"), "'Ayesha''s leads'");
   });
 
-  it('trims stray whitespace that would otherwise break the range', () => {
-    assert.equal(sheetRange('  Sheet 1  '), "'Sheet 1'");
+  it('quotes the name verbatim, because a real tab may end in a space', () => {
+    // Google Forms creates tabs called "Form Responses 1 ". Trimming here would
+    // make the one spelling that is exactly right impossible to request;
+    // resolveWorksheet() handles sloppy input instead, with the titles in hand.
+    assert.equal(sheetRange('Form Responses 1 '), "'Form Responses 1 '");
   });
 
   it('still handles ids and URLs', () => {
@@ -945,7 +949,15 @@ describe('a missing worksheet tab says which tabs exist', () => {
       'Leads',
     ]);
     assert.match(message, /Unable to parse range: 'Sheet 1'/);
-    assert.match(message, /"Form Responses 1", "Leads"/);
+    assert.match(message, /"Form·Responses·1", "Leads"/);
+  });
+
+  it('makes spaces visible, since an invisible one is the whole problem', () => {
+    // "Form Responses 1" and "Form Responses 1 " render identically. Printing
+    // the list without marking spaces sends someone to copy a name that looks
+    // like the one they already typed.
+    const message = describeRangeFailure('nope', ['Form Responses 1 ']);
+    assert.match(message, /"Form·Responses·1·"/);
   });
 
   it('does not invent advice when the tab list came back empty', () => {
@@ -954,5 +966,41 @@ describe('a missing worksheet tab says which tabs exist', () => {
       describeRangeFailure("Unable to parse range: 'Sheet 1'", []),
       "Unable to parse range: 'Sheet 1'",
     );
+  });
+});
+
+describe('a tab name that only differs by invisible characters still resolves', () => {
+  const TABS = ['Form Responses 1 ', 'Leads', 'Archive'];
+
+  it('matches through a trailing space, which is how Forms names its tab', () => {
+    assert.equal(resolveWorksheet('Form Responses 1', TABS), 'Form Responses 1 ');
+  });
+
+  it('matches through a non-breaking space pasted from the browser', () => {
+    assert.equal(resolveWorksheet('Form Responses 1', TABS), 'Form Responses 1 ');
+  });
+
+  it('matches through a zero-width space, which \\s does not cover', () => {
+    // Written as an escape on purpose: a literal U+200B in this file would be
+    // invisible to the next person reading the test.
+    assert.equal(resolveWorksheet('Form\u200b Responses 1', TABS), 'Form Responses 1 ');
+  });
+
+  it('matches through case and doubled spaces', () => {
+    assert.equal(resolveWorksheet('form  responses  1', TABS), 'Form Responses 1 ');
+  });
+
+  it('prefers an exact hit over a loose one', () => {
+    assert.equal(resolveWorksheet('Leads', ['Leads', 'leads ']), 'Leads');
+  });
+
+  it('refuses to guess when two tabs match equally well', () => {
+    // Reading the wrong tab silently is worse than saying so: the leads would
+    // arrive from a feed nobody chose, and nothing would look broken.
+    assert.equal(resolveWorksheet('leads', ['Leads', 'LEADS']), null);
+  });
+
+  it('returns null when nothing resembles the configured name', () => {
+    assert.equal(resolveWorksheet('Sheet 1', TABS), null);
   });
 });

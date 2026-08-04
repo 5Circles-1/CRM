@@ -34,9 +34,14 @@ export interface SheetReader {
  *
  * Quoting is harmless for simple names, so quote unconditionally rather than
  * trying to guess which names need it.
+ *
+ * The name is quoted verbatim - deliberately not trimmed. Google allows a tab
+ * called "Form Responses 1 " and Forms creates them, so trimming here would
+ * make the one title that is exactly right impossible to ask for. Sloppy input
+ * is handled by resolveWorksheet() instead, which can see the real titles.
  */
 export function sheetRange(worksheetName: string): string {
-  return `'${worksheetName.trim().replace(/'/g, "''")}'`;
+  return `'${worksheetName.replace(/'/g, "''")}'`;
 }
 
 export function normaliseSpreadsheetId(input: string): string {
@@ -54,15 +59,44 @@ export const errorMessage = (err: unknown): string =>
   (err instanceof Error ? err.message : String(err));
 
 /**
+ * Compare tab names the way a person reads them, not the way bytes compare.
+ *
+ * A tab created by Google Forms often carries a trailing space, and a title
+ * pasted out of a browser can arrive with a non-breaking space in the middle of
+ * it. Both are invisible on screen, so "Form Responses 1" typed by hand and
+ * "Form Responses 1 " in the spreadsheet look identical and are not equal. That
+ * difference is not something anyone should be asked to spot.
+ */
+export const looseTitle = (title: string): string =>
+  title.replace(/[\s ​]+/g, ' ').trim().toLowerCase();
+
+/**
+ * Find the real tab title the configured name was meant to refer to.
+ *
+ * Only an unambiguous match counts. If two tabs both loosely match, picking one
+ * would be a guess about which feed the leads come from - and silently reading
+ * the wrong tab is far worse than an error that says so.
+ */
+export function resolveWorksheet(configured: string, titles: string[]): string | null {
+  const exact = titles.find((t) => t === configured);
+  if (exact) return exact;
+  const loose = titles.filter((t) => looseTitle(t) === looseTitle(configured));
+  return loose.length === 1 ? loose[0]! : null;
+}
+
+/**
  * "Unable to parse range: 'Sheet 1'" is a dead end: it does not say whether the
  * name is mis-escaped, mis-spelled, or simply not in this spreadsheet. Since we
  * are already authenticated and holding the spreadsheet id, we can answer that
  * question instead of leaving someone to guess - so name the tabs that do exist.
+ *
+ * Titles are quoted and their spaces made visible, because the whole reason a
+ * name can be wrong while looking right is whitespace nobody can see.
  */
 export function describeRangeFailure(raw: string, titles: string[]): string {
   if (titles.length === 0) return raw;
-  const list = titles.map((t) => `"${t}"`).join(', ');
-  return `${raw}. This spreadsheet's tabs are: ${list}. Set the source's worksheet name to one of these, spelled exactly.`;
+  const list = titles.map((t) => `"${t.replace(/[\s ]/g, '·')}"`).join(', ');
+  return `${raw}. This spreadsheet's tabs are: ${list} (· marks a space). Set the source's worksheet tab to one of these.`;
 }
 
 export const payloadHash = (values: Record<string, string>): string =>
@@ -80,6 +114,8 @@ export const payloadHash = (values: Record<string, string>): string =>
 export class GoogleSheetReader implements SheetReader {
   private readonly spreadsheetId: string;
   private readonly worksheetName: string;
+  /** Set when the configured name had to be matched loosely to a real tab. */
+  resolvedWorksheet: string | null = null;
 
   constructor(spreadsheetId: string, worksheetName: string) {
     this.spreadsheetId = spreadsheetId;
@@ -87,7 +123,7 @@ export class GoogleSheetReader implements SheetReader {
   }
 
   describe(): string {
-    return `google:${this.spreadsheetId}/${this.worksheetName}`;
+    return `google:${this.spreadsheetId}/${this.resolvedWorksheet ?? this.worksheetName}`;
   }
 
   async read(): Promise<RawRow[]> {
@@ -128,7 +164,21 @@ export class GoogleSheetReader implements SheetReader {
       } catch {
         throw err;
       }
-      throw new Error(describeRangeFailure(raw, titles));
+
+      // A Forms-created tab is routinely called "Form Responses 1 " with a
+      // trailing space. Reporting that as an error asks someone to spot a
+      // character that does not render. If exactly one tab is the obvious
+      // intended match, read it and carry on.
+      const resolved = resolveWorksheet(this.worksheetName, titles);
+      if (!resolved) throw new Error(describeRangeFailure(raw, titles));
+
+      this.resolvedWorksheet = resolved;
+      res = await sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: sheetRange(resolved),
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'FORMATTED_STRING',
+      });
     }
 
     const rows = res.data.values ?? [];

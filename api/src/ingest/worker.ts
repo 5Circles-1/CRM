@@ -178,6 +178,19 @@ export class IngestWorker {
 
     summary.seen = rows.length;
 
+    // If the configured tab name only matched loosely, write the real title
+    // back. Otherwise every future sync pays for the same two extra API calls
+    // to rediscover it, and the source keeps displaying a name that is not the
+    // one being read - which is exactly the confusion this set out to end.
+    if (reader instanceof GoogleSheetReader && reader.resolvedWorksheet) {
+      const real = reader.resolvedWorksheet;
+      if (real !== source.worksheet_name) {
+        await this.db.withUser(this.opsUserId, (q) =>
+          q.query('update crm.lead_sources set worksheet_name = $2 where id = $1', [sourceId, real]),
+        );
+      }
+    }
+
     for (const row of rows) {
       try {
         // One transaction per row: a single bad record cannot take the run down.
