@@ -19,6 +19,20 @@
 -- Users, teams, memberships, products, settings, attendance and the audit log
 -- are untouched. Only leads and everything downstream of a lead go.
 --
+-- RUN IT ONLY AFTER EVERY SOURCE HAS SYNCED AT LEAST ONCE
+--
+-- The memory this relies on is built by syncing. A source that has never been
+-- read has no remembered rows, so its whole history still counts as new and
+-- arrives the moment it first syncs - minutes after a reset that looked like
+-- it had worked. Check every source shows a Last synced time before running:
+--
+--   select name, last_synced_at from crm.lead_sources where is_active;
+--
+-- Switching the sources off for the duration removes the race entirely:
+--
+--   update crm.lead_sources set is_active = false;   -- before
+--   update crm.lead_sources set is_active = true;    -- after
+--
 -- THIS IS NOT REVERSIBLE. Take a backup first:
 --   sudo /opt/crm/deploy/backup.sh
 --
