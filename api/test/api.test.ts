@@ -13,7 +13,13 @@ import {
   USERS,
   type TestHarness,
 } from './helpers.ts';
-import { normaliseSpreadsheetId, sheetRange } from '../src/ingest/source.ts';
+import {
+  describeRangeFailure,
+  errorMessage,
+  isRangeFailure,
+  normaliseSpreadsheetId,
+  sheetRange,
+} from '../src/ingest/source.ts';
 import { Database } from '../src/db/pool.ts';
 import { buildServer } from '../src/server.ts';
 import { hashPassword } from '../src/auth/credentials.ts';
@@ -850,6 +856,38 @@ describe('Google Sheets range quoting', () => {
     assert.equal(
       normaliseSpreadsheetId('https://docs.google.com/spreadsheets/d/1PSbr3U-vXD2/edit#gid=0'),
       '1PSbr3U-vXD2',
+    );
+  });
+});
+
+describe('a missing worksheet tab says which tabs exist', () => {
+  it('recognises the range failure Google reports for a missing tab', () => {
+    assert.equal(isRangeFailure("Unable to parse range: 'Sheet 1'"), true);
+    assert.equal(isRangeFailure('The caller does not have permission'), false);
+  });
+
+  it('reads the message out of a Google API error shape', () => {
+    assert.equal(
+      errorMessage({ errors: [{ message: "Unable to parse range: 'Sheet 1'" }] }),
+      "Unable to parse range: 'Sheet 1'",
+    );
+    assert.equal(errorMessage(new Error('boom')), 'boom');
+  });
+
+  it('names the real tabs, which turns a dead end into the answer', () => {
+    const message = describeRangeFailure("Unable to parse range: 'Sheet 1'", [
+      'Form Responses 1',
+      'Leads',
+    ]);
+    assert.match(message, /Unable to parse range: 'Sheet 1'/);
+    assert.match(message, /"Form Responses 1", "Leads"/);
+  });
+
+  it('does not invent advice when the tab list came back empty', () => {
+    // Better the original error than a sentence that lists nothing.
+    assert.equal(
+      describeRangeFailure("Unable to parse range: 'Sheet 1'", []),
+      "Unable to parse range: 'Sheet 1'",
     );
   });
 });

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { IngestWorker } from '../ingest/worker.ts';
-import { rowsFromCsv, StaticSheetReader } from '../ingest/source.ts';
+import { rowsFromCsv, StaticSheetReader, errorMessage } from '../ingest/source.ts';
 import { badRequest, conflict, forbidden, notFound, HttpError } from '../http/errors.ts';
 
 const uuid = z.string().uuid();
@@ -14,11 +14,13 @@ const uuid = z.string().uuid();
  * renders as "something went wrong".
  */
 function ingestFailure(err: unknown): HttpError {
-  const raw =
-    (err as { errors?: Array<{ message?: string }> })?.errors?.[0]?.message ??
-    (err instanceof Error ? err.message : String(err));
+  const raw = errorMessage(err);
 
   if (/parse range/i.test(raw)) {
+    // The reader already appends the spreadsheet's real tab titles when it can
+    // read them. Adding "check the tab name" on top of a message that names the
+    // tabs is noise, so only fall back to the generic advice.
+    if (/tabs are:/.test(raw)) return conflict(raw);
     return conflict(
       `${raw}. Check the worksheet tab name on the source matches the tab in the sheet exactly.`,
     );

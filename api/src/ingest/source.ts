@@ -45,6 +45,26 @@ export function normaliseSpreadsheetId(input: string): string {
   return fromUrl ? fromUrl[1]! : trimmed;
 }
 
+/** Google reports a tab that does not exist as a *parse* failure of the range. */
+export const isRangeFailure = (message: string): boolean =>
+  /parse range|unable to parse|not found.*range/i.test(message);
+
+export const errorMessage = (err: unknown): string =>
+  (err as { errors?: Array<{ message?: string }> })?.errors?.[0]?.message ??
+  (err instanceof Error ? err.message : String(err));
+
+/**
+ * "Unable to parse range: 'Sheet 1'" is a dead end: it does not say whether the
+ * name is mis-escaped, mis-spelled, or simply not in this spreadsheet. Since we
+ * are already authenticated and holding the spreadsheet id, we can answer that
+ * question instead of leaving someone to guess - so name the tabs that do exist.
+ */
+export function describeRangeFailure(raw: string, titles: string[]): string {
+  if (titles.length === 0) return raw;
+  const list = titles.map((t) => `"${t}"`).join(', ');
+  return `${raw}. This spreadsheet's tabs are: ${list}. Set the source's worksheet name to one of these, spelled exactly.`;
+}
+
 export const payloadHash = (values: Record<string, string>): string =>
   createHash('sha256')
     .update(JSON.stringify(Object.entries(values).sort(([a], [b]) => a.localeCompare(b))))
@@ -80,12 +100,36 @@ export class GoogleSheetReader implements SheetReader {
     });
 
     const sheets = google.sheets({ version: 'v4', auth });
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: this.spreadsheetId,
-      range: sheetRange(this.worksheetName),
-      valueRenderOption: 'UNFORMATTED_VALUE',
-      dateTimeRenderOption: 'FORMATTED_STRING',
-    });
+
+    let res;
+    try {
+      res = await sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: sheetRange(this.worksheetName),
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'FORMATTED_STRING',
+      });
+    } catch (err) {
+      const raw = errorMessage(err);
+      if (!isRangeFailure(raw)) throw err;
+
+      // Only reachable when we are authenticated and the spreadsheet is
+      // readable - so listing its tabs will succeed. If it somehow does not,
+      // the original error is the more useful one to surface.
+      let titles: string[] = [];
+      try {
+        const meta = await sheets.spreadsheets.get({
+          spreadsheetId: this.spreadsheetId,
+          fields: 'sheets.properties.title',
+        });
+        titles = (meta.data.sheets ?? [])
+          .map((s) => s.properties?.title)
+          .filter((t): t is string => Boolean(t));
+      } catch {
+        throw err;
+      }
+      throw new Error(describeRangeFailure(raw, titles));
+    }
 
     const rows = res.data.values ?? [];
     if (rows.length === 0) return [];
