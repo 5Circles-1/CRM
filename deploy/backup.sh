@@ -14,6 +14,23 @@
 # backup - sync the directory to object storage or another box.
 set -euo pipefail
 
+# Re-run as postgres if invoked as anyone else.
+#
+# Local connections authenticate by peer, so `sudo /opt/crm/deploy/backup.sh`
+# reaches pg_dump as role "root" and dies with `role "root" does not exist`.
+# That is the obvious thing to type, and being told the account is missing
+# gives no hint that the fix is to run it as a different user. Cron already
+# invokes this as postgres, so this only affects the by-hand case.
+if [ "$(id -un)" != 'postgres' ]; then
+  if [ -n "${CRM_BACKUP_REEXEC:-}" ]; then
+    echo "crm backup FAILED: could not switch to the postgres user" >&2
+    exit 1
+  fi
+  export CRM_BACKUP_REEXEC=1
+  exec sudo -u postgres \
+    --preserve-env=CRM_BACKUP_DIR,CRM_DB,CRM_BACKUP_REEXEC,PGHOST,PGPORT -- "$0" "$@"
+fi
+
 DIR=${CRM_BACKUP_DIR:-/var/backups/crm}
 DB=${CRM_DB:-crm}
 STAMP=$(date +%Y-%m-%d)
