@@ -104,40 +104,55 @@ sudo chmod 600 /root/crm-db-password.txt
 ```bash
 cd /opt/crm/api
 sudo -u crm npm ci --omit=dev
-
-# Environment file - copy the template, then lock it down: it holds the
-# database password, so nothing but the crm user should be able to read it.
-sudo -u crm cp .env.example .env
-sudo chmod 600 /opt/crm/api/.env
-sudo chown crm:crm /opt/crm/api/.env
-sudo -u crm nano .env
 ```
 
-Set in `.env`:
+If this fails mentioning `argon2` or `node-gyp`, that native module had no
+prebuilt binary for this platform and needs to compile:
+`sudo apt -y install build-essential python3`, then retry.
 
-```
-DATABASE_URL=postgresql://crm_api:PASTE-A-GENERATED-PASSWORD@localhost:5432/crm
+Fill `.env` in without an editor, reading the password back from the file
+Phase 2 wrote:
+
+```bash
+DB_PASS=$(sudo cat /root/crm-db-password.txt)
+sudo tee /opt/crm/api/.env > /dev/null <<EOF
+DATABASE_URL=postgresql://crm_api:${DB_PASS}@localhost:5432/crm
 PORT=8080
-HOST=127.0.0.1        # only Caddy talks to it; not exposed directly
+HOST=127.0.0.1
 LOG_LEVEL=info
-# SERVICE_USER_ID=    <- comes from the next step
+EOF
+sudo chown crm:crm /opt/crm/api/.env
+sudo chmod 600 /opt/crm/api/.env
 ```
 
 **Bootstrap** — creates your teams, your admin login, and the service account.
-This is the one command that runs as the database owner, once:
+Runs once, and must run **as the `postgres` OS user**: Ubuntu's default
+pg_hba.conf uses peer authentication for local connections, so only that OS
+user may connect as the `postgres` database user. Running it as `crm` fails
+with "Peer authentication failed".
 
 ```bash
-sudo -u crm DATABASE_URL="postgresql://postgres@/crm?host=/var/run/postgresql" \
-  npm run bootstrap -- \
+sudo -u postgres DATABASE_URL="postgresql://postgres@/crm?host=/var/run/postgresql" \
+  node --experimental-strip-types /opt/crm/api/src/tools/bootstrap.ts \
   --admin-email you@yourcompany.in \
   --admin-name "Your Name" \
   --admin-password 'a-long-temporary-password' \
   --teams "Team A,Team B"
 ```
 
-It prints `SERVICE_USER_ID=<uuid>` — paste that line into `.env`. The admin
-password you just typed is temporary; the UI forces you to change it at first
-login.
+(Invoking node directly rather than `npm run bootstrap` avoids depending on
+the working directory and on npm's cache being writable by `postgres`.)
+
+The admin password above is temporary; the UI forces a change at first login.
+
+Link the service account that background jobs run as - read straight from the
+database so there is nothing to copy by hand:
+
+```bash
+SVC=$(sudo -u postgres psql -d crm -tAc \
+  "select id from crm.users where email='service-ops@crm.internal';")
+echo "SERVICE_USER_ID=$SVC" | sudo tee -a /opt/crm/api/.env
+```
 
 ```bash
 # Install as a service so it survives reboots
