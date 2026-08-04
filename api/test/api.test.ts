@@ -833,6 +833,63 @@ describe('lead source accepts a pasted sheet URL', () => {
   });
 });
 
+describe('clearing the lead book does not make the sheet re-import itself', () => {
+  const CSV = [
+    'Full Name,Phone Number',
+    'Reset One,+919888800001',
+    'Reset Two,+919888800002',
+  ].join('\n');
+
+  it('remembers which sheet rows were seen even after their leads are gone', async () => {
+    // This is what makes db/ops/reset-leads.sql safe to run. The reset deletes
+    // leads and keeps crm.ingested_rows, so history in the sheet stays known
+    // and skipped while rows appended afterwards still come through. Delete
+    // both and the next sync would put every old lead straight back.
+    const ops = await login(h.app, EMAILS.ops);
+    const first = await h.app.inject({
+      method: 'POST',
+      url: '/ingest/sources/33333333-0000-0000-0000-000000000002/csv',
+      headers: auth(ops),
+      payload: { csv: CSV },
+    });
+    assert.equal(first.json().created, 2);
+
+    // Exactly what the reset script does to these two rows.
+    fixtureSql(`
+      alter table crm.lead_events disable trigger lead_events_append_only;
+      delete from crm.leads where phone_e164 in ('+919888800001','+919888800002');
+      alter table crm.lead_events enable trigger lead_events_append_only;
+      update crm.ingested_rows set lead_id = null where lead_id is not null;
+    `);
+
+    const again = await h.app.inject({
+      method: 'POST',
+      url: '/ingest/sources/33333333-0000-0000-0000-000000000002/csv',
+      headers: auth(ops),
+      payload: { csv: CSV },
+    });
+    assert.equal(again.json().created, 0, 'old sheet rows must not come back');
+    assert.equal(again.json().duplicate, 2);
+
+    const count = fixtureSql(
+      `select count(*) from crm.leads where phone_e164 in ('+919888800001','+919888800002');`,
+    ).trim();
+    assert.equal(count, '0', 'the lead book stays clear');
+  });
+
+  it('still takes rows appended to the sheet after the reset', async () => {
+    const ops = await login(h.app, EMAILS.ops);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/ingest/sources/33333333-0000-0000-0000-000000000002/csv',
+      headers: auth(ops),
+      payload: { csv: `${CSV}\nReset Three,+919888800003` },
+    });
+    assert.equal(res.json().created, 1, 'a newly appended row is a new lead');
+    assert.equal(res.json().duplicate, 2, 'the rows from before the reset stay skipped');
+  });
+});
+
 describe('a deactivated account is reactivated, not recreated', () => {
   const EMAIL = 'returner@5circles.test';
 
@@ -946,6 +1003,51 @@ describe('a lead source can be corrected after it is created', () => {
     assert.equal(off.json().spreadsheet_id, '1DupeSheetId');
     assert.equal(off.json().worksheet_name, 'Form Responses 1');
     assert.equal(off.json().default_priority, 'immediate', 'priority must not reset to normal');
+  });
+
+  it('pins a sheet to one team, and can hand it back to the rotation', async () => {
+    // "Simon's sheets go to Simon's team" is a pin. Without one, every source
+    // alternates across both teams, which is right for a shared Meta feed and
+    // wrong for a sheet that belongs to one desk.
+    const ops = await login(h.app, EMAILS.ops);
+    const teams = await h.app.inject({ method: 'GET', url: '/admin/teams', headers: auth(ops) });
+    const teamId = teams.json()[0].id;
+
+    const created = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(ops),
+      payload: { name: 'Pinned Feed', spreadsheetId: '1PinnedSheet', worksheetName: 'Sheet1' },
+    });
+    const pinned = await h.app.inject({
+      method: 'PUT', url: `/admin/sources/${created.json().id}`, headers: auth(ops),
+      payload: { pinnedTeamId: teamId },
+    });
+    assert.equal(pinned.json().pinned_team_id, teamId);
+
+    // An explicit null must unpin. coalesce() cannot tell that apart from a
+    // field nobody sent, so this is the case that silently did nothing.
+    const unpinned = await h.app.inject({
+      method: 'PUT', url: `/admin/sources/${created.json().id}`, headers: auth(ops),
+      payload: { pinnedTeamId: null },
+    });
+    assert.equal(unpinned.json().pinned_team_id, null);
+  });
+
+  it('leaves the pin alone when the field is not sent at all', async () => {
+    const ops = await login(h.app, EMAILS.ops);
+    const teams = await h.app.inject({ method: 'GET', url: '/admin/teams', headers: auth(ops) });
+    const teamId = teams.json()[0].id;
+    const created = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(ops),
+      payload: {
+        name: 'Keeps Its Pin', spreadsheetId: '1KeepsPin',
+        worksheetName: 'Sheet1', pinnedTeamId: teamId,
+      },
+    });
+    const renamed = await h.app.inject({
+      method: 'PUT', url: `/admin/sources/${created.json().id}`, headers: auth(ops),
+      payload: { name: 'Renamed Only' },
+    });
+    assert.equal(renamed.json().pinned_team_id, teamId, 'a rename must not unpin the source');
   });
 
   it('a deactivated source is skipped by the scheduled run, not deleted', async () => {

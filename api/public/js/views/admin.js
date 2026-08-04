@@ -223,8 +223,13 @@ function newUserModal(teams, onDone) {
 /* ---------------- ingestion ---------------- */
 
 async function ingest(body, me) {
-  const [sources, runs] = await Promise.all([get('/admin/sources'), get('/ingest/runs')]);
+  const [sources, runs, teams] = await Promise.all([
+    get('/admin/sources'),
+    get('/ingest/runs'),
+    get('/admin/teams'),
+  ]);
   body.innerHTML = '';
+  const teamName = (id) => teams.find((t) => t.id === id)?.name ?? null;
 
   if (sources.length === 0) {
     body.appendChild(h(`
@@ -264,12 +269,15 @@ async function ingest(body, me) {
       </div>`}
       ${sources.length === 0 ? '' : `
       <table class="table"><thead><tr>
-        <th>Name</th><th>Sheet</th><th>Priority</th><th>Last synced</th><th>Active</th><th></th>
+        <th>Name</th><th>Sheet</th><th>Goes to</th><th>Priority</th><th>Last synced</th><th>Active</th><th></th>
       </tr></thead><tbody>
       ${sources.map((s) => `
         <tr${isDoubleRead(s) ? ' style="background:var(--warn-bg)"' : ''}>
           <td><b>${esc(s.name)}</b></td>
           <td>${s.spreadsheet_id ? `${esc(s.spreadsheet_id.slice(0, 18))}… / ${esc(s.worksheet_name ?? '')}` : '<span class="hint">manual CSV only</span>'}</td>
+          <td>${s.pinned_team_id
+            ? esc(teamName(s.pinned_team_id) ?? 'unknown team')
+            : '<span class="hint">both teams, alternating</span>'}</td>
           <td>${esc(s.default_priority)}</td>
           <td>${esc(fmtDT(s.last_synced_at))}</td>
           <td>${s.is_active ? '<span class="badge b-ok">yes</span>' : '<span class="badge b-mute">no</span>'}</td>
@@ -282,11 +290,11 @@ async function ingest(body, me) {
     </div>`);
   body.appendChild(srcPanel);
   const redraw = () => ingest(body, me);
-  srcPanel.querySelector('#new-source').addEventListener('click', () => sourceModal(null, redraw));
+  srcPanel.querySelector('#new-source').addEventListener('click', () => sourceModal(null, teams, redraw));
 
   srcPanel.querySelectorAll('[data-edit]').forEach((btn) => {
     btn.addEventListener('click', () =>
-      sourceModal(sources.find((s) => s.id === btn.dataset.edit), redraw));
+      sourceModal(sources.find((s) => s.id === btn.dataset.edit), teams, redraw));
   });
 
   srcPanel.querySelectorAll('[data-toggle]').forEach((btn) => {
@@ -400,7 +408,7 @@ async function ingest(body, me) {
  * corrected, so the only way forward was to make another source. That is how a
  * single Meta sheet ends up wired in five times.
  */
-function sourceModal(source, onDone) {
+function sourceModal(source, teams, onDone) {
   const editing = Boolean(source);
   const mapText = source?.column_map && Object.keys(source.column_map).length
     ? JSON.stringify(source.column_map, null, 2)
@@ -417,17 +425,27 @@ function sourceModal(source, onDone) {
           <span class="hint">the tab name exactly as it appears at the bottom of the sheet</span>
           <input name="tab" placeholder="Form Responses 1" value="${esc(source?.worksheet_name ?? '')}"></label>
       </div>
-      <label class="f">Default priority
-        <select name="priority">
-          <option value="normal">normal</option>
-          <option value="immediate">immediate (5-minute first-touch SLA)</option>
-        </select>
-      </label>
+      <div class="frow">
+        <label class="f">Send these leads to
+          <span class="hint">pin this sheet to one team, or let it alternate between both</span>
+          <select name="team">
+            <option value="">— both teams, alternating —</option>
+            ${teams.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}
+          </select>
+        </label>
+        <label class="f">Default priority
+          <select name="priority">
+            <option value="normal">normal</option>
+            <option value="immediate">immediate (5-minute first-touch SLA)</option>
+          </select>
+        </label>
+      </div>
       <label class="f">Column map <span class="hint">(optional JSON: field → sheet header; common headers are auto-detected)</span>
         <textarea name="map" rows="3" placeholder='{"full_name":"Full Name","phone":"Phone Number"}'>${esc(mapText)}</textarea>
       </label>
     </div>`);
   bodyEl.querySelector('[name=priority]').value = source?.default_priority ?? 'normal';
+  bodyEl.querySelector('[name=team]').value = source?.pinned_team_id ?? '';
 
   const footer = h(`<div><button class="btn primary">${editing ? 'Save changes' : 'Create source'}</button></div>`);
   const { close } = openModal(editing ? `Edit ${source.name}` : 'New lead source', bodyEl, footer);
@@ -446,6 +464,9 @@ function sourceModal(source, onDone) {
       spreadsheetId: sheet || undefined,
       worksheetName: tab || undefined,
       defaultPriority: bodyEl.querySelector('[name=priority]').value,
+      // null, not undefined: the update coalesces undefined to "leave alone",
+      // so unpinning a source has to be said explicitly.
+      pinnedTeamId: bodyEl.querySelector('[name=team]').value || null,
       columnMap,
     };
     try {

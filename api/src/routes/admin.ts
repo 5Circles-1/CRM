@@ -222,6 +222,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     req.requireRole('admin', 'ops');
     const { id } = z.object({ id: uuid }).parse(req.params);
     const body = sourceBody.partial().parse(req.body);
+
+    // Unpinning a source is `pinnedTeamId: null`, which coalesce() cannot tell
+    // apart from "field not supplied". Send the intent separately so a sheet
+    // pinned to one team can be handed back to the alternating rotation.
+    const unpin = 'pinnedTeamId' in (req.body as object) && body.pinnedTeamId == null;
+
     const row = await req.tx((q) =>
       q.one(
         `update crm.lead_sources set
@@ -229,12 +235,13 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
            spreadsheet_id   = coalesce($3, spreadsheet_id),
            worksheet_name   = coalesce($4, worksheet_name),
            column_map       = coalesce($5::jsonb, column_map),
-           pinned_team_id   = coalesce($6, pinned_team_id),
+           pinned_team_id   = case when $9 then null else coalesce($6, pinned_team_id) end,
            default_priority = coalesce($7::crm.lead_priority, default_priority),
            is_active        = coalesce($8, is_active),
            updated_at       = now()
          where id = $1
-         returning id, name, spreadsheet_id, worksheet_name, column_map, default_priority, is_active`,
+         returning id, name, spreadsheet_id, worksheet_name, column_map,
+                   pinned_team_id, default_priority, is_active`,
         [
           id,
           body.name ?? null,
@@ -244,6 +251,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           body.pinnedTeamId ?? null,
           body.defaultPriority ?? null,
           body.isActive ?? null,
+          unpin,
         ],
       ),
     );
