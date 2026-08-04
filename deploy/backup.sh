@@ -26,6 +26,16 @@ if [ "$(id -un)" != 'postgres' ]; then
     echo "crm backup FAILED: could not switch to the postgres user" >&2
     exit 1
   fi
+
+  # Make the directory writable before dropping privileges, because after the
+  # switch it is too late: only root can chown, and a root-owned backup
+  # directory fails as `could not open output file ... Permission denied`,
+  # which reads like a broken script rather than one line of ownership.
+  if [ "$(id -u)" = '0' ]; then
+    mkdir -p "${CRM_BACKUP_DIR:-/var/backups/crm}"
+    chown -R postgres: "${CRM_BACKUP_DIR:-/var/backups/crm}"
+  fi
+
   export CRM_BACKUP_REEXEC=1
   exec sudo -u postgres \
     --preserve-env=CRM_BACKUP_DIR,CRM_DB,CRM_BACKUP_REEXEC,PGHOST,PGPORT -- "$0" "$@"
