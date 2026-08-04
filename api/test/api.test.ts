@@ -832,6 +832,71 @@ describe('lead source accepts a pasted sheet URL', () => {
   });
 });
 
+describe('a lead source can be corrected after it is created', () => {
+  it('fixes a mistyped worksheet tab without creating a second source', async () => {
+    // Create-only was the whole reason one sheet got wired in five times: a
+    // wrong tab name could not be corrected, only worked around.
+    const ops = await login(h.app, EMAILS.ops);
+    const created = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(ops),
+      payload: { name: 'Typo Source', spreadsheetId: '1TypoSheetId', worksheetName: 'Sheet 1' },
+    });
+    assert.equal(created.statusCode, 201);
+
+    const fixed = await h.app.inject({
+      method: 'PUT', url: `/admin/sources/${created.json().id}`, headers: auth(ops),
+      payload: { worksheetName: 'Form Responses 1' },
+    });
+    assert.equal(fixed.statusCode, 200);
+    assert.equal(fixed.json().worksheet_name, 'Form Responses 1');
+    assert.equal(fixed.json().spreadsheet_id, '1TypoSheetId', 'the sheet id must survive the edit');
+    assert.equal(fixed.json().name, 'Typo Source', 'the name must survive the edit');
+  });
+
+  it('deactivating a duplicate does not blank out the rest of the row', async () => {
+    // The deactivate button sends only { isActive: false }. If the partial
+    // update let the schema defaults through, every other column would be
+    // overwritten - silently, and only visible later as a broken source.
+    const ops = await login(h.app, EMAILS.ops);
+    const created = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(ops),
+      payload: {
+        name: 'Duplicate Feed', spreadsheetId: '1DupeSheetId',
+        worksheetName: 'Form Responses 1', defaultPriority: 'immediate',
+      },
+    });
+    assert.equal(created.statusCode, 201);
+
+    const off = await h.app.inject({
+      method: 'PUT', url: `/admin/sources/${created.json().id}`, headers: auth(ops),
+      payload: { isActive: false },
+    });
+    assert.equal(off.statusCode, 200);
+    assert.equal(off.json().is_active, false);
+    assert.equal(off.json().name, 'Duplicate Feed');
+    assert.equal(off.json().spreadsheet_id, '1DupeSheetId');
+    assert.equal(off.json().worksheet_name, 'Form Responses 1');
+    assert.equal(off.json().default_priority, 'immediate', 'priority must not reset to normal');
+  });
+
+  it('a deactivated source is skipped by the scheduled run, not deleted', async () => {
+    const ops = await login(h.app, EMAILS.ops);
+    const created = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(ops),
+      payload: { name: 'Paused Feed', spreadsheetId: '1PausedSheet', worksheetName: 'Leads' },
+    });
+    await h.app.inject({
+      method: 'PUT', url: `/admin/sources/${created.json().id}`, headers: auth(ops),
+      payload: { isActive: false },
+    });
+
+    const listed = await h.app.inject({ method: 'GET', url: '/admin/sources', headers: auth(ops) });
+    const row = listed.json().find((s: { id: string }) => s.id === created.json().id);
+    assert.ok(row, 'the source is still listed - deactivation is not deletion');
+    assert.equal(row.is_active, false);
+  });
+});
+
 describe('Google Sheets range quoting', () => {
   it('quotes a tab name containing a space', () => {
     // Unquoted, Google answers "Unable to parse range: Sheet 1" - which reads
