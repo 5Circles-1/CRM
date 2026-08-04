@@ -209,18 +209,37 @@ device management already exists in your company.
 
 ## Phase 5 — Backups (~10 minutes; do NOT postpone this)
 
+The backup runs as the **postgres** OS user - Ubuntu authenticates local
+connections by peer, so no other account can `pg_dump` without a password.
+Installing it under `crm` produces no backups at all, silently.
+
 ```bash
-sudo mkdir -p /var/backups/crm && sudo chown crm:crm /var/backups/crm
-sudo -u crm crontab -e
-# add:  30 21 * * * /opt/crm/deploy/backup.sh
+sudo mkdir -p /var/backups/crm
+sudo chown postgres:postgres /var/backups/crm
+echo "30 21 * * * /opt/crm/deploy/backup.sh" | sudo -u postgres crontab -
 ```
 
 Then arrange the **off-machine copy** — sync `/var/backups/crm` nightly to
 object storage or any other machine. A backup on the server it protects is not
 a backup.
 
-**✓ check:** run `/opt/crm/deploy/backup.sh` by hand once; a `crm-<date>.dump`
-file appears. Diary a quarterly restore drill (commands are in the script).
+**✓ check:** run it by hand once and confirm it reports a size:
+
+```bash
+sudo -u postgres /opt/crm/deploy/backup.sh
+```
+
+Expect `crm backup ok: /var/backups/crm/crm-<date>.dump (…)`.
+
+**Then prove it restores** — an untested backup is a guess. Quarterly, and
+once now:
+
+```bash
+sudo -u postgres createdb crm_restore_test
+sudo -u postgres pg_restore -d crm_restore_test /var/backups/crm/crm-<date>.dump
+sudo -u postgres psql -d crm_restore_test -c "select count(*) from crm.leads;"
+sudo -u postgres dropdb crm_restore_test
+```
 
 ---
 
