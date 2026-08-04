@@ -24,6 +24,21 @@ export interface SheetReader {
  * hours later with a 404 from Google when they get it wrong, is a bad trade
  * for one regex.
  */
+/**
+ * Turn a worksheet tab name into an A1 range Google will accept.
+ *
+ * In A1 notation a sheet name containing a space - or a dash, or starting
+ * with a digit - must be single-quoted, and literal quotes inside it are
+ * doubled. Unquoted, "Sheet 1" comes back as "Unable to parse range: Sheet 1",
+ * which reads like the tab is missing rather than mis-escaped.
+ *
+ * Quoting is harmless for simple names, so quote unconditionally rather than
+ * trying to guess which names need it.
+ */
+export function sheetRange(worksheetName: string): string {
+  return `'${worksheetName.trim().replace(/'/g, "''")}'`;
+}
+
 export function normaliseSpreadsheetId(input: string): string {
   const trimmed = input.trim();
   const fromUrl = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
@@ -67,7 +82,7 @@ export class GoogleSheetReader implements SheetReader {
     const sheets = google.sheets({ version: 'v4', auth });
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: this.worksheetName,
+      range: sheetRange(this.worksheetName),
       valueRenderOption: 'UNFORMATTED_VALUE',
       dateTimeRenderOption: 'FORMATTED_STRING',
     });

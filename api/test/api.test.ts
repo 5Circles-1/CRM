@@ -13,6 +13,7 @@ import {
   USERS,
   type TestHarness,
 } from './helpers.ts';
+import { normaliseSpreadsheetId, sheetRange } from '../src/ingest/source.ts';
 import { Database } from '../src/db/pool.ts';
 import { buildServer } from '../src/server.ts';
 import { hashPassword } from '../src/auth/credentials.ts';
@@ -822,5 +823,33 @@ describe('lead source accepts a pasted sheet URL', () => {
     });
     assert.equal(res.statusCode, 201);
     assert.equal(res.json().spreadsheet_id, '1AbCdEf-GhIjK_lmNoP67890');
+  });
+});
+
+describe('Google Sheets range quoting', () => {
+  it('quotes a tab name containing a space', () => {
+    // Unquoted, Google answers "Unable to parse range: Sheet 1" - which reads
+    // like a missing tab and sends you looking in the wrong place.
+    assert.equal(sheetRange('Sheet 1'), "'Sheet 1'");
+    assert.equal(sheetRange('Meta Lead Ads'), "'Meta Lead Ads'");
+  });
+
+  it('quotes simple names too, since quoting is always valid', () => {
+    assert.equal(sheetRange('Sheet1'), "'Sheet1'");
+  });
+
+  it('escapes a literal quote by doubling it', () => {
+    assert.equal(sheetRange("Ayesha's leads"), "'Ayesha''s leads'");
+  });
+
+  it('trims stray whitespace that would otherwise break the range', () => {
+    assert.equal(sheetRange('  Sheet 1  '), "'Sheet 1'");
+  });
+
+  it('still handles ids and URLs', () => {
+    assert.equal(
+      normaliseSpreadsheetId('https://docs.google.com/spreadsheets/d/1PSbr3U-vXD2/edit#gid=0'),
+      '1PSbr3U-vXD2',
+    );
   });
 });
