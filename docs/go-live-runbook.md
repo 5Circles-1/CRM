@@ -64,29 +64,37 @@ sudo adduser --system --group --home /opt/crm crm
 ## Phase 2 — Database (~15 minutes)
 
 ```bash
-# Get the code
-sudo -u crm git clone https://github.com/5Circles-1/CRM.git /opt/crm
-cd /opt/crm
+# Get the code. NOTE the branch - the build lives on it, not on main.
+sudo -u crm git clone -b claude/quirky-tesla-ijsvkz \
+  https://github.com/5Circles-1/CRM.git /opt/crm
 
-# Create the database and the two roles
-sudo -u postgres psql <<'SQL'
-create database crm;
-SQL
+# `adduser --system` creates the home directory as drwxr-x---, which the
+# postgres user cannot traverse - the migration would fail with
+# "unable to execute ./db/migrate.sh: Permission denied". This is public
+# source code; the secret is api/.env, which Phase 3 locks to 0600.
+sudo chmod 755 /opt/crm
+sudo chmod +x /opt/crm/db/migrate.sh /opt/crm/deploy/backup.sh
+
+# Create the database
+sudo -u postgres psql -c "create database crm;"
 
 # Apply all migrations (creates schema, engines, RLS, and the crm_app group).
 # This runner records what it applied - rerunning it later is always safe.
 # NEVER run db/rebuild.sh on this machine: it DROPS the database.
-sudo -u postgres CRM_DB=crm ./db/migrate.sh
+sudo -u postgres CRM_DB=crm /opt/crm/db/migrate.sh
 
 # The application's login role. It inherits crm_app: cannot bypass RLS,
-# cannot delete, owns nothing. Generate the password with: openssl rand -base64 24
-sudo -u postgres psql -d crm <<'SQL'
-create role crm_api login password 'PASTE-A-GENERATED-PASSWORD' in role crm_app;
-grant usage on schema crm to crm_api;
-SQL
+# cannot delete, owns nothing. The password is generated and saved to a file
+# so Phase 3 can use it without any retyping.
+DB_PASS=$(openssl rand -hex 24)
+sudo -u postgres psql -d crm -c \
+  "create role crm_api login password '$DB_PASS' in role crm_app;"
+sudo -u postgres psql -d crm -c "grant usage on schema crm to crm_api;"
+echo "$DB_PASS" | sudo tee /root/crm-db-password.txt
+sudo chmod 600 /root/crm-db-password.txt
 ```
 
-**✓ check:** `sudo -u postgres CRM_DB=crm ./db/migrate.sh` again prints
+**✓ check:** `sudo -u postgres CRM_DB=crm /opt/crm/db/migrate.sh` again prints
 `up to date (0 applied this run)`.
 
 ---
@@ -97,8 +105,11 @@ SQL
 cd /opt/crm/api
 sudo -u crm npm ci --omit=dev
 
-# Environment file - copy the template and fill it in
+# Environment file - copy the template, then lock it down: it holds the
+# database password, so nothing but the crm user should be able to read it.
 sudo -u crm cp .env.example .env
+sudo chmod 600 /opt/crm/api/.env
+sudo chown crm:crm /opt/crm/api/.env
 sudo -u crm nano .env
 ```
 
