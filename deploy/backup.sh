@@ -43,6 +43,22 @@ fi
 
 DIR=${CRM_BACKUP_DIR:-/var/backups/crm}
 DB=${CRM_DB:-crm}
+
+# Resolve the directory against the caller's cwd BEFORE leaving it, so a
+# relative CRM_BACKUP_DIR cannot silently write somewhere else.
+case "$DIR" in
+  /*) ;;
+   *) DIR="$PWD/$DIR" ;;
+esac
+
+# Then work from a directory postgres can certainly read.
+#
+# The re-exec inherits the caller's cwd, and `sudo backup.sh` is normally typed
+# from /root, which postgres cannot enter. Nothing here needs the caller's
+# directory, but find(1) returns to its starting point when it finishes and
+# fails if it cannot - so pruning died with "Failed to restore initial working
+# directory", after a dump that had already succeeded.
+cd /
 STAMP=$(date +%Y-%m-%d)
 PARTIAL="$DIR/.crm-$STAMP.partial"
 OUT="$DIR/crm-$STAMP.dump"
