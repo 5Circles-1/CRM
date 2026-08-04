@@ -764,3 +764,36 @@ describe('go-live provisioning endpoints', () => {
     assert.equal(prod.statusCode, 403);
   });
 });
+
+describe('validation errors are readable by the person filling the form', () => {
+  it('says the password is too short instead of just returning 400', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST', url: '/admin/users', headers: auth(admin),
+      payload: {
+        fullName: 'Too Short', email: 'short@5circles.test',
+        role: 'counsellor', temporaryPassword: '12345678',
+      },
+    });
+
+    assert.equal(res.statusCode, 400);
+    const body = res.json();
+    assert.ok(body.message, 'a validation failure must carry a human-readable message');
+    assert.match(body.message, /Temporary password/,
+      'the message names the field the way the form labels it');
+    assert.match(body.message, /10/, 'the message states the requirement');
+  });
+
+  it('names a mistyped email in words, not as a schema path', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST', url: '/admin/users', headers: auth(admin),
+      payload: {
+        fullName: 'Bad Email', email: 'not-an-email',
+        role: 'caller', temporaryPassword: 'long-enough-password',
+      },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().message, /Email/);
+  });
+});

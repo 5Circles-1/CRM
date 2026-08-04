@@ -44,16 +44,60 @@ interface PgErrorish {
   detail?: string;
 }
 
+/**
+ * Field names in errors are read by whoever is filling the form, not by the
+ * programmer who named the property.
+ */
+const FIELD_LABELS: Record<string, string> = {
+  temporaryPassword: 'Temporary password',
+  newPassword: 'New password',
+  currentPassword: 'Current password',
+  fullName: 'Full name',
+  dialingMsisdn: 'Dialing SIM',
+  employeeCode: 'Employee code',
+  bookedAmount: 'Booked amount',
+  discountAmount: 'Discount',
+  promisedDate: 'Promised date',
+  scheduledAt: 'Scheduled time',
+  callbackAt: 'Callback time',
+  durationSeconds: 'Talk time',
+  listPriceInr: 'List price',
+  toCallerId: 'Caller',
+  productId: 'Product',
+  instalmentId: 'Instalment',
+};
+
+const humanField = (path: string): string =>
+  FIELD_LABELS[path] ?? path.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
+
 export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((err: unknown, req: FastifyRequest, reply: FastifyReply) => {
     if (err instanceof HttpError) {
       return reply.status(err.status).send({ error: err.code, message: err.message });
     }
 
-    // Zod and Fastify schema failures
-    const anyErr = err as { name?: string; issues?: unknown; statusCode?: number; message?: string };
+    // Zod and Fastify schema failures.
+    //
+    // Always send a human-readable `message`. Returning only the raw `issues`
+    // array left the UI with nothing to show but the status code, so a
+    // password two characters too short surfaced to the admin as "HTTP 400".
+    const anyErr = err as {
+      name?: string;
+      issues?: Array<{ path?: Array<string | number>; message?: string }>;
+      statusCode?: number;
+      message?: string;
+    };
     if (anyErr?.name === 'ZodError') {
-      return reply.status(400).send({ error: 'validation_failed', issues: anyErr.issues });
+      const issues = anyErr.issues ?? [];
+      const message =
+        issues
+          .map((i) => {
+            const field = (i.path ?? []).join('.');
+            return field ? `${humanField(field)}: ${i.message}` : i.message;
+          })
+          .filter(Boolean)
+          .join('; ') || 'the details supplied are not valid';
+      return reply.status(400).send({ error: 'validation_failed', message, issues });
     }
 
     const pgErr = err as PgErrorish;

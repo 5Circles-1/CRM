@@ -132,7 +132,8 @@ function newUserModal(teams, onDone) {
         <label class="f">Dialing SIM <input name="msisdn" placeholder="+91…"></label>
         <label class="f">Employee code <input name="code"></label>
       </div>
-      <label class="f">Temporary password <span class="hint">(they must change it at first login)</span>
+      <label class="f">Temporary password
+        <span class="hint">at least 10 characters — they must change it at first login</span>
         <input name="temp" minlength="10" required>
       </label>
     </div>`);
@@ -140,6 +141,14 @@ function newUserModal(teams, onDone) {
   const { close } = openModal('New user', bodyEl, footer);
 
   footer.querySelector('button').addEventListener('click', async () => {
+    // Check here too: the modal has no <form>, so the browser never enforces
+    // minlength on its own, and a round trip to be told "too short" is a
+    // worse experience than being told before sending.
+    const temp = bodyEl.querySelector('[name=temp]').value;
+    if (temp.length < 10) {
+      toast('The temporary password needs at least 10 characters.', 'err');
+      return;
+    }
     try {
       await post('/admin/users', {
         fullName: bodyEl.querySelector('[name=name]').value.trim(),
@@ -148,7 +157,7 @@ function newUserModal(teams, onDone) {
         teamId: bodyEl.querySelector('[name=team]').value || undefined,
         dialingMsisdn: bodyEl.querySelector('[name=msisdn]').value.trim() || undefined,
         employeeCode: bodyEl.querySelector('[name=code]').value.trim() || undefined,
-        temporaryPassword: bodyEl.querySelector('[name=temp]').value,
+        temporaryPassword: temp,
       });
       toast('User created.');
       close();
