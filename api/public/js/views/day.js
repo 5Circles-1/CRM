@@ -78,7 +78,8 @@ function card(l) {
         ${l.campaign_name ? `<span>${esc(l.campaign_name)}</span>` : ''}
         <span>attempts ${Number(l.attempt_count) || 0}${Number(l.na_streak) > 0 ? ` · NA streak ${Number(l.na_streak)}` : ''}</span>
         ${l.next_action_note ? `<span class="note">“${esc(l.next_action_note)}”</span>` : ''}
-        ${l.callback_note ? `<span class="note">“${esc(l.callback_note)}”</span>` : ''}
+        ${l.callback_note && l.callback_note !== l.next_action_note
+          ? `<span class="note">“${esc(l.callback_note)}”</span>` : ''}
       </div>
     </a>`);
 }
