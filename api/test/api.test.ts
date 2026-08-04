@@ -797,3 +797,30 @@ describe('validation errors are readable by the person filling the form', () => 
     assert.match(res.json().message, /Email/);
   });
 });
+
+describe('lead source accepts a pasted sheet URL', () => {
+  it('stores the id when given the whole browser URL', async () => {
+    const ops = await login(h.app, EMAILS.ops);
+    const res = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(ops),
+      payload: {
+        name: 'Pasted URL Source',
+        spreadsheetId:
+          'https://docs.google.com/spreadsheets/d/1AbCdEf-GhIjK_lmNoP12345/edit?gid=0#gid=0',
+        worksheetName: 'Sheet1',
+      },
+    });
+    assert.equal(res.statusCode, 201);
+    assert.equal(res.json().spreadsheet_id, '1AbCdEf-GhIjK_lmNoP12345');
+  });
+
+  it('leaves a bare id untouched', async () => {
+    const ops = await login(h.app, EMAILS.ops);
+    const res = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(ops),
+      payload: { name: 'Bare Id Source', spreadsheetId: '1AbCdEf-GhIjK_lmNoP67890', worksheetName: 'Sheet1' },
+    });
+    assert.equal(res.statusCode, 201);
+    assert.equal(res.json().spreadsheet_id, '1AbCdEf-GhIjK_lmNoP67890');
+  });
+});

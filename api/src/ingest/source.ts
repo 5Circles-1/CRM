@@ -16,6 +16,20 @@ export interface SheetReader {
   read(): Promise<RawRow[]>;
 }
 
+/**
+ * Accept either a bare spreadsheet id or the whole browser URL.
+ *
+ * What is in someone's clipboard is the URL - that is what they copied out of
+ * the address bar. Demanding the id buried in the middle of it, and failing
+ * hours later with a 404 from Google when they get it wrong, is a bad trade
+ * for one regex.
+ */
+export function normaliseSpreadsheetId(input: string): string {
+  const trimmed = input.trim();
+  const fromUrl = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  return fromUrl ? fromUrl[1]! : trimmed;
+}
+
 export const payloadHash = (values: Record<string, string>): string =>
   createHash('sha256')
     .update(JSON.stringify(Object.entries(values).sort(([a], [b]) => a.localeCompare(b))))

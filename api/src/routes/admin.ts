@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { hashPassword } from '../auth/credentials.ts';
+import { normaliseSpreadsheetId } from '../ingest/source.ts';
 import { notFound } from '../http/errors.ts';
 
 const uuid = z.string().uuid();
@@ -179,7 +180,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
          returning id, name, spreadsheet_id, worksheet_name, column_map, default_priority, is_active`,
         [
           body.name,
-          body.spreadsheetId ?? null,
+          body.spreadsheetId ? normaliseSpreadsheetId(body.spreadsheetId) : null,
           body.worksheetName ?? null,
           body.columnMap ? JSON.stringify(body.columnMap) : null,
           body.pinnedTeamId ?? null,
@@ -211,7 +212,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         [
           id,
           body.name ?? null,
-          body.spreadsheetId ?? null,
+          body.spreadsheetId ? normaliseSpreadsheetId(body.spreadsheetId) : null,
           body.worksheetName ?? null,
           body.columnMap ? JSON.stringify(body.columnMap) : null,
           body.pinnedTeamId ?? null,

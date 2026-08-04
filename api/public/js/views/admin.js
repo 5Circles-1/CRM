@@ -278,8 +278,9 @@ function newSourceModal(onDone) {
     <div>
       <label class="f">Name <input name="name" required placeholder="Meta Lead Ads — Main Sheet"></label>
       <div class="frow">
-        <label class="f">Google Sheet ID <span class="hint">(from the sheet URL; blank = CSV-only source)</span>
-          <input name="sheet" placeholder="1AbC…"></label>
+        <label class="f">Google Sheet
+          <span class="hint">paste the whole sheet URL, or just its ID — blank means CSV-only</span>
+          <input name="sheet" placeholder="https://docs.google.com/spreadsheets/d/…"></label>
         <label class="f">Worksheet tab <input name="tab" placeholder="Leads"></label>
       </div>
       <label class="f">Default priority
