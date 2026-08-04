@@ -833,6 +833,74 @@ describe('lead source accepts a pasted sheet URL', () => {
   });
 });
 
+describe('a deactivated account is reactivated, not recreated', () => {
+  const EMAIL = 'returner@5circles.test';
+
+  it('explains that the email is taken rather than naming an index', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const first = await h.app.inject({
+      method: 'POST', url: '/admin/users', headers: auth(admin),
+      payload: {
+        fullName: 'Returner', email: EMAIL, role: 'caller',
+        temporaryPassword: 'long-enough-password',
+      },
+    });
+    assert.equal(first.statusCode, 201);
+
+    await h.app.inject({
+      method: 'POST', url: `/admin/users/${first.json().id}/deactivate`, headers: auth(admin),
+    });
+
+    // The old message was "duplicate key value violates unique constraint
+    // users_email_key" - true, and no help at all to whoever is filling a form.
+    const again = await h.app.inject({
+      method: 'POST', url: '/admin/users', headers: auth(admin),
+      payload: {
+        fullName: 'Returner Again', email: EMAIL, role: 'caller',
+        temporaryPassword: 'long-enough-password',
+      },
+    });
+    assert.equal(again.statusCode, 409);
+    assert.match(again.json().message, /already exists/);
+    assert.match(again.json().message, /deactivated/);
+    assert.doesNotMatch(again.json().message, /users_email_key/);
+  });
+
+  it('brings the original account back, keeping its id and its history', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const listed = await h.app.inject({ method: 'GET', url: '/admin/users', headers: auth(admin) });
+    const user = listed.json().find((u: { email: string }) => u.email === EMAIL);
+    assert.equal(user.is_active, false);
+
+    const back = await h.app.inject({
+      method: 'POST', url: `/admin/users/${user.id}/reactivate`, headers: auth(admin),
+    });
+    assert.equal(back.statusCode, 200);
+    assert.equal(back.json().is_active, true);
+    assert.equal(back.json().id, user.id, 'the same row must come back, not a new one');
+  });
+
+  it('refuses to reactivate an account that is already active', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const listed = await h.app.inject({ method: 'GET', url: '/admin/users', headers: auth(admin) });
+    const user = listed.json().find((u: { email: string }) => u.email === EMAIL);
+    const res = await h.app.inject({
+      method: 'POST', url: `/admin/users/${user.id}/reactivate`, headers: auth(admin),
+    });
+    assert.equal(res.statusCode, 404);
+  });
+
+  it('is an admin action - ops cannot bring an account back', async () => {
+    const ops = await login(h.app, EMAILS.ops);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/admin/users/22222222-0000-0000-0000-0000000000f2/reactivate',
+      headers: auth(ops),
+    });
+    assert.equal(res.statusCode, 403);
+  });
+});
+
 describe('a lead source can be corrected after it is created', () => {
   it('fixes a mistyped worksheet tab without creating a second source', async () => {
     // Create-only was the whole reason one sheet got wired in five times: a

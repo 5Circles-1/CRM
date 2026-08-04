@@ -124,6 +124,32 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return row;
   });
 
+  /**
+   * Bring a deactivated account back.
+   *
+   * Without this the only route back was a second account on a new email, which
+   * splits one person's history across two rows - their leads, calls and scores
+   * stay behind on the account nobody uses.
+   *
+   * The password is deliberately not restored: whoever is reactivating should
+   * set a fresh one through reset-password, because the reason for the original
+   * deactivation is not recorded here.
+   */
+  app.post('/admin/users/:id/reactivate', async (req) => {
+    req.requireRole('admin');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const row = await req.tx((q) =>
+      q.one(
+        `update crm.users set is_active = true, deactivated_at = null
+          where id = $1 and not is_active
+          returning id, full_name, email, role, is_active`,
+        [id],
+      ),
+    );
+    if (!row) throw notFound('no deactivated user with that id');
+    return row;
+  });
+
   app.post('/admin/users/:id/reset-password', async (req) => {
     req.requireRole('admin');
     const { id } = z.object({ id: uuid }).parse(req.params);

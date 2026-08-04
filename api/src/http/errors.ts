@@ -70,6 +70,29 @@ const FIELD_LABELS: Record<string, string> = {
 const humanField = (path: string): string =>
   FIELD_LABELS[path] ?? path.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
 
+/**
+ * Say what a violated unique index means, in the terms of the thing being done.
+ *
+ * "duplicate key value violates unique constraint users_email_key" is accurate
+ * and useless: it names an index, not a cause. Nothing here is ever hard
+ * deleted, so the usual reason an email is taken is a deactivated account -
+ * which is a different action (reactivate) rather than a different email.
+ */
+const CONSTRAINT_MESSAGES: Record<string, string> = {
+  users_email_key:
+    'An account with that email address already exists. It may be deactivated — reactivate it instead of creating a second one.',
+  users_employee_code_key: 'That employee code is already used by another account.',
+  leads_phone_e164_key: 'A lead with that phone number already exists.',
+  products_code_key: 'That product code is already in use.',
+  teams_code_key: 'That team code is already in use.',
+};
+
+export const constraintMessage = (raw: string | undefined): string | null => {
+  if (!raw) return null;
+  const named = Object.keys(CONSTRAINT_MESSAGES).find((name) => raw.includes(name));
+  return named ? CONSTRAINT_MESSAGES[named]! : null;
+};
+
 export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((err: unknown, req: FastifyRequest, reply: FastifyReply) => {
     if (err instanceof HttpError) {
@@ -107,8 +130,13 @@ export function registerErrorHandler(app: FastifyInstance): void {
       return reply.status(mapped.status).send({
         error: mapped.code,
         // These messages are written for the operator - "only a counsellor or
-        // admin may transfer a lead" is exactly what the UI should show.
-        message: pgErr.message ?? 'the database rejected this operation',
+        // admin may transfer a lead" is exactly what the UI should show. The
+        // exception is a unique violation, which names an index nobody outside
+        // the schema has heard of.
+        message:
+          constraintMessage(pgErr.message) ??
+          pgErr.message ??
+          'the database rejected this operation',
       });
     }
 
