@@ -994,10 +994,20 @@ describe('a tab name that only differs by invisible characters still resolves', 
     assert.equal(resolveWorksheet('Leads', ['Leads', 'leads ']), 'Leads');
   });
 
+  it('matches "Sheet 1" to a tab actually called "Sheet1"', () => {
+    // The real one. A source was configured as "Sheet 1"; the spreadsheet's
+    // only tab was "Sheet1". One space, eight failed syncs, and an error that
+    // named the tab correctly while still refusing to read it.
+    assert.equal(resolveWorksheet('Sheet 1', ['Sheet1']), 'Sheet1');
+    assert.equal(resolveWorksheet('Sheet1', ['Sheet 1']), 'Sheet 1');
+  });
+
   it('refuses to guess when two tabs match equally well', () => {
     // Reading the wrong tab silently is worse than saying so: the leads would
-    // arrive from a feed nobody chose, and nothing would look broken.
+    // arrive from a feed nobody chose, and nothing would look broken. This is
+    // what makes ignoring whitespace safe rather than reckless.
     assert.equal(resolveWorksheet('leads', ['Leads', 'LEADS']), null);
+    assert.equal(resolveWorksheet('Sheet 1', ['Sheet1', 'Sheet 1 ']), null);
   });
 
   it('returns null when nothing resembles the configured name', () => {

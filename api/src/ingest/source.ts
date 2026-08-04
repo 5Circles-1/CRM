@@ -61,14 +61,18 @@ export const errorMessage = (err: unknown): string =>
 /**
  * Compare tab names the way a person reads them, not the way bytes compare.
  *
- * A tab created by Google Forms often carries a trailing space, and a title
- * pasted out of a browser can arrive with a non-breaking space in the middle of
- * it. Both are invisible on screen, so "Form Responses 1" typed by hand and
- * "Form Responses 1 " in the spreadsheet look identical and are not equal. That
- * difference is not something anyone should be asked to spot.
+ * Whitespace is dropped entirely rather than merely collapsed. "Sheet 1" and
+ * "Sheet1" are the same tab to everyone except a string comparison, and that
+ * single space is the most common way this goes wrong - more common than the
+ * trailing space Forms leaves on "Form Responses 1 ", or the non-breaking space
+ * that arrives when a title is pasted out of a browser. None of them render.
+ *
+ * Being this permissive is only safe because resolveWorksheet() refuses to pick
+ * between two candidates: a spreadsheet with both "Sheet 1" and "Sheet1" gets
+ * an error, not a coin toss.
  */
 export const looseTitle = (title: string): string =>
-  title.replace(/[\s ​]+/g, ' ').trim().toLowerCase();
+  title.replace(/[\s\u00a0\u200b]+/g, '').toLowerCase();
 
 /**
  * Find the real tab title the configured name was meant to refer to.
