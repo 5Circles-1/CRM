@@ -170,7 +170,7 @@ function newUserModal(teams, onDone) {
 
 /* ---------------- ingestion ---------------- */
 
-async function ingest(body) {
+async function ingest(body, me) {
   const [sources, runs] = await Promise.all([get('/admin/sources'), get('/ingest/runs')]);
   body.innerHTML = '';
 
@@ -239,19 +239,39 @@ async function ingest(body) {
       </div>`));
   };
 
-  panel.querySelector('#run-sheet').addEventListener('click', async (e) => {
-    e.target.disabled = true;
-    try { showSummary(await post(`/ingest/sources/${panel.querySelector('[name=source]').value}/run`)); }
-    catch (err) { toast(err.message, 'err'); }
-    e.target.disabled = false;
-  });
-  panel.querySelector('#run-csv').addEventListener('click', async (e) => {
+  // Redraw the whole tab after every attempt, success or failure. "Recent
+  // runs" is rendered once when the tab opens, so without this it keeps
+  // showing the PREVIOUS attempt - which reads as though nothing happened,
+  // or worse, as though an old error is the new one.
+  const runImport = async (button, url, payload) => {
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Working…';
+    try {
+      const summary = await post(url, payload);
+      const rowErrors = summary.errors?.length ?? 0;
+      toast(
+        rowErrors
+          ? `Imported, but ${rowErrors} row${rowErrors === 1 ? '' : 's'} failed — see Recent runs.`
+          : `Done: ${summary.created} created, ${summary.duplicate} duplicate, ${summary.quarantined} quarantined.`,
+        rowErrors ? 'err' : 'ok',
+      );
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally {
+      button.disabled = false;
+      button.textContent = label;
+      await ingest(body, me);
+    }
+  };
+
+  panel.querySelector('#run-sheet').addEventListener('click', (e) =>
+    runImport(e.target, `/ingest/sources/${panel.querySelector('[name=source]').value}/run`));
+
+  panel.querySelector('#run-csv').addEventListener('click', (e) => {
     const csv = panel.querySelector('[name=csv]').value;
     if (!csv.trim()) { toast('Paste some CSV first.', 'err'); return; }
-    e.target.disabled = true;
-    try { showSummary(await post(`/ingest/sources/${panel.querySelector('[name=source]').value}/csv`, { csv })); }
-    catch (err) { toast(err.message, 'err'); }
-    e.target.disabled = false;
+    runImport(e.target, `/ingest/sources/${panel.querySelector('[name=source]').value}/csv`, { csv });
   });
 
   body.appendChild(h(`

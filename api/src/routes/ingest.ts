@@ -2,9 +2,42 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { IngestWorker } from '../ingest/worker.ts';
 import { rowsFromCsv, StaticSheetReader } from '../ingest/source.ts';
-import { badRequest } from '../http/errors.ts';
+import { badRequest, conflict, forbidden, notFound, HttpError } from '../http/errors.ts';
 
 const uuid = z.string().uuid();
+
+/**
+ * Turn whatever the sheet reader threw into something an ops person can act
+ * on. Google's own messages are good ("Unable to parse range", "The caller
+ * does not have permission"); the failure was that they never reached the
+ * screen - the route let the error escape as an unhandled 500, which the UI
+ * renders as "something went wrong".
+ */
+function ingestFailure(err: unknown): HttpError {
+  const raw =
+    (err as { errors?: Array<{ message?: string }> })?.errors?.[0]?.message ??
+    (err instanceof Error ? err.message : String(err));
+
+  if (/parse range/i.test(raw)) {
+    return conflict(
+      `${raw}. Check the worksheet tab name on the source matches the tab in the sheet exactly.`,
+    );
+  }
+  if (/permission|forbidden|403/i.test(raw)) {
+    return forbidden(
+      `${raw}. Share the sheet with the service account as a Viewer, then try again.`,
+    );
+  }
+  if (/not found|404/i.test(raw)) {
+    return notFound(`${raw}. Check the spreadsheet id on the source.`);
+  }
+  if (/credential|authent|401|invalid_grant/i.test(raw)) {
+    return conflict(
+      `${raw}. The Google service-account key looks wrong or expired - check GOOGLE_APPLICATION_CREDENTIALS.`,
+    );
+  }
+  return conflict(raw);
+}
 
 export async function ingestRoutes(app: FastifyInstance): Promise<void> {
   /** Trigger a sync on demand. The scheduled worker does the same thing. */
@@ -12,7 +45,12 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
     const user = req.requireRole('ops', 'admin');
     const { id } = z.object({ id: uuid }).parse(req.params);
     const worker = new IngestWorker(app.db, user.id);
-    return worker.runSource(id);
+    try {
+      return await worker.runSource(id);
+    } catch (err) {
+      req.log.error({ err }, 'sheet sync failed');
+      throw ingestFailure(err);
+    }
   });
 
   /**
