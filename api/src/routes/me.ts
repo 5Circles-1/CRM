@@ -62,6 +62,98 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * The handful of settings the browser itself needs.
+   *
+   * These live in crm.settings with everything else, but /admin/settings is
+   * admin-only - so reading them from there would have meant the poll interval
+   * silently never applied to callers, who are the people being interrupted.
+   * Nothing here is sensitive: it is how often to poll and what may pop up.
+   */
+  app.get('/meta/ui-settings', async (req) => {
+    req.requireUser();
+    const rows = await req.tx((q) =>
+      q.many<{ key: string; value: unknown }>(
+        `select key, value from crm.settings
+          where key in ('alerts.poll_seconds', 'alerts.popup_kinds',
+                        'sla.untouched_reassign_minutes')`,
+      ),
+    );
+    return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  });
+
+  /**
+   * My own numbers, day by day.
+   *
+   * Requirement 7 is self-reflection, so this exists for the caller first. The
+   * counsellor and admin views below are the same view with more reach, which
+   * RLS grants them - not a second query with different rules in it.
+   */
+  app.get('/me/performance', async (req) => {
+    const user = req.requireUser();
+    const { days } = z.object({ days: z.coerce.number().int().min(1).max(90).default(14) })
+      .parse(req.query);
+    return req.tx((q) =>
+      q.many(
+        `select * from crm.v_person_performance
+          where user_id = $1 and day > crm.ist_date(now()) - $2::int
+          order by day desc`,
+        [user.id, days],
+      ),
+    );
+  });
+
+  /**
+   * Everyone this user is allowed to see, summed over the window.
+   *
+   * A caller gets themselves, a counsellor gets their team, an admin gets the
+   * floor - and none of that is decided here. The ORDER BY is the answer to
+   * "who brought in the most walk-ins", which was the question that prompted it.
+   */
+  app.get('/performance', async (req) => {
+    req.requireUser();
+    const { days, sort } = z
+      .object({
+        days: z.coerce.number().int().min(1).max(90).default(7),
+        sort: z
+          .enum(['dials', 'connects', 'interested', 'walked_in', 'deals', 'revenue', 'talk_seconds'])
+          .default('connects'),
+      })
+      .parse(req.query);
+
+    return req.tx((q) =>
+      q.many(
+        `select user_id, full_name, role,
+                sum(dials)::int            as dials,
+                sum(connects)::int         as connects,
+                sum(interested)::int       as interested,
+                sum(not_interested)::int   as not_interested,
+                sum(not_answered)::int     as not_answered,
+                sum(callbacks_booked)::int as callbacks_booked,
+                sum(visits_promised)::int  as visits_promised,
+                sum(walked_in)::int        as walked_in,
+                sum(whatsapp_sent)::int    as whatsapp_sent,
+                sum(job_enquiries)::int    as job_enquiries,
+                sum(talk_seconds)::bigint  as talk_seconds,
+                sum(deals)::int            as deals,
+                sum(assisted_deals)::int   as assisted_deals,
+                sum(revenue)               as revenue,
+                case when sum(dials) > 0
+                     then round(100.0 * sum(connects) / sum(dials), 1) end    as connect_rate,
+                case when sum(connects) > 0
+                     then round(100.0 * sum(interested) / sum(connects), 1) end as interest_rate,
+                case when sum(connects) > 0
+                     then round(100.0 * sum(deals) / sum(connects), 1) end   as conversion_rate
+           from crm.v_person_performance
+          where day > crm.ist_date(now()) - $1::int
+          group by user_id, full_name, role
+         having sum(dials) > 0 or sum(deals) > 0 or sum(walked_in) > 0
+          order by ${sort === 'revenue' ? 'sum(revenue)' : `sum(${sort})`} desc, full_name`,
+        [days],
+      ),
+    );
+  });
+
+  /**
    * Everything demanding this person's attention, newest deadline first.
    *
    * No ownership filter here on purpose - RLS decides what a caller can see and

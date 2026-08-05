@@ -21,6 +21,7 @@ import {
   resolveWorksheet,
   sheetRange,
 } from '../src/ingest/source.ts';
+import { DISPOSITIONS } from '../src/routes/leads.ts';
 import { Database } from '../src/db/pool.ts';
 import { buildServer } from '../src/server.ts';
 import { hashPassword } from '../src/auth/credentials.ts';
@@ -1330,5 +1331,193 @@ describe('re-tap filters', () => {
     const res = await h.app.inject({ method: 'GET', url: '/leads?due=untouched', headers: auth(a1) });
     const ids = res.json().leads.map((l: { id: string }) => l.id);
     assert.ok(ids.includes(leadId));
+  });
+});
+
+describe('call outcomes stay in step with the database', () => {
+  it('every enum value the database has is offered by the API', async () => {
+    // The failure this prevents: an outcome added in SQL that no caller can
+    // ever pick, or one offered in the UI that the database rejects at save.
+    const inDb = fixtureSql(
+      `select enumlabel from pg_enum e join pg_type t on t.oid = e.enumtypid
+        where t.typname = 'disposition' order by enumlabel;`,
+    ).trim().split('\n').map((s) => s.trim()).filter(Boolean);
+
+    const offered = DISPOSITIONS.map((d) => d.value).sort();
+    assert.deepEqual(offered, inDb.sort(), 'the API list and the enum must match exactly');
+  });
+
+  it('serves the list to the UI so it carries no copy of its own', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/meta/dispositions', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.json().some((d: { value: string }) => d.value === 'will_visit'));
+  });
+});
+
+describe('the new call outcomes', () => {
+  const next = () => new Date(Date.now() + 3.6e6).toISOString();
+
+  it('treats a job enquiry as never having been a lead, not as one we lost', async () => {
+    // Counting it as lost would quietly wreck every conversion rate on the floor.
+    const leadId = makeLeadFor(USERS.callerA1, 'Job Seeker');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'job_enquiry', durationSeconds: 45 },
+    });
+    assert.equal(res.statusCode, 201);
+    const row = fixtureSql(`select status from crm.leads where id = '${leadId}';`).trim();
+    assert.equal(row, 'invalid');
+  });
+
+  it('records a promised visit as a date somebody has to check', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Coming In');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'will_visit', durationSeconds: 120, nextActionAt: next() },
+    });
+    const row = fixtureSql(
+      `select (walkin_expected_at is not null)::text from crm.leads where id = '${leadId}';`,
+    ).trim();
+    assert.equal(row, 'true');
+  });
+
+  it('waits days, not an hour, before chasing someone who said they would call', async () => {
+    // This is the hourly-nagging complaint: the gap is per outcome and settable.
+    const leadId = makeLeadFor(USERS.callerA1, 'Will Ring Us');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'will_call_back_self', durationSeconds: 90 },
+    });
+    const hours = Number(fixtureSql(
+      `select round(extract(epoch from (next_action_at - now())) / 3600)
+         from crm.leads where id = '${leadId}';`,
+    ).trim());
+    assert.ok(hours >= 24, `expected at least a day before the chase, got ${hours}h`);
+  });
+
+  it('gives a switched-off phone longer than a busy one', async () => {
+    const offLead = makeLeadFor(USERS.callerA1, 'Phone Off');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${offLead}/calls`, headers: auth(a1),
+      payload: { disposition: 'switched_off', durationSeconds: 0 },
+    });
+    const mins = Number(fixtureSql(
+      `select round(extract(epoch from (next_action_at - now())) / 60)
+         from crm.leads where id = '${offLead}';`,
+    ).trim());
+    assert.ok(mins > 60, `a switched-off phone should not be redialled hourly, got ${mins}m`);
+  });
+});
+
+describe('WhatsApp and walk-ins', () => {
+  it('records that a message was sent, and who said so', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Messaged');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/whatsapp`, headers: auth(a1), payload: { sent: true },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.json().whatsapp_sent_at);
+    assert.equal(res.json().whatsapp_sent_by, USERS.callerA1);
+  });
+
+  it('can be un-marked, because people tick things by mistake', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Mis-ticked');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({ method: 'POST', url: `/leads/${leadId}/whatsapp`, headers: auth(a1), payload: { sent: true } });
+    const off = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/whatsapp`, headers: auth(a1), payload: { sent: false },
+    });
+    assert.equal(off.json().whatsapp_sent_at, null);
+  });
+
+  it('filters the lead list by whether a message went out', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Needs Messaging');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/leads?whatsapp=not_sent', headers: auth(a1) });
+    const ids = res.json().leads.map((l: { id: string }) => l.id);
+    assert.ok(ids.includes(leadId));
+  });
+
+  it('counts a walk-in separately from a promise to visit', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Actually Came');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'POST', url: `/leads/${leadId}/walkin`, headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.json().walked_in_at);
+  });
+});
+
+describe('performance dashboards', () => {
+  it('gives a caller their own numbers', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/performance?days=7', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    assert.ok(Array.isArray(res.json()));
+  });
+
+  it('shows the admin everyone, sortable by walk-ins', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'GET', url: '/performance?days=7&sort=walked_in', headers: auth(admin),
+    });
+    assert.equal(res.statusCode, 200);
+    const rows = res.json();
+    assert.ok(rows.length > 0, 'the admin should see the floor');
+    const walkins = rows.map((r: { walked_in: number }) => Number(r.walked_in));
+    assert.deepEqual(walkins, [...walkins].sort((a, b) => b - a), 'must come back sorted');
+  });
+
+  it('does not let a caller see another caller through it', async () => {
+    // RLS draws this line, not the route - which is why it is worth asserting.
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/performance?days=7', headers: auth(a1) });
+    const others = res.json().filter((r: { user_id: string }) => r.user_id !== USERS.callerA1);
+    assert.equal(others.length, 0, 'a caller must only see themselves');
+  });
+
+  it('shows a counsellor their own team and not the other one', async () => {
+    // The counsellor is the team lead; seeing the other team's numbers would be
+    // a peer's performance data, not their own management information.
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/performance?days=7', headers: auth(ca) });
+    assert.equal(res.statusCode, 200);
+
+    const teamA = fixtureSql(
+      `select string_agg(u.id::text, ',') from crm.users u
+        where crm.team_of(u.id, current_date)
+              = crm.team_of('${USERS.counsellorA}', current_date);`,
+    ).trim().split(',');
+
+    for (const row of res.json()) {
+      assert.ok(teamA.includes(row.user_id),
+        `${row.full_name} is not on the counsellor's team and must not appear`);
+    }
+  });
+
+  it('reports no rate rather than 0% when there was nothing to divide by', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({ method: 'GET', url: '/performance?days=7', headers: auth(admin) });
+    for (const row of res.json()) {
+      if (Number(row.connects) === 0) {
+        assert.equal(row.conversion_rate, null,
+          'a caller with no connects has no conversion rate, and 0% would rank them unfairly');
+      }
+    }
+  });
+});
+
+describe('the UI can read its own poll settings', () => {
+  it('serves them to a caller, who is the one being interrupted', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/meta/ui-settings', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.json()['alerts.poll_seconds'], 'the poll interval must reach a caller');
+    assert.ok(Array.isArray(res.json()['alerts.popup_kinds']));
   });
 });

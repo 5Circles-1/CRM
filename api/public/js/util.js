@@ -89,3 +89,39 @@ export function tomorrowAt(hour = 11) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+
+/**
+ * Talk time as MM:SS, which is how anyone on a phone thinks about it.
+ *
+ * Raw seconds forced the floor to do arithmetic to answer "was that a long
+ * call?" - 187 seconds means nothing at a glance, 3:07 means something.
+ * Hours only appear when there are some, so the common case stays short.
+ */
+export function fmtTalk(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  const mm = Math.floor(s / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  if (mm < 60) return `${mm}:${ss}`;
+  return `${Math.floor(mm / 60)}:${String(mm % 60).padStart(2, '0')}:${ss}`;
+}
+
+/**
+ * Read a duration a person typed. Accepts "3:07", "3.5" and "187".
+ *
+ * A field labelled MM:SS that only accepts seconds is a trap, and one that
+ * silently reads "3:07" as 3 is worse - it would log a three-second call and
+ * quietly destroy the connect rate it feeds.
+ */
+export function parseTalk(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return 0;
+  if (raw.includes(':')) {
+    const parts = raw.split(':').map((p) => Number(p.trim()));
+    if (parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
+    return parts.length === 3
+      ? parts[0] * 3600 + parts[1] * 60 + parts[2]
+      : parts[0] * 60 + parts[1];
+  }
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+}

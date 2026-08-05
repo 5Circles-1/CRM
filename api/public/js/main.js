@@ -10,6 +10,7 @@ import * as collections from './views/collections.js';
 import * as dash from './views/dash.js';
 import * as admin from './views/admin.js';
 import * as leads from './views/leads.js';
+import * as people from './views/people.js';
 import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 
 const NAV = [
@@ -18,6 +19,7 @@ const NAV = [
   { hash: '#/collections', label: 'Collections', roles: ['counsellor', 'admin', 'ops'] },
   { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/leads', label: 'Find lead', roles: ['caller', 'counsellor', 'admin', 'ops'] },
+  { hash: '#/people', label: 'Performance', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/score', label: 'My Score', roles: ['caller', 'counsellor'] },
   { hash: '#/attendance', label: 'Attendance', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/admin', label: 'Admin', roles: ['admin', 'ops'] },
@@ -28,13 +30,13 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, floor, collections, dash, leads, score, attendance, admin, lead,
+  day, floor, collections, dash, leads, people, score, attendance, admin, lead,
 };
 
 const TITLES = {
   day: 'My Day', floor: 'Floor', collections: 'Collections', dash: 'Dashboards',
-  leads: 'Find lead', score: 'My Score', attendance: 'Attendance', admin: 'Admin',
-  lead: 'Lead',
+  leads: 'Find lead', people: 'Performance', score: 'My Score',
+  attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
 };
 
 let me = null;
@@ -101,6 +103,7 @@ function renderShell(app) {
 
   wireBell();
   startAlerts();
+  startLiveRefresh();
   refreshShift();
 }
 
@@ -165,6 +168,35 @@ async function route() {
     outlet.appendChild(h(`<div class="panel"><h2>Could not load this page</h2><p class="hint">${esc(err.message)}</p></div>`));
   }
   refreshShift();
+}
+
+/**
+ * Redraw the current page on a timer, so a new lead appears without anyone
+ * pressing F5. The floor was refreshing by hand to find out whether work had
+ * arrived, which is both tedious and unreliable - a lead nobody refreshes for
+ * is a lead nobody calls.
+ *
+ * Only the views that show incoming work refresh. Redrawing a page underneath
+ * someone who is typing into it is worse than a stale number, so anything with
+ * a form or an open modal is left alone.
+ */
+const LIVE_VIEWS = new Set(['day', 'floor', 'collections']);
+let liveTimer = null;
+
+function currentViewName() {
+  return (location.hash || '#/').slice(2).split('/')[0];
+}
+
+function startLiveRefresh() {
+  if (liveTimer) clearInterval(liveTimer);
+  liveTimer = setInterval(() => {
+    if (!me) return;
+    if (!LIVE_VIEWS.has(currentViewName())) return;
+    if (document.hidden) return;                    // not while the tab is in the background
+    if (document.querySelector('.overlay, .modal')) return;  // not mid-form
+    if (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+    route();
+  }, 30_000);
 }
 
 window.addEventListener('hashchange', route);

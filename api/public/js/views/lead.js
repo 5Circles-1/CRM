@@ -1,27 +1,26 @@
 import { get, post } from '../api.js';
-import { badge, esc, fmtDT, fmtINR, h, localToIso, openModal, toast, tomorrowAt } from '../util.js';
+import { badge, esc, fmtDT, fmtINR, fmtTalk, h, localToIso, openModal, parseTalk, toast, tomorrowAt } from '../util.js';
 
 const OPEN_STATUSES = new Set(['new', 'working', 'callback', 'qualified', 'negotiation']);
 
-const DISPOSITIONS = [
-  ['connected_interested', 'Connected — interested'],
-  ['callback_requested', 'Connected — asked to call back'],
-  ['connected_not_interested', 'Connected — not interested (closes lead)'],
-  ['not_answered', 'Not answered'],
-  ['busy', 'Busy'],
-  ['switched_off', 'Switched off'],
-  ['wrong_person', 'Wrong person'],
-  ['language_barrier', 'Language barrier'],
-  ['invalid_number', 'Invalid number (closes lead)'],
-  ['do_not_call', 'Do not call (closes lead)'],
-];
+/**
+ * Call outcomes come from the API, which reads them from the database enum.
+ * Keeping a copy here meant every new outcome had to be added in three places,
+ * and the one that got forgotten was always this one.
+ */
+let DISPOSITIONS = [];
+let NEEDS_FOLLOWUP = new Set();
 
-/** Dispositions where the UI requires an explicit follow-up time. */
-const NEEDS_FOLLOWUP = new Set(['callback_requested', 'connected_interested']);
+async function loadDispositions() {
+  if (DISPOSITIONS.length) return;
+  DISPOSITIONS = await get('/meta/dispositions');
+  NEEDS_FOLLOWUP = new Set(DISPOSITIONS.filter((d) => d.followUp).map((d) => d.value));
+}
+
 
 export async function render(outlet, me, params) {
   const id = params[0];
-  const data = await get(`/leads/${id}`);
+  const [data] = await Promise.all([get(`/leads/${id}`), loadDispositions()]);
   const { lead } = data;
   const open = OPEN_STATUSES.has(lead.status);
   const canTransfer = me.role === 'counsellor' || me.role === 'admin';
@@ -44,6 +43,8 @@ export async function render(outlet, me, params) {
         </div>
         <div class="row">
           ${open ? '<button class="btn primary" data-act="call" data-testid="log-call-btn">Log a call</button>' : ''}
+          <button class="btn" data-act="whatsapp" data-testid="whatsapp-btn">${lead.whatsapp_sent_at ? '✓ WhatsApp sent' : 'Mark WhatsApp sent'}</button>
+          <button class="btn" data-act="walkin" data-testid="walkin-btn">${lead.walked_in_at ? '✓ Walked in' : 'Mark walked in'}</button>
           ${open ? '<button class="btn" data-act="callback">Set callback</button>' : ''}
           ${open && me.role === 'caller' ? '<button class="btn" data-act="qualify">Qualify → counsellor</button>' : ''}
           ${open && canTransfer ? '<button class="btn" data-act="transfer" data-testid="transfer-btn">Transfer</button>' : ''}
@@ -55,6 +56,10 @@ export async function render(outlet, me, params) {
         <div class="stat"><div class="k">Next action</div>
           <div class="v" style="font-size:15px" data-testid="next-action">${esc(fmtDT(lead.next_action_at))}</div>
           <div class="s">${esc(lead.next_action_note ?? '')}</div></div>
+        <div class="stat"><div class="k">WhatsApp / walk-in</div>
+          <div class="v" style="font-size:15px">${lead.whatsapp_sent_at ? esc(fmtDT(lead.whatsapp_sent_at)) : 'not sent'}</div>
+          <div class="s">${lead.walked_in_at ? 'walked in ' + esc(fmtDT(lead.walked_in_at))
+             : lead.walkin_expected_at ? 'expected ' + esc(fmtDT(lead.walkin_expected_at)) : 'no visit expected'}</div></div>
         <div class="stat"><div class="k">Attempts / connects</div>
           <div class="v">${Number(lead.attempt_count)} / ${Number(lead.connect_count)}</div>
           <div class="s">NA streak ${Number(lead.na_streak)} · transfers ${Number(lead.transfer_count)}</div></div>
@@ -81,7 +86,7 @@ export async function render(outlet, me, params) {
           <td>${esc(fmtDT(a.started_at))}</td>
           <td>${esc(a.by_name)}</td>
           <td>${badge(a.disposition)}${a.is_connect ? ' <span class="badge b-ok">connect</span>' : ''}</td>
-          <td class="num">${Number(a.duration_seconds)}s</td>
+          <td class="num">${esc(fmtTalk(a.duration_seconds))}</td>
           <td>${a.is_verified ? '<span class="badge b-ok">device</span>' : '<span class="badge b-mute">manual</span>'}</td>
           <td>${esc(a.notes ?? '')}</td>
         </tr>`).join('')}
@@ -101,10 +106,25 @@ export async function render(outlet, me, params) {
   }
   outlet.appendChild(tl);
 
-  outlet.addEventListener('click', (e) => {
+  outlet.addEventListener('click', async (e) => {
     const act = e.target?.dataset?.act;
     if (!act) return;
     if (act === 'call') logCallModal(lead, () => render(outlet, me, params));
+
+    if (act === 'whatsapp' || act === 'walkin') {
+      const sent = act === 'whatsapp' ? !lead.whatsapp_sent_at : !lead.walked_in_at;
+      try {
+        await post(`/leads/${lead.id}/${act}`,
+          act === 'whatsapp' ? { sent } : { walkedIn: sent });
+        toast(act === 'whatsapp'
+          ? (sent ? 'Marked as messaged on WhatsApp.' : 'WhatsApp mark cleared.')
+          : (sent ? 'Marked as walked in.' : 'Walk-in mark cleared.'));
+        render(outlet, me, params);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+      return;
+    }
     if (act === 'callback') callbackModal(lead, () => render(outlet, me, params));
     if (act === 'qualify') qualifyModal(lead, () => render(outlet, me, params));
     if (act === 'transfer') transferModal(lead, () => render(outlet, me, params));
@@ -117,7 +137,7 @@ function eventLabel(e) {
   switch (e.event_type) {
     case 'assigned': return 'Assigned to a caller';
     case 'assignment_deferred': return 'Arrived while nobody was on the floor — held for shift start';
-    case 'call_logged': return `Call logged: ${String(p.disposition ?? '').replace(/_/g, ' ')} · ${p.duration_seconds ?? 0}s${p.is_connect ? ' · connect' : ''}${p.verified ? ' · device-verified' : ''}`;
+    case 'call_logged': return `Call logged: ${String(p.disposition ?? '').replace(/_/g, ' ')} · ${fmtTalk(p.duration_seconds)}${p.is_connect ? ' · connect' : ''}${p.verified ? ' · device-verified' : ''}`;
     case 'callback_scheduled': return `Callback set for ${fmtDT(p.scheduled_at)}${p.note ? ` — “${p.note}”` : ''}`;
     case 'callback_missed': return `Callback missed (was due ${fmtDT(p.scheduled_at)})`;
     case 'transferred': return `Transferred to another caller (${String(p.reason ?? '').replace(/_/g, ' ')})`;
@@ -137,12 +157,12 @@ function logCallModal(lead, onDone) {
       <div id="suggestion-slot"></div>
       <label class="f">What happened?
         <select name="disposition" data-testid="disposition">
-          ${DISPOSITIONS.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}
+          ${DISPOSITIONS.map((d) => `<option value="${esc(d.value)}">${esc(d.label)}</option>`).join('')}
         </select>
       </label>
       <div class="frow">
-        <label class="f">Talk time (seconds)
-          <input name="duration" type="number" min="0" max="14400" value="0" data-testid="duration">
+        <label class="f">Talk time <span class="hint">mm:ss — e.g. 3:07</span>
+          <input name="duration" inputmode="numeric" placeholder="0:00" value="0:00" data-testid="duration">
         </label>
       </div>
       <div id="followup" style="display:none">
@@ -186,12 +206,12 @@ function logCallModal(lead, onDone) {
     const slot = body.querySelector('#suggestion-slot');
     slot.appendChild(h(`
       <div class="banner" style="background:var(--info-bg);color:var(--info);border-color:#c7d7f8">
-        Phone shows a ${esc(suggestion.direction)} call of ${Number(suggestion.duration_seconds)}s at
+        Phone shows a ${esc(suggestion.direction)} call of ${esc(fmtTalk(suggestion.duration_seconds))} at
         ${esc(fmtDT(suggestion.started_at))}.
         <button class="btn small" style="margin-left:8px" data-testid="use-suggestion">Use it</button>
       </div>`));
     slot.querySelector('[data-testid=use-suggestion]').addEventListener('click', () => {
-      body.querySelector('[name=duration]').value = Number(suggestion.duration_seconds);
+      body.querySelector('[name=duration]').value = fmtTalk(suggestion.duration_seconds);
       body.querySelector('[name=deviceLogId]').value = suggestion.id;
       slot.firstElementChild.textContent = 'Linked to the device call — this dial counts as verified.';
     });
@@ -199,9 +219,14 @@ function logCallModal(lead, onDone) {
 
   footer.querySelector('[data-testid=save-call]').addEventListener('click', async () => {
     const disposition = sel.value;
+    const seconds = parseTalk(body.querySelector('[name=duration]').value);
+    if (seconds === null) {
+      toast('Talk time should look like 3:07, or just a number of seconds.', 'err');
+      return;
+    }
     const payload = {
       disposition,
-      durationSeconds: Number(body.querySelector('[name=duration]').value) || 0,
+      durationSeconds: seconds,
       notes: body.querySelector('[name=notes]').value.trim() || undefined,
       deviceLogId: body.querySelector('[name=deviceLogId]').value || undefined,
     };

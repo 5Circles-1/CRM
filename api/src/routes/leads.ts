@@ -5,23 +5,113 @@ import { badRequest, notFound } from '../http/errors.ts';
 
 const uuid = z.string().uuid();
 
-const dispositionSchema = z.enum([
-  'connected_interested',
-  'connected_not_interested',
-  'callback_requested',
-  'not_answered',
-  'busy',
-  'switched_off',
-  'invalid_number',
-  'wrong_person',
-  'language_barrier',
-  'do_not_call',
-]);
+/**
+ * Call outcomes, in the order the floor should read them.
+ *
+ * The labels live here, but the VALUES are checked against the database enum
+ * by a test - the enum is the real definition, and a list maintained in two
+ * places drifts the first time somebody adds an outcome in SQL only.
+ */
+export const DISPOSITIONS: Array<{ value: string; label: string; terminal?: true; followUp?: true }> = [
+  { value: 'connected_interested', label: 'Connected — interested', followUp: true },
+  { value: 'callback_requested', label: 'Connected — asked to call back', followUp: true },
+  { value: 'will_visit', label: 'Will visit the office', followUp: true },
+  { value: 'will_call_back_self', label: 'Will call us back themselves' },
+  { value: 'disconnected_after_intro', label: 'Disconnected after introduction' },
+  { value: 'connected_not_interested', label: 'Connected — not interested (closes lead)', terminal: true },
+  { value: 'not_answered', label: 'Not answered' },
+  { value: 'incoming_unavailable', label: 'Incoming unavailable' },
+  { value: 'busy', label: 'Busy' },
+  { value: 'switched_off', label: 'Switched off' },
+  { value: 'wrong_person', label: 'Wrong person' },
+  { value: 'language_barrier', label: 'Language barrier' },
+  { value: 'job_enquiry', label: 'Job enquiry — not a client (closes lead)', terminal: true },
+  { value: 'invalid_number', label: 'Invalid number (closes lead)', terminal: true },
+  { value: 'do_not_call', label: 'Do not call (closes lead)', terminal: true },
+];
+
+const dispositionSchema = z.enum(
+  DISPOSITIONS.map((d) => d.value) as [string, ...string[]],
+);
 
 /** Dispositions that close a lead, and so need no follow-up action. */
-const TERMINAL = new Set(['invalid_number', 'do_not_call', 'connected_not_interested']);
+const TERMINAL = new Set(DISPOSITIONS.filter((d) => d.terminal).map((d) => d.value));
 
 export async function leadRoutes(app: FastifyInstance): Promise<void> {
+  /** The outcome list, so the UI never carries its own copy to drift. */
+  app.get('/meta/dispositions', async (req) => {
+    req.requireUser();
+    return DISPOSITIONS;
+  });
+
+  /**
+   * Record that a WhatsApp message went to this lead.
+   *
+   * This is a claim by the caller, not a delivery receipt - the CRM cannot see
+   * WhatsApp. It is still worth recording: "did anyone message them" is asked
+   * constantly, and the alternative is asking the caller and believing them.
+   */
+  app.post('/leads/:id/whatsapp', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z.object({ sent: z.boolean().default(true) }).parse(req.body ?? {});
+
+    const row = await req.tx((q) =>
+      q.one(
+        `update crm.leads
+            set whatsapp_sent_at = case when $2 then now() else null end,
+                whatsapp_sent_by = case when $2 then $3::uuid else null end,
+                updated_at = now()
+          where id = $1
+          returning id, whatsapp_sent_at, whatsapp_sent_by`,
+        [id, body.sent, user.id],
+      ),
+    );
+    if (!row) throw notFound('no lead with that id');
+
+    await req.tx((q) =>
+      q.query(
+        `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
+         values ($1, 'note', $2, $3)`,
+        [id, user.id, JSON.stringify({ whatsapp_sent: body.sent })],
+      ),
+    );
+    return row;
+  });
+
+  /**
+   * Mark that the lead actually came in.
+   *
+   * Separate from the will_visit outcome on purpose: a promise to visit and a
+   * visit are different numbers, and only one of them turns into revenue.
+   */
+  app.post('/leads/:id/walkin', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z.object({ walkedIn: z.boolean().default(true) }).parse(req.body ?? {});
+
+    const row = await req.tx((q) =>
+      q.one(
+        `update crm.leads
+            set walked_in_at = case when $2 then coalesce(walked_in_at, now()) else null end,
+                updated_at = now()
+          where id = $1
+          returning id, walked_in_at, walkin_expected_at`,
+        [id, body.walkedIn],
+      ),
+    );
+    if (!row) throw notFound('no lead with that id');
+
+    await req.tx((q) =>
+      q.query(
+        `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
+         values ($1, 'note', $2, $3)`,
+        [id, user.id, JSON.stringify({ walked_in: body.walkedIn })],
+      ),
+    );
+    return row;
+  });
+
   /**
    * Lead detail with its full timeline.
    *
@@ -58,12 +148,16 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
           [id],
         ),
         q.many(
-          `select lt.created_at, lt.reason, lt.note,
-                  fu.full_name as from_name, tu.full_name as to_name, bu.full_name as by_name
+          // LEFT JOIN on the actor: an automatic reassignment has no human
+          // behind it, and an inner join would silently drop exactly the
+          // transfers the caller most needs to see explained on the timeline.
+          `select lt.created_at, lt.reason, lt.note, lt.is_automatic,
+                  fu.full_name as from_name, tu.full_name as to_name,
+                  coalesce(bu.full_name, 'Automatic') as by_name
              from crm.lead_transfers lt
              left join crm.users fu on fu.id = lt.from_caller_id
              join crm.users tu on tu.id = lt.to_caller_id
-             join crm.users bu on bu.id = lt.transferred_by
+             left join crm.users bu on bu.id = lt.transferred_by
             where lt.lead_id = $1 order by lt.created_at desc`,
           [id],
         ),
@@ -84,50 +178,38 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
         // Re-tap filters. "Show me everyone who did not answer" and "show me
         // everyone who asked to be called back" are the two lists a caller
         // actually works from, and neither was reachable before.
-        lastDisposition: z
-          .enum([
-            'connected_interested',
-            'connected_not_interested',
-            'callback_requested',
-            'not_answered',
-            'busy',
-            'switched_off',
-            'invalid_number',
-            'wrong_person',
-            'language_barrier',
-            'do_not_call',
-          ])
-          .optional(),
-        due: z.enum(['overdue', 'today', 'untouched']).optional(),
-        limit: z.coerce.number().int().min(1).max(100).default(50),
+        lastDisposition: dispositionSchema.optional(),
+        due: z.enum(['overdue', 'today', 'untouched', 'contacted']).optional(),
+        whatsapp: z.enum(['sent', 'not_sent']).optional(),
+        limit: z.coerce.number().int().min(1).max(200).default(50),
         offset: z.coerce.number().int().min(0).default(0),
       })
       .parse(req.query);
 
     return req.tx(async (q) => {
       const rows = await q.many<{ id: string }>(
-        `select l.id, l.full_name, l.phone_e164, l.city, l.status, l.priority,
-                l.next_action_at, l.attempt_count, l.na_streak, l.caller_id,
-                l.counsellor_id, l.created_at, l.first_touched_at,
-                (select ca.disposition from crm.call_attempts ca
-                  where ca.lead_id = l.id order by ca.started_at desc limit 1) as last_disposition
-           from crm.leads l
+        `select lead_id as id, full_name, phone_e164, city, status, priority,
+                next_action_at, next_action_note, attempt_count, connect_count, na_streak,
+                caller_id, counsellor_id, created_at, first_touched_at, last_contacted_at,
+                last_disposition, last_call_at, last_duration_seconds,
+                whatsapp_sent_at, walkin_expected_at, walked_in_at
+           from crm.v_lead_history
           where ($1::text is null
-                 or l.full_name ilike '%' || $1 || '%'
-                 or l.phone_e164 like '%' || regexp_replace($1, '[^0-9]', '', 'g'))
-            and ($2::text is null or l.status = $2::crm.lead_status)
-            and ($5::text is null or exists (
-                  select 1 from crm.call_attempts ca
-                   where ca.lead_id = l.id
-                     and ca.disposition = $5::crm.disposition
-                     and ca.started_at = (select max(ca2.started_at) from crm.call_attempts ca2
-                                           where ca2.lead_id = l.id)))
+                 or full_name ilike '%' || $1 || '%'
+                 or phone_e164 like '%' || regexp_replace($1, '[^0-9]', '', 'g'))
+            and ($2::text is null or status = $2::crm.lead_status)
+            and ($5::text is null or last_disposition = $5::crm.disposition)
             and ($6::text is null or case $6
-                   when 'overdue'   then l.next_action_at < now()
-                   when 'today'     then crm.ist_date(l.next_action_at) = crm.ist_date(now())
-                   when 'untouched' then l.first_touched_at is null
+                   when 'overdue'   then next_action_at < now()
+                   when 'today'     then crm.ist_date(next_action_at) = crm.ist_date(now())
+                   when 'untouched' then first_touched_at is null
+                   when 'contacted' then first_touched_at is not null
                  end)
-          order by l.next_action_at asc nulls last, l.created_at desc
+            and ($7::text is null or case $7
+                   when 'sent'     then whatsapp_sent_at is not null
+                   when 'not_sent' then whatsapp_sent_at is null
+                 end)
+          order by next_action_at asc nulls last, created_at desc
           limit $3 offset $4`,
         [
           query.q ?? null,
@@ -136,6 +218,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
           query.offset,
           query.lastDisposition ?? null,
           query.due ?? null,
+          query.whatsapp ?? null,
         ],
       );
 

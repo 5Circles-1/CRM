@@ -11,7 +11,28 @@ import { esc, h } from './util.js';
  * reappearing gets dismissed reflexively and then ignored when it matters.
  */
 
-const POLL_MS = 30_000;
+/**
+ * Poll interval and which alerts interrupt are both settings, not constants.
+ *
+ * The floor's complaint was being interrupted too often about leads going
+ * nowhere. Whether that is fixed by polling less, by popping fewer kinds, or by
+ * widening the retry gaps depends on the day, so ops can change all three in
+ * Admin -> Settings without a deploy.
+ */
+let pollMs = 20_000;
+let popupKinds = new Set(['callback_due', 'callback_soon', 'reassigned_in']);
+
+async function loadAlertSettings() {
+  try {
+    const cfg = await get('/meta/ui-settings');
+    const secs = Number(cfg['alerts.poll_seconds']);
+    if (Number.isFinite(secs) && secs >= 5) pollMs = secs * 1000;
+    if (Array.isArray(cfg['alerts.popup_kinds'])) popupKinds = new Set(cfg['alerts.popup_kinds']);
+  } catch {
+    // Defaults above are deliberately sane, so a failed read leaves the bell
+    // working rather than failing shut.
+  }
+}
 
 /** Alerts already popped, so re-polling does not re-interrupt. */
 const announced = new Set();
@@ -131,17 +152,16 @@ async function poll(firstRun) {
     announced.add(key);
     // On the first poll after a page load, fill the set without popping: a
     // caller who refreshes should not be buried under every alert at once.
-    if (!firstRun && (a.kind === 'callback_due' || a.kind === 'callback_soon' || a.kind === 'reassigned_in')) {
-      popup(a);
-    }
+    if (!firstRun && popupKinds.has(a.kind)) popup(a);
   }
 }
 
-export function startAlerts() {
+export async function startAlerts() {
   if (timer) clearInterval(timer);
   announced.clear();
+  await loadAlertSettings();
   poll(true);
-  timer = setInterval(() => poll(false), POLL_MS);
+  timer = setInterval(() => poll(false), pollMs);
 }
 
 export function stopAlerts() {
