@@ -155,6 +155,45 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
+  /**
+   * Why each caller is or is not receiving leads.
+   *
+   * The distribution engine has recorded every decision since day one -
+   * including who it passed over and why - but "Prabhjot is not getting any
+   * leads" was still a mystery, because nothing showed that record. This is
+   * that screen: one row per caller with the first rule stopping them
+   * (inactive / no team / off shift), plus the leads currently waiting for
+   * nobody so held leads are visible too.
+   */
+  app.get('/dashboards/lead-flow', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    return req.tx(async (q) => {
+      const callers = await q.many(
+        `select * from crm.v_lead_flow
+          order by is_active desc, team_name nulls last, rotation_order`,
+      );
+      const pending = await q.one(`select * from crm.v_lead_flow_summary`);
+      return { callers, ...(pending ?? {}) };
+    });
+  });
+
+  /**
+   * Follow-up radar: who is sitting on a promise, right now.
+   *
+   * The leakage list shows the leads; this shows the people. A counsellor
+   * scanning it sees at a glance whose follow-ups are slipping before a
+   * single one of them turns into a lost lead.
+   */
+  app.get('/dashboards/followups', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    return req.tx((q) =>
+      q.many(
+        `select * from crm.v_followup_radar
+          order by overdue_now desc, callbacks_due desc, due_next_hour desc, full_name`,
+      ),
+    );
+  });
+
   /** Security alerts. Admin only - the floor cannot read the watchers. */
   app.get('/dashboards/security-alerts', async (req) => {
     req.requireRole('admin');

@@ -106,7 +106,12 @@ export async function render(outlet, me, params) {
   }
   outlet.appendChild(tl);
 
-  outlet.addEventListener('click', async (e) => {
+  // Assignment, not addEventListener: this view re-renders in place after
+  // every action (log a call, set a callback...), and each render was stacking
+  // one more listener on the same outlet - by the third call of the day,
+  // pressing "Log a call" opened three copies of the modal on top of each
+  // other. Assigning replaces the previous handler instead of joining it.
+  outlet.onclick = async (e) => {
     const act = e.target?.dataset?.act;
     if (!act) return;
     if (act === 'call') logCallModal(lead, () => render(outlet, me, params));
@@ -129,7 +134,7 @@ export async function render(outlet, me, params) {
     if (act === 'qualify') qualifyModal(lead, () => render(outlet, me, params));
     if (act === 'transfer') transferModal(lead, () => render(outlet, me, params));
     if (act === 'deal') dealModal(lead, () => render(outlet, me, params));
-  });
+  };
 }
 
 function eventLabel(e) {

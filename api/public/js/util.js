@@ -127,6 +127,30 @@ export function parseTalk(text) {
 }
 
 /**
+ * A person as a face: their uploaded icon, or initials on a colour that stays
+ * stable for that name. Every board and table uses this one helper, so a
+ * person looks the same everywhere.
+ */
+const AVATAR_HUES = [14, 42, 96, 152, 200, 232, 268, 310, 338];
+
+export function avatarHtml(name, url, size = 32) {
+  const s = Number(size) || 32;
+  if (url) {
+    return `<img class="avatar" src="${esc(url)}" alt="" width="${s}" height="${s}"
+      style="width:${s}px;height:${s}px">`;
+  }
+  const clean = String(name ?? '').trim();
+  const initials = clean
+    .split(/\s+/).slice(0, 2).map((w) => w[0] ?? '').join('').toUpperCase() || '?';
+  let hash = 0;
+  for (const ch of clean) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const hue = AVATAR_HUES[hash % AVATAR_HUES.length];
+  return `<span class="avatar avatar-fallback" aria-hidden="true"
+    style="width:${s}px;height:${s}px;font-size:${Math.round(s * 0.4)}px;
+           background:hsl(${hue} 55% 88%);color:hsl(${hue} 55% 28%)">${esc(initials)}</span>`;
+}
+
+/**
  * Point every brand image at the real artwork, falling back to the bundled SVG.
  *
  * Done here rather than with an inline onerror attribute: inline handlers are

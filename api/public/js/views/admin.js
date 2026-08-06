@@ -1,5 +1,5 @@
 import { get, post, put } from '../api.js';
-import { esc, fmtDT, fmtINR, h, openModal, toast } from '../util.js';
+import { avatarHtml, esc, fmtDT, fmtINR, h, openModal, toast } from '../util.js';
 
 /** Ops/admin surface: settings, users, ingestion, quarantine, security alerts. */
 const TABS = [
@@ -36,7 +36,7 @@ export async function render(outlet, me) {
 async function settings(body, me) {
   const rows = await get('/admin/settings');
   body.innerHTML = '';
-  body.appendChild(h(`
+  const panel = h(`
     <div class="panel">
       <h2>Every tunable number in the system <small>changes are audited with the actor</small></h2>
       <table class="table"><thead><tr><th>Setting</th><th>Value</th><th></th></tr></thead><tbody>
@@ -48,9 +48,13 @@ async function settings(body, me) {
           <td class="right" style="width:90px">${me.role === 'admin' ? '<button class="btn small sv-save">Save</button>' : ''}</td>
         </tr>`).join('')}
       </tbody></table>
-    </div>`));
+    </div>`);
+  body.appendChild(panel);
 
-  body.addEventListener('click', async (e) => {
+  // On the panel, not on `body`: the tab container outlives every redraw, so a
+  // listener there stacked once per visit - the third trip to this tab saved
+  // every setting three times and showed three toasts for one click.
+  panel.addEventListener('click', async (e) => {
     if (!e.target.classList?.contains('sv-save')) return;
     const tr = e.target.closest('tr');
     const key = tr.dataset.key;
@@ -82,14 +86,18 @@ async function users(body, me) {
       </tr></thead><tbody>
       ${list.map((u) => `
         <tr>
-          <td>${esc(u.full_name)} <span class="hint">${esc(u.employee_code ?? '')}</span></td>
+          <td>${avatarHtml(u.full_name, u.avatar_url, 26)} ${esc(u.full_name)}
+              <span class="hint">${esc(u.employee_code ?? '')}</span></td>
           <td>${esc(u.email)}</td>
           <td>${esc(u.role)}</td>
-          <td>${esc(u.team_name ?? '—')}</td>
+          <td>${esc(u.team_name ?? '—')}
+              ${u.is_active && u.role === 'caller' && !u.team_name
+                ? '<span class="badge b-bad" title="Distribution walks the teams, so a caller in no team never receives a lead">no team — gets no leads</span>' : ''}</td>
           <td class="mono">${esc(u.dialing_msisdn ?? '—')}</td>
           <td>${u.is_active ? '<span class="badge b-ok">active</span>' : '<span class="badge b-mute">deactivated</span>'}</td>
           <td class="right">${me.role !== 'admin' ? '' : u.is_active
-            ? `<button class="btn small u-pwd" data-id="${esc(u.id)}">Reset password</button>
+            ? `<button class="btn small u-avatar" data-id="${esc(u.id)}">${u.avatar_url ? 'Change icon' : 'Set icon'}</button>
+               <button class="btn small u-pwd" data-id="${esc(u.id)}">Reset password</button>
                <button class="btn small danger u-deact" data-id="${esc(u.id)}">Deactivate</button>`
             : `<button class="btn small u-react" data-id="${esc(u.id)}">Reactivate</button>`}</td>
         </tr>`).join('')}
@@ -102,6 +110,11 @@ async function users(body, me) {
   panel.addEventListener('click', async (e) => {
     const id = e.target.dataset?.id;
     if (!id) return;
+
+    if (e.target.classList.contains('u-avatar')) {
+      avatarModal(list.find((u) => u.id === id), () => users(body, me));
+      return;
+    }
 
     if (e.target.classList.contains('u-deact')) {
       if (!confirm('Deactivate this user? Their sessions end immediately.')) return;
@@ -130,6 +143,81 @@ async function users(body, me) {
     }
 
     if (e.target.classList.contains('u-pwd')) passwordModal(id, () => users(body, me));
+  });
+}
+
+/**
+ * Upload a leaderboard icon.
+ *
+ * The browser does the downsizing: whatever lands here - a 12MB phone photo
+ * included - leaves as a 128px square PNG data URL a few KB long. Sending the
+ * original and resizing on the server would mean running an image pipeline for
+ * what is, in the end, a 26px circle next to a name.
+ */
+function avatarModal(user, onDone) {
+  if (!user) return;
+  const bodyEl = h(`
+    <div>
+      <div class="row" style="align-items:center;gap:14px">
+        <span id="avatar-preview">${avatarHtml(user.full_name, user.avatar_url, 64)}</span>
+        <div>
+          <label class="f" style="margin:0">Choose an image
+            <input name="file" type="file" accept="image/png,image/jpeg,image/webp">
+          </label>
+          <div class="hint">Square images look best. It is resized to 128px before upload.</div>
+        </div>
+      </div>
+    </div>`);
+  const footer = h(`
+    <div>
+      ${user.avatar_url ? '<button class="btn danger" id="avatar-clear">Remove icon</button>' : ''}
+      <button class="btn primary" id="avatar-save" disabled>Save icon</button>
+    </div>`);
+  const { close } = openModal(`Icon for ${user.full_name}`, bodyEl, footer);
+
+  let dataUrl = null;
+  bodyEl.querySelector('[name=file]').addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const img = await createImageBitmap(file);
+      const size = 128;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      // Cover-crop to a square from the centre, so nobody arrives stretched.
+      const side = Math.min(img.width, img.height);
+      ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+      dataUrl = canvas.toDataURL('image/png');
+      bodyEl.querySelector('#avatar-preview').innerHTML = avatarHtml(user.full_name, dataUrl, 64);
+      footer.querySelector('#avatar-save').disabled = false;
+    } catch {
+      toast('Could not read that image — try a PNG or JPG.', 'err');
+    }
+  });
+
+  footer.querySelector('#avatar-save').addEventListener('click', async () => {
+    if (!dataUrl) return;
+    try {
+      await put(`/admin/users/${user.id}/avatar`, { dataUrl });
+      toast('Icon saved — it shows on the leaderboard immediately.');
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+
+  footer.querySelector('#avatar-clear')?.addEventListener('click', async () => {
+    try {
+      await put(`/admin/users/${user.id}/avatar`, { dataUrl: null });
+      toast('Icon removed.');
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   });
 }
 

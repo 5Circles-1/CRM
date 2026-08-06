@@ -49,7 +49,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return req.tx((q) =>
       q.many(
         `select u.id, u.full_name, u.email, u.role, u.employee_code, u.is_active,
-                u.dialing_msisdn, crm.team_of(u.id, current_date) as team_id,
+                u.dialing_msisdn, u.avatar_url,
+                crm.team_of(u.id, current_date) as team_id,
                 t.name as team_name, tm.rotation_order
            from crm.users u
            left join crm.team_memberships tm
@@ -147,6 +148,39 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       ),
     );
     if (!row) throw notFound('no deactivated user with that id');
+    return row;
+  });
+
+  /**
+   * Set or clear a person's leaderboard icon.
+   *
+   * The image arrives as a data URL the browser has already downsized, and is
+   * stored inline on the user row - no file store to run or leak. The format
+   * allow-list plus the size cap (matching the DB check constraint) keeps this
+   * from becoming an arbitrary-file upload with extra steps.
+   */
+  app.put('/admin/users/:id/avatar', async (req) => {
+    req.requireRole('admin');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({
+        dataUrl: z
+          .string()
+          .max(200_000)
+          .regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/)
+          .nullable(),
+      })
+      .parse(req.body);
+
+    const row = await req.tx((q) =>
+      q.one(
+        `update crm.users set avatar_url = $2, updated_at = now()
+          where id = $1
+          returning id, full_name, (avatar_url is not null) as has_avatar`,
+        [id, body.dataUrl],
+      ),
+    );
+    if (!row) throw notFound('no user with that id');
     return row;
   });
 

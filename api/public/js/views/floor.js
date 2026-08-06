@@ -1,5 +1,5 @@
 import { get, post } from '../api.js';
-import { agoLabel, badge, esc, fmtDT, fmtINR, fmtTalk, h, minsLabel, toast } from '../util.js';
+import { agoLabel, avatarHtml, badge, esc, fmtDT, fmtINR, fmtTalk, h, minsLabel, toast } from '../util.js';
 
 /**
  * The leaderboard parameters, and what wins each one.
@@ -26,7 +26,8 @@ const TROPHIES = [
  * transferring (requirement 8), and their own negotiations.
  */
 export async function render(outlet, me) {
-  const [floor, immediate, leakage, candidates, targets, qualified, negotiation, today] = await Promise.all([
+  const [floor, immediate, leakage, candidates, targets, qualified, negotiation, today,
+         overallToday, avatars, leadFlow, followups] = await Promise.all([
     get('/dashboards/floor'),
     get('/queues/immediate'),
     get('/dashboards/leakage'),
@@ -35,26 +36,70 @@ export async function render(outlet, me) {
     get('/leads?status=qualified&limit=100'),
     get('/leads?status=negotiation&limit=100'),
     get('/performance?days=1').catch(() => []),
+    get('/performance/overall?days=1').catch(() => []),
+    get('/users/avatars').catch(() => ({})),
+    get('/dashboards/lead-flow').catch(() => null),
+    get('/dashboards/followups').catch(() => []),
   ]);
 
   outlet.innerHTML = '';
 
-  // --- the leaderboard: who is winning what, computed live ---
+  // --- the leaderboard: overall standings first, then who is winning what ---
   let boardDays = 1;
   const board = h('<div class="panel"></div>');
   outlet.appendChild(board);
 
   const drawBoard = async () => {
-    const rows = boardDays === 1 ? today : await get(`/performance?days=${boardDays}`);
+    const [rows, overall] = boardDays === 1
+      ? [today, overallToday]
+      : await Promise.all([
+          get(`/performance?days=${boardDays}`),
+          get(`/performance/overall?days=${boardDays}`).catch(() => []),
+        ]);
     board.innerHTML = '';
     board.appendChild(h(`
       <div class="row spread">
-        <h2 class="mt0">Leaderboard <small>winners update automatically as calls are logged</small></h2>
+        <h2 class="mt0">Leaderboard <small>updates live as calls are logged</small></h2>
         <div class="chips" style="margin:0">
           ${[[1, 'Today'], [7, 'This week'], [30, 'This month']].map(([d, l]) => `
             <button class="chip ${d === boardDays ? 'on' : ''}" data-board-days="${d}">${l}</button>`).join('')}
         </div>
       </div>`));
+
+    // Overall standings: every metric, one weighted number. The podium is the
+    // motivation; the list under it is the fairness - everyone can see where
+    // the points came from, and the weights are Admin settings, not magic.
+    if (overall.length > 0) {
+      const podium = overall.slice(0, 3);
+      const medals = ['🥇', '🥈', '🥉'];
+      board.appendChild(h(`
+        <div class="podium" data-testid="overall-podium">
+          ${podium.map((p, i) => `
+            <div class="podium-slot p${i + 1}">
+              <div class="podium-medal">${medals[i]}</div>
+              ${avatarHtml(p.full_name, avatars[p.user_id], i === 0 ? 64 : 48)}
+              <div class="podium-name">${esc(p.full_name)}</div>
+              <div class="podium-points">${Number(p.overall_points).toFixed(0)} pts</div>
+            </div>`).join('')}
+        </div>`));
+      if (overall.length > 3) {
+        const maxPts = Number(overall[0].overall_points) || 1;
+        board.appendChild(h(`
+          <div class="standings">
+            ${overall.slice(3).map((p) => `
+              <div class="standing-row">
+                <span class="standing-rank">#${Number(p.rank)}</span>
+                ${avatarHtml(p.full_name, avatars[p.user_id], 26)}
+                <span class="standing-name">${esc(p.full_name)}</span>
+                <span class="standing-track"><span style="width:${Math.max(2, (Number(p.overall_points) / maxPts) * 100)}%"></span></span>
+                <span class="standing-points">${Number(p.overall_points).toFixed(0)}</span>
+              </div>`).join('')}
+          </div>`));
+      }
+      board.appendChild(h(`<div class="hint" style="margin:2px 0 10px">
+        Overall points weigh conversions and revenue first, then connects, dials, interest,
+        walk-ins and talk time — the weights are settings under Admin → Settings (leaderboard.*).</div>`));
+    }
 
     const cards = h('<div class="trophy-grid"></div>');
     for (const t of TROPHIES) {
@@ -67,7 +112,9 @@ export async function render(outlet, me) {
           <div class="trophy-head">${t.icon} ${esc(t.label)}</div>
           ${winners.length === 0
             ? '<div class="trophy-none">no scores yet</div>'
-            : `<div class="trophy-name">${winners.map((w) => esc(w.full_name)).join(' & ')}</div>
+            : `<div class="trophy-name">
+                 ${winners.map((w) => avatarHtml(w.full_name, avatars[w.user_id], 22)).join('')}
+                 ${winners.map((w) => esc(w.full_name)).join(' & ')}</div>
                <div class="trophy-value">${esc((t.fmt ?? String)(top))}</div>`}
         </div>`));
     }
@@ -95,6 +142,91 @@ export async function render(outlet, me) {
       ${leakTotal === 0 ? '<span class="chip" style="color:var(--ok)">Pipeline clean ✓</span>' : ''}
     </div>`);
   outlet.appendChild(chips);
+
+  // --- follow-up radar: whose promises are slipping, before they are lost ---
+  //
+  // The leakage list shows the leads; this shows the people. Sorted worst
+  // first, so the counsellor's next conversation is always the top row.
+  const radarRows = Array.isArray(followups) ? followups : [];
+  const anyDue = radarRows.some((r) =>
+    Number(r.overdue_now) > 0 || Number(r.callbacks_due) > 0 || Number(r.due_next_hour) > 0);
+  outlet.appendChild(h(`
+    <div class="panel" data-testid="followup-radar">
+      <h2>Follow-up radar <small>nobody's promise slips quietly — updates live</small></h2>
+      ${radarRows.length === 0 ? '<div class="empty">Nobody has follow-ups on the books yet.</div>' : `
+      <table class="table"><thead><tr>
+        <th>Person</th><th class="num">Overdue now</th><th class="num">Callbacks due</th>
+        <th class="num">Due next hour</th><th class="num">Later today</th>
+        <th class="num">Missed (7d)</th><th>Next callback</th>
+      </tr></thead><tbody>
+      ${radarRows.map((r) => `
+        <tr${Number(r.overdue_now) > 0 || Number(r.callbacks_due) > 0 ? ' class="radar-hot"' : ''}>
+          <td>${avatarHtml(r.full_name, avatars[r.user_id], 22)} ${esc(r.full_name)}
+              ${r.on_shift ? '' : ' <span class="badge b-mute">off floor</span>'}</td>
+          <td class="num">${Number(r.overdue_now) > 0
+            ? `<span class="badge b-bad">${Number(r.overdue_now)} · ${esc(agoLabel(r.oldest_overdue_minutes))} late</span>` : '0'}</td>
+          <td class="num">${Number(r.callbacks_due) > 0
+            ? `<span class="badge b-bad">${Number(r.callbacks_due)}</span>` : '0'}</td>
+          <td class="num">${Number(r.due_next_hour) > 0
+            ? `<span class="badge b-warn">${Number(r.due_next_hour)}</span>` : '0'}</td>
+          <td class="num">${Number(r.due_later_today)}</td>
+          <td class="num">${Number(r.callbacks_missed_7d) > 0
+            ? `<span class="badge b-warn">${Number(r.callbacks_missed_7d)}</span>` : '0'}</td>
+          <td>${esc(fmtDT(r.next_callback_at))}</td>
+        </tr>`).join('')}
+      </tbody></table>
+      ${anyDue ? '' : '<div class="hint" style="margin-top:8px">All clear — every follow-up on the floor is in the future. ✓</div>'}`}
+    </div>`));
+
+  // --- lead flow: why each caller is (or is not) receiving leads ---
+  //
+  // This panel exists because "X is not getting any leads" was unanswerable
+  // from any screen, even though the engine records every decision. The
+  // verdict column names the exact rule: off the floor (never pressed Start
+  // shift), in no team (the engine cannot pick them), or deactivated.
+  if (leadFlow && Array.isArray(leadFlow.callers)) {
+    const FLOW = {
+      receiving: '<span class="badge b-ok">receiving leads</span>',
+      off_shift: '<span class="badge b-warn">off floor — skipped</span>',
+      no_team: '<span class="badge b-bad">no team — never picked</span>',
+      inactive: '<span class="badge b-mute">deactivated</span>',
+    };
+    const FLOW_WHY = {
+      off_shift: 'Leads only go to callers who pressed “Start shift”. They will start receiving the moment they are on the floor.',
+      no_team: 'Distribution walks the teams, so a caller in no team is invisible to it. Add them to a team in Admin → Users.',
+      inactive: 'Deactivated accounts are excluded everywhere.',
+    };
+    const stuck = leadFlow.callers.filter((c) => c.flow_status !== 'receiving' && c.is_active);
+    outlet.appendChild(h(`
+      <div class="panel" data-testid="lead-flow">
+        <h2>Lead flow <small>who the distribution engine can reach right now</small></h2>
+        ${Number(leadFlow.unassigned) > 0 ? `
+          <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
+            <b>${Number(leadFlow.unassigned)} lead${Number(leadFlow.unassigned) === 1 ? '' : 's'} waiting with no caller.</b>
+            They are held at team level and hand out automatically as soon as an eligible caller is on the floor.
+          </div>` : ''}
+        <table class="table"><thead><tr>
+          <th>Caller</th><th>Team</th><th>Status</th><th class="num">Today</th>
+          <th class="num">Open book</th><th class="num">Passed over today</th><th>Last lead received</th>
+        </tr></thead><tbody>
+        ${leadFlow.callers.map((c) => `
+          <tr>
+            <td>${avatarHtml(c.full_name, avatars[c.user_id], 22)} ${esc(c.full_name)}</td>
+            <td>${esc(c.team_name ?? '—')}</td>
+            <td>${FLOW[c.flow_status] ?? esc(c.flow_status)}</td>
+            <td class="num">${Number(c.leads_today)}</td>
+            <td class="num">${Number(c.open_leads)}</td>
+            <td class="num">${Number(c.passed_over_today) > 0
+              ? `<span class="badge b-warn">${Number(c.passed_over_today)}</span>` : '0'}</td>
+            <td>${esc(fmtDT(c.last_lead_at))}</td>
+          </tr>`).join('')}
+        </tbody></table>
+        ${stuck.length === 0 ? '' : `
+          <div class="hint" style="margin-top:8px">
+            ${stuck.map((c) => `<div><b>${esc(c.full_name)}</b>: ${esc(FLOW_WHY[c.flow_status] ?? '')}</div>`).join('')}
+          </div>`}
+      </div>`));
+  }
 
   // --- immediate queue ---
   if (immediate.leads.length > 0) {
