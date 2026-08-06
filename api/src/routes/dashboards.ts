@@ -90,6 +90,39 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  /**
+   * Money in, day by day, with the running total beside it.
+   *
+   * Both series are rupees, so they share one axis - a second scale for the
+   * cumulative line would invent a relationship between the two shapes.
+   */
+  app.get('/dashboards/collections-series', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    const { days } = z.object({ days: z.coerce.number().int().min(1).max(180).default(30) })
+      .parse(req.query);
+
+    return req.tx((q) =>
+      q.many(
+        `with spine as (
+           select d::date as day
+             from generate_series(crm.ist_date(now()) - ($1::int - 1), crm.ist_date(now()), '1 day') d
+         ),
+         paid as (
+           select crm.ist_date(p.paid_at) as day, sum(p.amount) as amount
+             from crm.payments p
+            where crm.ist_date(p.paid_at) > crm.ist_date(now()) - $1::int
+            group by 1
+         )
+         select spine.day,
+                coalesce(paid.amount, 0) as collected,
+                sum(coalesce(paid.amount, 0)) over (order by spine.day) as cumulative
+           from spine left join paid on paid.day = spine.day
+          order by spine.day`,
+        [days],
+      ),
+    );
+  });
+
   /** Collected against the office breakeven, with the pace check. */
   app.get('/dashboards/thermometer', async (req) => {
     req.requireRole('counsellor', 'admin', 'ops', 'viewer');

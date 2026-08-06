@@ -184,3 +184,67 @@ it('admin: the breakeven thermometer shows the grossed-up numbers', async () => 
   await page.screenshot({ path: path.join(SHOTS, '4-admin-dashboards.png'), fullPage: true });
   await signOut();
 });
+
+it('admin: the performance charts render with real marks and a table beneath', async () => {
+  await signIn(EMAILS.admin);
+  await page.goto(`${base}/ui/#/people`);
+
+  // A chart that throws leaves an empty panel, which looks like "no data" -
+  // so assert on the marks, not on the container.
+  await page.waitForSelector('.viz-svg', { timeout: 20000 });
+  const lines = await page.locator('.viz-svg path[stroke-width="2"]').count();
+  assert.ok(lines >= 2, `expected a line per series, found ${lines}`);
+
+  const slices = await page.locator('.viz-donut-svg path').count();
+  assert.ok(slices >= 2, `expected donut segments, found ${slices}`);
+
+  // The relief rule: three of the categorical colours sit below 3:1 on white,
+  // so the numbers must be readable without telling the colours apart.
+  const legend = await page.locator('.viz-donut .viz-legend').first().innerText();
+  assert.match(legend, /%/, 'every slice must carry its value, not just a colour');
+  await page.waitForSelector('table.table');
+
+  // Axis labels must fit the gutter. "00000" is what a clipped rupee label
+  // looks like, and it reads as a rendering fault rather than a number.
+  // innerText is empty on SVG <text>; textContent is what actually renders.
+  const yLabels = await page.locator('.viz-svg text').evaluateAll(
+    (nodes) => nodes.map((n) => (n.textContent ?? '').trim()),
+  );
+  assert.ok(yLabels.length > 0, 'the axis must be labelled at all');
+  assert.ok(!yLabels.some((t) => /^0{3,}$/.test(t)), `clipped axis label: ${yLabels.join('|')}`);
+
+  await page.screenshot({ path: path.join(SHOTS, '5-performance-charts.png'), fullPage: true });
+  await signOut();
+});
+
+it('caller: sees only their own numbers on the performance page', async () => {
+  await signIn(EMAILS.callerA1);
+  await page.goto(`${base}/ui/#/people`);
+  await page.waitForSelector('table.table', { timeout: 20000 });
+
+  const names = await page.locator('table.table tbody tr td:first-child').allInnerTexts();
+  for (const n of names) {
+    assert.equal(n.trim(), 'Caller A1', `a caller must not see ${n} on their own dashboard`);
+  }
+  await signOut();
+});
+
+it('caller: the re-tap filters narrow the lead list', async () => {
+  await signIn(EMAILS.callerA1);
+  await page.goto(`${base}/ui/#/leads`);
+  await page.waitForSelector('#presets', { timeout: 20000 });
+
+  await page.click('button[data-preset="Did not answer"]');
+  await page.waitForTimeout(700);
+
+  // Either rows that all show that outcome, or an honest empty state - never
+  // the whole lead book, which is what "the filter does nothing" looks like.
+  const empty = await page.locator('#results .empty').count();
+  if (empty === 0) {
+    const outcomes = await page.locator('#results tbody tr td:nth-child(4)').allInnerTexts();
+    for (const o of outcomes) {
+      assert.match(o.trim(), /not answered/i, `filter leaked a "${o}" row`);
+    }
+  }
+  await signOut();
+});

@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { logLeadAccess } from '../http/context.ts';
 
+const uuid = z.string().uuid();
+
 /**
  * The caller's own screens: their day, their attendance, their score.
  * Requirements 4, 6 and 7.
@@ -117,6 +119,80 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
         leads: rows,
       };
     });
+  });
+
+  /**
+   * Outcome mix — what happened to the calls, as a part-to-whole.
+   *
+   * Summed from crm.v_person_performance rather than call_attempts directly,
+   * because that view already carries the visibility rule. Reading the attempts
+   * table would show a caller the outcomes of calls a colleague made on a lead
+   * that has since been reassigned to them.
+   */
+  app.get('/outcomes', async (req) => {
+    req.requireUser();
+    const { days, userId } = z
+      .object({
+        days: z.coerce.number().int().min(1).max(90).default(7),
+        userId: uuid.optional(),
+      })
+      .parse(req.query);
+
+    const row = await req.tx((q) =>
+      q.one(
+        `select
+           coalesce(sum(dials), 0)::int            as dials,
+           coalesce(sum(connects), 0)::int         as connects,
+           coalesce(sum(interested), 0)::int       as interested,
+           coalesce(sum(not_interested), 0)::int   as not_interested,
+           coalesce(sum(callbacks_booked), 0)::int as callbacks_booked,
+           coalesce(sum(visits_promised), 0)::int  as visits_promised,
+           coalesce(sum(not_answered), 0)::int     as not_answered,
+           coalesce(sum(job_enquiries), 0)::int    as job_enquiries,
+           coalesce(sum(walked_in), 0)::int        as walked_in,
+           coalesce(sum(deals), 0)::int            as deals,
+           coalesce(sum(talk_seconds), 0)::bigint  as talk_seconds
+         from crm.v_person_performance
+        where day > crm.ist_date(now()) - $1::int
+          and ($2::uuid is null or user_id = $2)`,
+        [days, userId ?? null],
+      ),
+    );
+    return row;
+  });
+
+  /**
+   * Daily totals across everyone this user can see, for the trend line.
+   *
+   * Separate from /me/performance, which is one person. A counsellor wants the
+   * team's shape over time, not five overlapping lines.
+   */
+  app.get('/performance/daily', async (req) => {
+    req.requireUser();
+    const { days, userId } = z
+      .object({
+        days: z.coerce.number().int().min(1).max(90).default(14),
+        userId: uuid.optional(),
+      })
+      .parse(req.query);
+
+    return req.tx((q) =>
+      q.many(
+        `select day,
+                sum(dials)::int          as dials,
+                sum(connects)::int       as connects,
+                sum(interested)::int     as interested,
+                sum(not_interested)::int as not_interested,
+                sum(walked_in)::int      as walked_in,
+                sum(deals)::int          as deals,
+                sum(talk_seconds)::bigint as talk_seconds
+           from crm.v_person_performance
+          where day > crm.ist_date(now()) - $1::int
+            and ($2::uuid is null or user_id = $2)
+          group by day order by day`,
+        [days, userId ?? null],
+      ),
+    );
   });
 
   /**

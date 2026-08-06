@@ -1,13 +1,17 @@
 import { get } from '../api.js';
 import { esc, fmtDT, fmtINR, h, minsLabel } from '../util.js';
+import { barChart, donutChart, lineChart } from '../charts.js';
 
 /** Requirement 2: caller and counsellor performance, plus the breakeven thermometer. */
 export async function render(outlet) {
-  const [thermo, funnel, counsellors] = await Promise.all([
+  const [thermo, funnel, counsellors, money] = await Promise.all([
     get('/dashboards/thermometer'),
     get('/dashboards/funnel?days=30'),
     get('/dashboards/counsellors'),
+    get('/dashboards/collections-series?days=30'),
   ]);
+  const dayLabel = (d) =>
+    new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
 
   outlet.innerHTML = '';
 
@@ -39,16 +43,36 @@ export async function render(outlet) {
       <div class="hint">${pace.toFixed(0)}% of where collections should be by today · booked MTD ${fmtINR(thermo.booked_mtd)}</div>
     </div>`));
 
-  // --- funnel ---
-  outlet.appendChild(h(`
-    <div class="grid cols-4" style="margin-bottom:18px">
-      <div class="stat"><div class="k">Leads (30d)</div><div class="v">${Number(funnel.leads)}</div></div>
-      <div class="stat"><div class="k">Contacted</div><div class="v">${Number(funnel.contacted)}</div>
-        <div class="s">${Number(funnel.connected)} genuinely connected</div></div>
-      <div class="stat"><div class="k">Qualified</div><div class="v">${Number(funnel.qualified)}</div></div>
-      <div class="stat"><div class="k">Won</div><div class="v">${Number(funnel.won)}</div>
-        <div class="s">${funnel.conversion_pct ?? 0}% conversion · avg ${funnel.avg_attempts ?? 0} attempts</div></div>
-    </div>`));
+  // --- money in, and the funnel it came from ---
+  const chartRow = h('<div class="chart-grid" style="margin-bottom:18px"></div>');
+
+  const moneyPanel = h(`<div class="panel"><h2 class="mt0">Collections
+    <small>daily against the running month total — both in rupees, one scale</small></h2></div>`);
+  moneyPanel.appendChild(lineChart(money, {
+    x: 'day',
+    formatX: dayLabel,
+    format: (v) => fmtINR(v),
+    series: [
+      { key: 'collected', label: 'Collected that day' },
+      { key: 'cumulative', label: 'Running total' },
+    ],
+  }));
+  chartRow.appendChild(moneyPanel);
+
+  // The funnel is ordered stages, so it is bars, not a pie: a pie would imply
+  // the stages are parts of a whole when each one contains the next.
+  const funnelPanel = h(`<div class="panel"><h2 class="mt0">Funnel <small>last 30 days</small></h2></div>`);
+  funnelPanel.appendChild(barChart([
+    { label: 'Leads', value: Number(funnel.leads) },
+    { label: 'Contacted', value: Number(funnel.contacted) },
+    { label: 'Connected', value: Number(funnel.connected) },
+    { label: 'Qualified', value: Number(funnel.qualified) },
+    { label: 'Won', value: Number(funnel.won) },
+  ]));
+  funnelPanel.appendChild(h(`<div class="hint" style="margin-top:10px">
+    ${funnel.conversion_pct ?? 0}% conversion · average ${funnel.avg_attempts ?? 0} attempts per lead</div>`));
+  chartRow.appendChild(funnelPanel);
+  outlet.appendChild(chartRow);
 
   // --- callers, with a date picker ---
   const callersPanel = h(`

@@ -344,3 +344,47 @@ button.chip:hover { border-color: #c8d4ea; }
   display: block; width: 76px; height: 76px; border-radius: 50%;
   margin: 0 auto 14px;
 }
+
+/* ---- charts ---- */
+
+.viz { margin-top: 6px; }
+.viz-svg { width: 100%; height: auto; display: block; }
+.viz-tip {
+  position: fixed; z-index: 90; display: none; pointer-events: none;
+  background: #16202e; color: #fff; border-radius: 8px; padding: 8px 10px;
+  font-size: 12.5px; line-height: 1.5; box-shadow: 0 6px 20px rgba(16,26,43,.28);
+  max-width: 260px;
+}
+.viz-tip b { font-weight: 700; }
+.viz-dot {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  margin-right: 6px; vertical-align: baseline;
+}
+.viz-legend {
+  display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px;
+  font-size: 12.5px; color: var(--muted);
+}
+.viz-legend-item b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+.viz-donut { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.viz-donut-svg { width: 200px; height: 200px; flex: none; }
+.viz-donut .viz-legend { flex-direction: column; gap: 7px; margin-top: 0; }
+
+.viz-bars { display: flex; flex-direction: column; gap: 9px; }
+.viz-bar-row {
+  display: grid; grid-template-columns: 160px 1fr 68px; gap: 12px; align-items: center;
+  font-size: 13.5px;
+}
+.viz-bar-row.me .viz-bar-label { font-weight: 700; }
+.viz-bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viz-bar-track { background: #eef1f5; border-radius: 999px; height: 16px; overflow: hidden; }
+.viz-bar-fill {
+  height: 100%; background: #2a78d6; border-radius: 999px; min-width: 2px;
+  transition: width .25s ease-out;
+}
+.viz-bar-value { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 1100px) { .chart-grid { grid-template-columns: 1fr; } }
+.stat.tone-good .v { color: var(--ok); }
+.stat.tone-bad  .v { color: var(--bad); }

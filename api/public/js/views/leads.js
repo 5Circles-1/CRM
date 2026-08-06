@@ -2,73 +2,141 @@ import { get } from '../api.js';
 import { badge, esc, fmtDT, h } from '../util.js';
 
 /**
- * Search and re-tap lists, within whatever RLS lets this user see.
+ * Find a lead, or build a re-tap list and work it.
  *
- * The search box alone was not enough to work from. The two lists a caller
- * actually needs are "everyone who did not answer" and "everyone who asked to
- * be called back", and neither is something you can type into a name search.
- * Those are one click each now; the text box still filters within them.
+ * The search box alone was not enough. The lists a caller actually works from —
+ * "everyone who did not answer", "everyone who asked for a callback", "everyone
+ * I have not messaged" — are not things you can type into a name search. Those
+ * are one click each, and the filters combine, so "not answered AND overdue AND
+ * no WhatsApp yet" is three clicks rather than a support request.
  */
 
-const QUICK = [
-  { key: '', label: 'All' },
-  { key: 'not_answered', label: 'Not answered', kind: 'disp' },
-  { key: 'callback_requested', label: 'Asked for a callback', kind: 'disp' },
-  { key: 'busy', label: 'Busy', kind: 'disp' },
-  { key: 'switched_off', label: 'Switched off', kind: 'disp' },
-  { key: 'overdue', label: 'Overdue now', kind: 'due' },
-  { key: 'untouched', label: 'Never contacted', kind: 'due' },
+/** One-click lists, in the order a caller would reach for them. */
+const PRESETS = [
+  { label: 'Everything', filters: {} },
+  { label: 'Did not answer', filters: { lastDisposition: 'not_answered' } },
+  { label: 'Asked for a callback', filters: { lastDisposition: 'callback_requested' } },
+  { label: 'Will call us back', filters: { lastDisposition: 'will_call_back_self' } },
+  { label: 'Will visit', filters: { lastDisposition: 'will_visit' } },
+  { label: 'Busy or switched off', filters: { lastDisposition: 'busy' } },
+  { label: 'Overdue now', filters: { due: 'overdue' } },
+  { label: 'Never contacted', filters: { due: 'untouched' } },
+  { label: 'No WhatsApp yet', filters: { whatsapp: 'not_sent' } },
+];
+
+const DUE = [
+  ['', 'Any time'],
+  ['overdue', 'Overdue now'],
+  ['today', 'Due today'],
+  ['untouched', 'Never contacted'],
+  ['contacted', 'Already contacted'],
+];
+
+const STATUS = [
+  ['', 'Any status'],
+  ['new', 'New'],
+  ['working', 'Working'],
+  ['callback', 'Callback'],
+  ['qualified', 'Qualified'],
+  ['negotiation', 'Negotiation'],
+  ['nurture', 'Nurture'],
+];
+
+const WHATSAPP = [
+  ['', 'WhatsApp: any'],
+  ['sent', 'WhatsApp sent'],
+  ['not_sent', 'WhatsApp not sent'],
 ];
 
 export async function render(outlet) {
-  outlet.innerHTML = '';
+  const dispositions = await get('/meta/dispositions').catch(() => []);
+  let filters = {};
+  let preset = 'Everything';
+
   const panel = h(`
     <div class="panel">
-      <h2>Find a lead <small>search, or pick a list to work through</small></h2>
-      <div class="tabs" id="quick">
-        ${QUICK.map((f, i) => `
-          <button class="btn ${i === 0 ? 'active' : ''}" data-key="${esc(f.key)}"
-                  data-kind="${esc(f.kind ?? '')}">${esc(f.label)}</button>`).join('')}
+      <h2>Find and re-tap <small>pick a list, or combine the filters</small></h2>
+
+      <div class="chips" id="presets">
+        ${PRESETS.map((p) => `
+          <button class="chip ${p.label === preset ? 'on' : ''}" data-preset="${esc(p.label)}">${esc(p.label)}</button>`).join('')}
       </div>
-      <label class="f">Search by name or phone <span class="hint">optional — narrows the list above</span>
-        <input name="q" placeholder="e.g. Asha or 98765…" autocomplete="off" data-testid="lead-search">
-      </label>
+
+      <div class="frow" style="align-items:flex-end">
+        <label class="f">Search <span class="hint">name or phone</span>
+          <input name="q" placeholder="e.g. Asha or 98765…" autocomplete="off" data-testid="lead-search">
+        </label>
+        <label class="f">Last outcome
+          <select name="lastDisposition">
+            <option value="">Any outcome</option>
+            ${dispositions.map((d) => `<option value="${esc(d.value)}">${esc(d.label)}</option>`).join('')}
+          </select>
+        </label>
+        <label class="f">Timing
+          <select name="due">${DUE.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
+        </label>
+        <label class="f">Status
+          <select name="status">${STATUS.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
+        </label>
+        <label class="f">WhatsApp
+          <select name="whatsapp">${WHATSAPP.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
+        </label>
+        <button class="btn" id="clear">Clear</button>
+      </div>
+
       <div id="results"></div>
     </div>`);
   outlet.appendChild(panel);
 
   const input = panel.querySelector('[name=q]');
   const results = panel.querySelector('#results');
+  const controls = ['lastDisposition', 'due', 'status', 'whatsapp'];
   let timer = null;
-  let filter = { key: '', kind: '' };
+
+  const readControls = () => {
+    filters = {};
+    for (const name of controls) {
+      const v = panel.querySelector(`[name=${name}]`).value;
+      if (v) filters[name] = v;
+    }
+  };
+
+  const applyPreset = (p) => {
+    for (const name of controls) panel.querySelector(`[name=${name}]`).value = p.filters[name] ?? '';
+    readControls();
+  };
 
   const run = async () => {
     const q = input.value.trim();
 
-    // A filter is a complete instruction on its own; a bare search is not,
-    // because two characters would match half the book.
-    if (!filter.key && q.length < 2) {
-      results.innerHTML = '<div class="empty">Type at least two characters, or pick a list above.</div>';
+    // A filter is a complete instruction; a two-character search is not, since
+    // it would match half the book.
+    if (Object.keys(filters).length === 0 && q.length < 2) {
+      results.innerHTML = '<div class="empty">Pick a list above, set a filter, or type at least two characters.</div>';
       return;
     }
 
-    const params = new URLSearchParams({ limit: '50' });
+    const params = new URLSearchParams({ limit: '200', ...filters });
     if (q.length >= 2) params.set('q', q);
-    if (filter.kind === 'disp') params.set('lastDisposition', filter.key);
-    if (filter.kind === 'due') params.set('due', filter.key);
 
     results.innerHTML = '<div class="spin"></div>';
     try {
       const data = await get(`/leads?${params.toString()}`);
+      results.innerHTML = '';
       if (data.leads.length === 0) {
-        results.innerHTML = '<div class="empty">Nothing you can see matches that.</div>';
+        results.appendChild(h('<div class="empty">Nothing you can see matches that.</div>'));
         return;
       }
-      results.innerHTML = '';
       results.appendChild(h(`
+        <div class="row spread" style="margin:6px 0">
+          <b>${data.leads.length} lead${data.leads.length === 1 ? '' : 's'}</b>
+          <span class="hint">worked top to bottom, most overdue first</span>
+        </div>`));
+      results.appendChild(h(`
+        <div style="overflow-x:auto">
         <table class="table"><thead><tr>
           <th>Name</th><th>Phone</th><th>Status</th><th>Last outcome</th>
-          <th>Next action</th><th class="num">Attempts</th><th></th>
+          <th>Next action</th><th class="num">Attempts</th><th>WA</th><th></th>
         </tr></thead><tbody>
         ${data.leads.map((l) => `
           <tr>
@@ -76,24 +144,43 @@ export async function render(outlet) {
             <td class="mono">${esc(l.phone_e164)}</td>
             <td>${badge(l.status)}</td>
             <td>${l.last_disposition
-                    ? esc(String(l.last_disposition).replace(/_/g, ' '))
-                    : '<span class="hint">never contacted</span>'}</td>
+                  ? esc(String(l.last_disposition).replace(/_/g, ' '))
+                  : '<span class="hint">never contacted</span>'}</td>
             <td>${esc(fmtDT(l.next_action_at))}</td>
             <td class="num">${Number(l.attempt_count)}</td>
+            <td>${l.whatsapp_sent_at ? '<span class="badge b-ok">sent</span>' : '<span class="hint">—</span>'}</td>
             <td class="right"><a href="#/lead/${esc(l.id)}">open</a></td>
           </tr>`).join('')}
-        </tbody></table>`));
+        </tbody></table></div>`));
     } catch (err) {
       results.innerHTML = '';
       results.appendChild(h(`<div class="empty">${esc(err.message)}</div>`));
     }
   };
 
-  panel.querySelector('#quick').addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-key]');
+  panel.querySelector('#presets').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-preset]');
     if (!btn) return;
-    panel.querySelectorAll('#quick .btn').forEach((b) => b.classList.toggle('active', b === btn));
-    filter = { key: btn.dataset.key, kind: btn.dataset.kind };
+    preset = btn.dataset.preset;
+    panel.querySelectorAll('#presets .chip').forEach((b) => b.classList.toggle('on', b === btn));
+    applyPreset(PRESETS.find((p) => p.label === preset));
+    run();
+  });
+
+  // Changing a dropdown by hand leaves the preset chips highlighted on a list
+  // that is no longer what is shown, so clear the highlight.
+  controls.forEach((name) => {
+    panel.querySelector(`[name=${name}]`).addEventListener('change', () => {
+      readControls();
+      panel.querySelectorAll('#presets .chip').forEach((b) => b.classList.remove('on'));
+      run();
+    });
+  });
+
+  panel.querySelector('#clear').addEventListener('click', () => {
+    input.value = '';
+    applyPreset(PRESETS[0]);
+    panel.querySelectorAll('#presets .chip').forEach((b, i) => b.classList.toggle('on', i === 0));
     run();
   });
 
@@ -101,5 +188,7 @@ export async function render(outlet) {
     clearTimeout(timer);
     timer = setTimeout(run, 300);
   });
+
   input.focus();
+  await run();
 }
