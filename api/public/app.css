@@ -403,3 +403,53 @@ button.chip:hover { border-color: #c8d4ea; }
 .trophy-name { font-weight: 700; font-size: 15px; margin-top: 6px; }
 .trophy-value { color: var(--brand); font-weight: 700; font-variant-numeric: tabular-nums; }
 .trophy-none { color: var(--muted); font-size: 13px; margin-top: 6px; }
+
+/* ---- avatars: one look everywhere a person appears ---- */
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; object-fit: cover; vertical-align: middle;
+  border: 1px solid var(--line); background: #fff; flex: 0 0 auto;
+}
+.avatar-fallback { font-weight: 700; letter-spacing: .02em; user-select: none; }
+
+/* ---- overall standings: podium + ranked list ---- */
+.podium {
+  display: flex; justify-content: center; align-items: flex-end; gap: 26px;
+  margin: 14px 0 10px; padding: 14px 0 16px;
+  border-bottom: 1px dashed var(--line);
+}
+.podium-slot { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 110px; }
+.podium-slot.p1 { order: 2; padding-bottom: 14px; }
+.podium-slot.p2 { order: 1; }
+.podium-slot.p3 { order: 3; }
+.podium-medal { font-size: 22px; }
+.podium-slot.p1 .podium-medal { font-size: 28px; }
+.podium-name { font-weight: 700; font-size: 14px; text-align: center; }
+.podium-slot.p1 .podium-name { font-size: 16px; }
+.podium-points { color: var(--brand); font-weight: 700; font-variant-numeric: tabular-nums; font-size: 13px; }
+
+.standings { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
+.standing-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
+.standing-rank { width: 30px; color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
+.standing-name { width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.standing-track { flex: 1; height: 8px; background: var(--bg); border-radius: 99px; overflow: hidden; }
+.standing-track > span { display: block; height: 100%; background: var(--brand); border-radius: 99px; }
+.standing-points { width: 40px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ---- follow-up radar ---- */
+.radar-hot td { background: #fff7f2; }
+
+/* ---- live badge: the page refreshes itself, say so ---- */
+.live-badge {
+  display: none; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 700; color: var(--ok);
+  background: var(--ok-bg); border: 1px solid #cdeeda;
+  padding: 3px 10px; border-radius: 99px; text-transform: uppercase; letter-spacing: .04em;
+}
+.live-badge.show { display: inline-flex; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.live-badge.pulse .live-dot { animation: live-pulse 1.2s ease-out 1; }
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(21, 128, 61, .5); }
+  100% { box-shadow: 0 0 0 8px rgba(21, 128, 61, 0); }
+}

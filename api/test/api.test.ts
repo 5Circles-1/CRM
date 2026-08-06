@@ -1681,3 +1681,185 @@ describe('the follow-up round filter', () => {
       'the eighth follow-up lives in the 5+ list');
   });
 });
+
+describe('leaderboard avatars', () => {
+  const PIXEL =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+  it('lets an admin set an icon and everyone see it', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const set = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerA1}/avatar`, headers: auth(admin),
+      payload: { dataUrl: PIXEL },
+    });
+    assert.equal(set.statusCode, 200);
+    assert.equal(set.json().has_avatar, true);
+
+    // The board is visible to every role, so the icons must be too.
+    const a2 = await login(h.app, EMAILS.callerA2);
+    const seen = await h.app.inject({ method: 'GET', url: '/users/avatars', headers: auth(a2) });
+    assert.equal(seen.statusCode, 200);
+    assert.equal(seen.json()[USERS.callerA1], PIXEL);
+  });
+
+  it('clears an icon with null', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const cleared = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerA1}/avatar`, headers: auth(admin),
+      payload: { dataUrl: null },
+    });
+    assert.equal(cleared.statusCode, 200);
+    assert.equal(cleared.json().has_avatar, false);
+  });
+
+  it('refuses anything that is not a small raster image', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    for (const bad of [
+      'https://example.com/avatar.png',            // a URL is not an upload
+      'data:text/html;base64,PGh0bWw+',            // wrong media type entirely
+      'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=', // svg can carry script
+    ]) {
+      const res = await h.app.inject({
+        method: 'PUT', url: `/admin/users/${USERS.callerA1}/avatar`, headers: auth(admin),
+        payload: { dataUrl: bad },
+      });
+      assert.equal(res.statusCode, 400, `${bad.slice(0, 30)} must be rejected`);
+    }
+  });
+
+  it('does not let a caller set anyone\'s icon', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerA1}/avatar`, headers: auth(a1),
+      payload: { dataUrl: PIXEL },
+    });
+    assert.equal(res.statusCode, 403);
+  });
+});
+
+describe('lead flow diagnostics ("why is this caller not getting leads")', () => {
+  it('names the rule stopping each caller, and shows who is receiving', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(cs) });
+    assert.equal(res.statusCode, 200);
+    const { callers } = res.json();
+
+    // The before() hook put every caller on the floor, so they all read as
+    // receiving - the healthy floor is the baseline the verdicts hang off.
+    const a1 = callers.find((c: { user_id: string }) => c.user_id === USERS.callerA1);
+    assert.ok(a1, 'every caller appears, whether or not they have leads');
+    assert.equal(a1.flow_status, 'receiving');
+    assert.equal(a1.has_team_today, true);
+  });
+
+  it('reads off_shift the moment a caller leaves the floor', async () => {
+    fixtureSql(`update crm.attendance_sessions set ended_at = now()
+                 where user_id = '${USERS.callerB2}' and ended_at is null;`);
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(cs) });
+    const b2 = res.json().callers.find((c: { user_id: string }) => c.user_id === USERS.callerB2);
+    assert.equal(b2.flow_status, 'off_shift',
+      'the panel must name the exact rule: distribution skips callers who are not on shift');
+    // Put them back for whatever runs after this.
+    fixtureSql(`insert into crm.attendance_sessions (user_id, started_at)
+                values ('${USERS.callerB2}', now());`);
+  });
+
+  it('is not visible to a caller', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(a1) });
+    assert.equal(res.statusCode, 403);
+  });
+});
+
+describe('follow-up radar', () => {
+  it('counts an overdue follow-up against the person who owes it', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Overdue Radar');
+    fixtureSql(`update crm.leads
+                   set next_action_at = now() - interval '90 minutes',
+                       first_touched_at = now() - interval '1 day'
+                 where id = '${leadId}';`);
+
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/followups', headers: auth(cs) });
+    assert.equal(res.statusCode, 200);
+    const row = res.json().find((r: { user_id: string }) => r.user_id === USERS.callerA1);
+    assert.ok(Number(row.overdue_now) >= 1, 'the overdue promise shows against its owner');
+    assert.ok(Number(row.oldest_overdue_minutes) >= 89, 'and says how late it is');
+  });
+});
+
+describe('overall standings', () => {
+  it('weights every metric into one number and ranks by it', async () => {
+    // Give A1 unambiguous dominance today: connects and talk time.
+    const leadId = makeLeadFor(USERS.callerA1, 'Standings Fixture');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: {
+        disposition: 'connected_interested', durationSeconds: 300,
+        callbackAt: new Date(Date.now() + 3.6e6).toISOString(),
+      },
+    });
+
+    const res = await h.app.inject({ method: 'GET', url: '/performance/overall?days=1', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    const rows = res.json();
+    assert.ok(rows.length >= 1, 'someone with activity is on the board');
+    for (const r of rows) {
+      assert.ok(Number(r.overall_points) >= 0 && Number(r.overall_points) <= 100.5,
+        'points live on a 0-100 scale');
+      assert.ok(Number(r.rank) >= 1);
+    }
+    // Ordered best first, and the ranks agree with the order.
+    const pts = rows.map((r: { overall_points: string }) => Number(r.overall_points));
+    assert.deepEqual([...pts].sort((x, y) => y - x), pts, 'sorted by points, best first');
+  });
+
+  it('serves the browser the reminder and refresh cadence settings', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/meta/ui-settings', headers: auth(a1) });
+    const cfg = res.json();
+    assert.ok(Number(cfg['alerts.repeat_minutes']) > 0, 'critical reminders repeat by default');
+    assert.ok(Number(cfg['ui.refresh_seconds']) >= 5, 'live screens know their cadence');
+  });
+});
+
+describe('attendance till date', () => {
+  it('rolls up days present, total minutes, and an attendance rate', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/attendance/summary', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    const s = res.json();
+    // The before() hook put every caller on the floor an hour ago, so today
+    // exists in everyone's record.
+    assert.ok(Number(s.days_present) >= 1);
+    assert.ok(Number(s.total_minutes) >= 1, 'time logged till date is real minutes');
+    assert.ok(Number(s.floor_days_since_joining) >= Number(s.days_present),
+      'the denominator can never be smaller than the days attended');
+    assert.ok(Number(s.attendance_pct) > 0 && Number(s.attendance_pct) <= 100);
+  });
+
+  it('gives the counsellor the whole floor, but not a caller', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const all = await h.app.inject({ method: 'GET', url: '/attendance/summary', headers: auth(cs) });
+    assert.equal(all.statusCode, 200);
+    assert.ok(all.json().length >= 4, 'every active person with a record appears');
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const own = await h.app.inject({ method: 'GET', url: '/attendance/summary', headers: auth(a1) });
+    assert.equal(own.statusCode, 403, 'the floor-wide rollup is for floor managers');
+  });
+
+  it('never counts a day the floor did not work against anyone', async () => {
+    // A fresh floor day exists only if someone was present on it - so the
+    // denominator equals the count of distinct business dates in the sessions
+    // table from the person''s first day, by construction.
+    const days = fixtureSql(`select count(distinct business_date) from crm.attendance_sessions;`).trim();
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const all = await h.app.inject({ method: 'GET', url: '/attendance/summary', headers: auth(cs) });
+    for (const row of all.json()) {
+      assert.ok(Number(row.floor_days_since_joining) <= Number(days));
+    }
+  });
+});

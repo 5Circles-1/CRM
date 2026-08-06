@@ -21,6 +21,10 @@ import { esc, h } from './util.js';
  */
 let pollMs = 20_000;
 let popupKinds = new Set(['callback_due', 'callback_soon', 'reassigned_in']);
+// How often an unresolved CRITICAL reminder pops again. A callback that fell
+// due at 11:00 and is still pending at 11:10 is not old news - it is more
+// urgent than it was, and one dismissed popup should not be the last of it.
+let repeatMs = 10 * 60_000;
 
 async function loadAlertSettings() {
   try {
@@ -28,14 +32,16 @@ async function loadAlertSettings() {
     const secs = Number(cfg['alerts.poll_seconds']);
     if (Number.isFinite(secs) && secs >= 5) pollMs = secs * 1000;
     if (Array.isArray(cfg['alerts.popup_kinds'])) popupKinds = new Set(cfg['alerts.popup_kinds']);
+    const rep = Number(cfg['alerts.repeat_minutes']);
+    if (Number.isFinite(rep)) repeatMs = rep > 0 ? rep * 60_000 : 0;
   } catch {
     // Defaults above are deliberately sane, so a failed read leaves the bell
     // working rather than failing shut.
   }
 }
 
-/** Alerts already popped, so re-polling does not re-interrupt. */
-const announced = new Set();
+/** Alert key -> when it last popped, so re-polling does not re-interrupt early. */
+const announced = new Map();
 
 let timer = null;
 
@@ -143,14 +149,34 @@ async function poll(firstRun) {
   badge.classList.toggle('hide', latest.count === 0);
   bell.classList.toggle('critical', latest.critical > 0);
 
+  // The tab itself carries the count, so work waiting is visible from another
+  // tab or a minimised window - the situations a popup cannot reach.
+  document.title = latest.count > 0 ? `(${latest.count}) 5 Circles CRM` : '5 Circles CRM';
+
   const live = document.getElementById('alert-panel');
   if (live) { live.remove(); renderPanel(latest); }
 
+  const now = Date.now();
+  const openKeys = new Set(latest.alerts.map(KEY));
+  // An alert that was handled and later fires again (a new callback on the
+  // same lead) should interrupt again - forget keys that are no longer open.
+  for (const key of announced.keys()) {
+    if (!openKeys.has(key)) announced.delete(key);
+  }
+
   for (const a of latest.alerts) {
     const key = KEY(a);
-    if (announced.has(key)) continue;
-    announced.add(key);
-    // On the first poll after a page load, fill the set without popping: a
+    const lastPopped = announced.get(key);
+    // Critical alerts nag on a cadence until dealt with; everything else
+    // interrupts once. A reminder that can be dismissed for good is a
+    // reminder that gets dismissed reflexively - but only the critical kind
+    // earns the repeat, or the floor tunes all of it out.
+    const due =
+      lastPopped === undefined ||
+      (a.severity === 'critical' && repeatMs > 0 && now - lastPopped >= repeatMs);
+    if (!due) continue;
+    announced.set(key, now);
+    // On the first poll after a page load, fill the map without popping: a
     // caller who refreshes should not be buried under every alert at once.
     if (!firstRun && popupKinds.has(a.kind)) popup(a);
   }
@@ -168,6 +194,7 @@ export function stopAlerts() {
   if (timer) clearInterval(timer);
   timer = null;
   announced.clear();
+  document.title = '5 Circles CRM';
 }
 
 export function bellMarkup() {

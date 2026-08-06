@@ -87,6 +87,7 @@ function renderShell(app) {
       <div class="main">
         <div class="topbar">
           <h1 id="page-title"></h1>
+          <span class="live-badge" id="live-badge" title="This page refreshes itself — no F5 needed"><span class="live-dot"></span>Live</span>
           <div class="shift" id="shift-widget"></div>
           ${bellMarkup()}
           <div class="userchip"><b>${esc(me.full_name)}</b>${esc(me.role)}${me.team_name ? ' · ' + esc(me.team_name) : ''}</div>
@@ -117,7 +118,7 @@ async function refreshShift() {
   try {
     const [profile, att] = await Promise.all([get('/me'), get('/me/attendance?days=1')]);
     const today = Array.isArray(att) ? att[0] : null;
-    const mins = today?.currently_logged_in || today ? today?.logged_minutes ?? 0 : 0;
+    const mins = today?.logged_minutes ?? 0;
     const on = Boolean(profile.on_shift);
     el.className = `shift ${on ? 'on' : ''}`;
     el.innerHTML = `
@@ -139,16 +140,22 @@ async function refreshShift() {
   }
 }
 
-async function route() {
+/**
+ * Render the current hash into the outlet.
+ *
+ * Two modes, and the difference is the whole fix for "the page keeps
+ * refreshing": a NAVIGATION (soft = false) swaps the outlet immediately and
+ * shows a spinner, because the user asked for a new page and feedback beats a
+ * frozen screen. A LIVE REFRESH (soft = true) renders the new page into a
+ * detached node first and swaps only once the data has arrived - the user
+ * never sees a spinner, a blank flash, or a scroll jump, just numbers that
+ * are suddenly current. If the refresh fails it keeps the page it has; stale
+ * beats broken.
+ */
+async function route(soft = false) {
   if (!me) return;
-  let outlet = document.getElementById('outlet');
+  const outlet = document.getElementById('outlet');
   if (!outlet) return;
-
-  // Fresh outlet per navigation: views attach listeners to it, and reusing
-  // the node would stack a new handler on every visit.
-  const fresh = outlet.cloneNode(false);
-  outlet.replaceWith(fresh);
-  outlet = fresh;
 
   const parts = (location.hash || '#/').slice(2).split('/');
   const name = parts[0] || (DEFAULT_ROUTE[me.role] ?? '#/attendance').slice(2);
@@ -158,20 +165,59 @@ async function route() {
     a.classList.toggle('active', a.dataset.nav === `#/${name}`);
   });
   document.getElementById('page-title').textContent = TITLES[name] ?? '5 Circles CRM';
+  document.getElementById('live-badge')?.classList.toggle('show', LIVE_VIEWS.has(name));
 
   if (!view) {
     location.hash = DEFAULT_ROUTE[me.role] ?? '#/attendance';
     return;
   }
 
-  outlet.innerHTML = '<div class="spin"></div>';
-  try {
-    await view.render(outlet, me, parts.slice(1));
-  } catch (err) {
-    outlet.innerHTML = '';
-    outlet.appendChild(h(`<div class="panel"><h2>Could not load this page</h2><p class="hint">${esc(err.message)}</p></div>`));
+  // Fresh outlet per render: views attach listeners to it, and reusing the
+  // node would stack a new handler on every visit.
+  const fresh = outlet.cloneNode(false);
+
+  if (!soft) {
+    outlet.replaceWith(fresh);
+    fresh.innerHTML = '<div class="spin"></div>';
+    try {
+      await view.render(fresh, me, parts.slice(1));
+    } catch (err) {
+      fresh.innerHTML = '';
+      fresh.appendChild(h(`<div class="panel"><h2>Could not load this page</h2><p class="hint">${esc(err.message)}</p></div>`));
+    }
+    refreshShift();
+    return;
   }
+
+  try {
+    await view.render(fresh, me, parts.slice(1));
+  } catch {
+    return; // failed refresh: keep the page we have
+  }
+  // The world may have moved while the data was loading. If the user
+  // navigated away or opened a form mid-fetch, throw this render away.
+  const current = document.getElementById('outlet');
+  if (!current || currentViewName() !== name) return;
+  if (document.querySelector('.overlay, .modal')) return;
+  const scrollY = window.scrollY;
+  const scrollTop = current.scrollTop;
+  current.replaceWith(fresh);
+  fresh.scrollTop = scrollTop;
+  window.scrollTo(0, scrollY);
+  markLive();
   refreshShift();
+}
+
+function markLive() {
+  const badge = document.getElementById('live-badge');
+  if (!badge) return;
+  const t = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(new Date());
+  badge.title = `Auto-refreshing — last update ${t} IST`;
+  badge.classList.remove('pulse');
+  void badge.offsetWidth; // restart the pulse animation
+  badge.classList.add('pulse');
 }
 
 /**
@@ -180,30 +226,38 @@ async function route() {
  * arrived, which is both tedious and unreliable - a lead nobody refreshes for
  * is a lead nobody calls.
  *
- * Only the views that show incoming work refresh. Redrawing a page underneath
- * someone who is typing into it is worse than a stale number, so anything with
- * a form or an open modal is left alone.
+ * Only the views that show live work refresh, the cadence is a setting
+ * (ui.refresh_seconds), and the redraw is the seamless kind above. Redrawing
+ * a page underneath someone who is typing, selecting text, or mid-form is
+ * worse than a stale number, so all three suppress the tick.
  */
-const LIVE_VIEWS = new Set(['day', 'floor', 'collections']);
+const LIVE_VIEWS = new Set(['day', 'floor', 'collections', 'people', 'dash']);
 let liveTimer = null;
 
 function currentViewName() {
   return (location.hash || '#/').slice(2).split('/')[0];
 }
 
-function startLiveRefresh() {
+async function startLiveRefresh() {
   if (liveTimer) clearInterval(liveTimer);
+  let everyMs = 30_000;
+  try {
+    const cfg = await get('/meta/ui-settings');
+    const secs = Number(cfg['ui.refresh_seconds']);
+    if (Number.isFinite(secs) && secs >= 5) everyMs = secs * 1000;
+  } catch { /* the default above is sane */ }
   liveTimer = setInterval(() => {
     if (!me) return;
     if (!LIVE_VIEWS.has(currentViewName())) return;
     if (document.hidden) return;                    // not while the tab is in the background
     if (document.querySelector('.overlay, .modal')) return;  // not mid-form
     if (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-    route();
-  }, 30_000);
+    if (String(window.getSelection() ?? '').length > 0) return; // not under a text selection
+    route(true);
+  }, everyMs);
 }
 
-window.addEventListener('hashchange', route);
+window.addEventListener('hashchange', () => route());
 window.addEventListener('crm:unauthorized', showLogin);
 
 boot();
