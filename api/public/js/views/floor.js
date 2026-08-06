@@ -18,14 +18,24 @@ export async function render(outlet, me) {
 
   outlet.innerHTML = '';
 
-  // --- leakage summary chips: if all zero, say so loudly (it's the goal) ---
+  // --- leakage summary chips ---
+  //
+  // These are buttons, not labels. They looked clickable and were not, so
+  // pressing "Missed callback" did nothing and the detail list below carried
+  // on showing every leak type mixed together.
   const leakTotal = leakage.summary.reduce((a, s) => a + Number(s.count), 0);
-  outlet.appendChild(h(`
-    <div class="chips">
-      <span class="chip ${leakTotal > 0 ? 'hot' : ''}">Pipeline leaks <b>${leakTotal}</b></span>
-      ${leakage.summary.map((s) => `<span class="chip">${esc(labelLeak(s.leak_type))} <b>${Number(s.count)}</b></span>`).join('')}
+  let leakFilter = null;
+
+  const chips = h(`
+    <div class="chips" data-testid="leak-chips">
+      <button class="chip ${leakTotal > 0 ? 'hot' : ''} ${leakFilter === null ? 'on' : ''}"
+              data-leak="">Pipeline leaks <b>${leakTotal}</b></button>
+      ${leakage.summary.map((s) => `
+        <button class="chip" data-leak="${esc(s.leak_type)}">
+          ${esc(labelLeak(s.leak_type))} <b>${Number(s.count)}</b></button>`).join('')}
       ${leakTotal === 0 ? '<span class="chip" style="color:var(--ok)">Pipeline clean ✓</span>' : ''}
-    </div>`));
+    </div>`);
+  outlet.appendChild(chips);
 
   // --- immediate queue ---
   if (immediate.leads.length > 0) {
@@ -134,25 +144,61 @@ export async function render(outlet, me) {
       </tbody></table>
     </div>`));
 
-  // --- leakage detail ---
-  if (leakage.items.length > 0) {
-    outlet.appendChild(h(`
-      <div class="panel">
-        <h2>Leakage detail <small>work this list to zero</small></h2>
-        <table class="table"><thead><tr>
-          <th>Type</th><th>Lead</th><th class="num">Late by</th><th>Severity</th><th></th>
-        </tr></thead><tbody>
-        ${leakage.items.slice(0, 30).map((l) => `
-          <tr>
-            <td>${esc(labelLeak(l.leak_type))}</td>
-            <td>${esc(l.full_name ?? 'Unnamed')} <span class="hint mono">${esc(l.phone_e164)}</span></td>
-            <td class="num">${esc(agoLabel(l.minutes_late))}</td>
-            <td>${l.severity === 'high' ? '<span class="badge b-bad">high</span>' : '<span class="badge b-warn">medium</span>'}</td>
-            <td class="right"><a href="#/lead/${esc(l.lead_id)}">open</a></td>
-          </tr>`).join('')}
-        </tbody></table>
-      </div>`));
-  }
+  // --- leakage detail, grouped by type ---
+  //
+  // Grouped even with no filter applied. One flat list of five different
+  // problems is not a work list: "immediate untouched" and "missed callback"
+  // need different actions, and mixing them makes both easier to skip.
+  const detail = h('<div id="leak-detail"></div>');
+  outlet.appendChild(detail);
+
+  const drawLeaks = () => {
+    detail.innerHTML = '';
+    const items = leakFilter
+      ? leakage.items.filter((l) => l.leak_type === leakFilter)
+      : leakage.items;
+
+    if (items.length === 0) {
+      detail.appendChild(h(`<div class="panel"><div class="empty">${
+        leakFilter ? 'Nothing leaking of this type.' : 'Nothing leaking — the pipeline is clean.'
+      }</div></div>`));
+      return;
+    }
+
+    const types = leakFilter ? [leakFilter] : [...new Set(items.map((l) => l.leak_type))];
+    for (const type of types) {
+      const group = items.filter((l) => l.leak_type === type);
+      detail.appendChild(h(`
+        <div class="panel">
+          <h2>${esc(labelLeak(type))} <small>${group.length} · work this to zero</small></h2>
+          <table class="table"><thead><tr>
+            <th>Lead</th><th>Caller</th><th class="num">Late by</th><th>Severity</th><th></th>
+          </tr></thead><tbody>
+          ${group.slice(0, 50).map((l) => `
+            <tr>
+              <td>${esc(l.full_name ?? 'Unnamed')} <span class="hint mono">${esc(l.phone_e164)}</span></td>
+              <td>${esc(l.caller_name ?? '—')}</td>
+              <td class="num">${esc(agoLabel(l.minutes_late))}</td>
+              <td>${l.severity === 'high' ? '<span class="badge b-bad">high</span>' : '<span class="badge b-warn">medium</span>'}</td>
+              <td class="right"><a href="#/lead/${esc(l.lead_id)}">open</a></td>
+            </tr>`).join('')}
+          </tbody></table>
+          ${group.length > 50 ? `<div class="hint">Showing the 50 latest of ${group.length}.</div>` : ''}
+        </div>`));
+    }
+  };
+
+  chips.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-leak]');
+    if (!btn) return;
+    const key = btn.dataset.leak || null;
+    leakFilter = leakFilter === key ? null : key;
+    chips.querySelectorAll('button.chip').forEach((b) =>
+      b.classList.toggle('on', (b.dataset.leak || null) === leakFilter));
+    drawLeaks();
+  });
+
+  drawLeaks();
 
   outlet.addEventListener('click', (e) => {
     const row = e.target.closest?.('tr.click[data-lead]');

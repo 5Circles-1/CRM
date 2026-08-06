@@ -321,3 +321,13 @@ pre.json {
 .alert-pop-body a { color: var(--brand); text-decoration: none; font-weight: 600; }
 .alert-pop-foot { margin-top: 5px; font-size: 12px; color: var(--muted); }
 @keyframes alert-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* Chips used as filter buttons: a <button> resets nothing by default, so it
+   needs the font and cursor back, and a clear "this filter is on" state. */
+button.chip { font: inherit; cursor: pointer; }
+button.chip:hover { border-color: #c8d4ea; }
+.chip.on {
+  background: var(--brand); border-color: var(--brand); color: var(--brand-ink);
+}
+.chip.on b { color: var(--brand-ink); }
+.chip.hot.on { background: var(--bad); border-color: var(--bad); color: #fff; }

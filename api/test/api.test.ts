@@ -1521,3 +1521,133 @@ describe('the UI can read its own poll settings', () => {
     assert.ok(Array.isArray(res.json()['alerts.popup_kinds']));
   });
 });
+
+describe('the caller can see their whole pipeline, not just today', () => {
+  it('shows a follow-up agreed for next week', async () => {
+    // The gap the floor found: /me/day stops at midnight, so a lead called on
+    // Monday and scheduled for Thursday appeared on no screen in between.
+    const leadId = makeLeadFor(USERS.callerA1, 'Next Week');
+    fixtureSql(`update crm.leads
+                   set next_action_at = now() + interval '6 days',
+                       first_touched_at = now(), attempt_count = 1, status = 'working'
+                 where id = '${leadId}';`);
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const day = await h.app.inject({ method: 'GET', url: '/me/day', headers: auth(a1) });
+    assert.ok(!day.json().leads.some((l: { lead_id: string }) => l.lead_id === leadId),
+      'correctly absent from today');
+
+    const pipe = await h.app.inject({ method: 'GET', url: '/me/pipeline', headers: auth(a1) });
+    const row = pipe.json().leads.find((l: { lead_id: string }) => l.lead_id === leadId);
+    assert.ok(row, 'but it must be visible somewhere');
+    assert.equal(row.bucket, 'followup_upcoming');
+  });
+
+  it('separates a follow-up due today from one due later', async () => {
+    const todayId = makeLeadFor(USERS.callerA1, 'Due Today');
+    fixtureSql(`update crm.leads
+                   set next_action_at = now() + interval '2 hours',
+                       first_touched_at = now(), attempt_count = 1, status = 'working'
+                 where id = '${todayId}';`);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const pipe = await h.app.inject({ method: 'GET', url: '/me/pipeline', headers: auth(a1) });
+    const row = pipe.json().leads.find((l: { lead_id: string }) => l.lead_id === todayId);
+    assert.ok(['followup_today', 'overdue'].includes(row.bucket), `got ${row.bucket}`);
+  });
+
+  it('counts every bucket so the tabs can show numbers', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/pipeline', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    assert.equal(typeof res.json().counts, 'object');
+    assert.equal(
+      Object.values(res.json().counts as Record<string, number>).reduce((a, b) => a + b, 0),
+      res.json().total,
+    );
+  });
+
+  it('filters to one bucket, which is what the tabs do', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'GET', url: '/me/pipeline?bucket=followup_upcoming', headers: auth(a1),
+    });
+    assert.equal(res.statusCode, 200);
+    for (const l of res.json().leads) {
+      assert.equal(l.bucket, 'followup_upcoming', 'a filtered list must contain only that bucket');
+    }
+  });
+
+  it('never shows one caller another caller\'s pipeline', async () => {
+    const otherId = makeLeadFor(USERS.callerB1, 'Not Yours');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/pipeline', headers: auth(a1) });
+    assert.ok(!res.json().leads.some((l: { lead_id: string }) => l.lead_id === otherId));
+  });
+});
+
+describe('alerts are separable by kind', () => {
+  it('raises a follow-up that has just come due, distinct from an overdue one', async () => {
+    const dueId = makeLeadFor(USERS.callerA1, 'Follow Up Due');
+    fixtureSql(`update crm.leads
+                   set next_action_at = now() - interval '5 minutes',
+                       first_touched_at = now(), attempt_count = 1, status = 'working'
+                 where id = '${dueId}';`);
+
+    const lateId = makeLeadFor(USERS.callerA1, 'Follow Up Late');
+    fixtureSql(`update crm.leads
+                   set next_action_at = now() - interval '3 hours',
+                       first_touched_at = now(), attempt_count = 1, status = 'working'
+                 where id = '${lateId}';`);
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const byLead = Object.fromEntries(
+      res.json().alerts.map((a: { lead_id: string; kind: string }) => [a.lead_id, a.kind]),
+    );
+    assert.equal(byLead[dueId], 'follow_up_due', 'a nudge');
+    assert.equal(byLead[lateId], 'action_overdue', 'a problem');
+  });
+
+  it('announces a newly assigned lead as its own kind', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Just Landed');
+    fixtureSql(`update crm.leads
+                   set assigned_at = now(), first_touched_at = null, attempt_count = 0,
+                       first_touch_due_at = now() + interval '5 minutes', status = 'new'
+                 where id = '${leadId}';`);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const kinds = res.json().alerts
+      .filter((a: { lead_id: string }) => a.lead_id === leadId)
+      .map((a: { kind: string }) => a.kind);
+    assert.ok(kinds.includes('new_lead'), `expected new_lead, got ${kinds.join(',')}`);
+  });
+
+  it('offers every kind as a popup, so none can be silenced by accident', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const cfg = await h.app.inject({ method: 'GET', url: '/meta/ui-settings', headers: auth(a1) });
+    const kinds = cfg.json()['alerts.popup_kinds'];
+    for (const k of ['callback_due', 'follow_up_due', 'action_overdue', 'new_lead']) {
+      assert.ok(kinds.includes(k), `${k} must be able to pop up`);
+    }
+  });
+});
+
+describe('the leakage board can be worked one problem at a time', () => {
+  it('summarises by type only, so one leak is one chip', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/leakage', headers: auth(cs) });
+    assert.equal(res.statusCode, 200);
+    const types = res.json().summary.map((s: { leak_type: string }) => s.leak_type);
+    assert.equal(new Set(types).size, types.length,
+      'a leak type must appear once, not once per severity');
+  });
+
+  it('names the caller on each leaking lead', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/leakage', headers: auth(cs) });
+    const assigned = res.json().items.filter((i: { caller_id: string | null }) => i.caller_id);
+    for (const item of assigned) {
+      assert.ok(item.caller_name, '"whose is it" is the first question about any leak');
+    }
+  });
+});

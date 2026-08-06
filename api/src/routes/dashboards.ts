@@ -68,15 +68,23 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
 
     return req.tx(async (q) => {
       const rows = await q.many(
-        `select * from crm.v_pipeline_leakage
-          where ($1::text is null or severity = $1)
-          order by case severity when 'high' then 0 else 1 end, minutes_late desc
+        // The caller's name comes from here rather than the view: the screen
+        // groups leaks by type and the first question about any of them is
+        // "whose is it", which a uuid does not answer.
+        `select pl.*, u.full_name as caller_name
+           from crm.v_pipeline_leakage pl
+           left join crm.users u on u.id = pl.caller_id
+          where ($1::text is null or pl.severity = $1)
+          order by case pl.severity when 'high' then 0 else 1 end, pl.minutes_late desc
           limit 500`,
         [severity ?? null],
       );
+      // Grouped by type only. Splitting by severity too produced two chips for
+      // the same leak type, which read as two different problems.
       const summary = await q.many(
-        `select leak_type, severity, count(*) as count
-           from crm.v_pipeline_leakage group by leak_type, severity order by count desc`,
+        `select leak_type, count(*) as count,
+                max(case when severity = 'high' then 1 else 0 end)::boolean as has_high
+           from crm.v_pipeline_leakage group by leak_type order by count desc`,
       );
       return { summary, items: rows };
     });

@@ -62,6 +62,64 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * My whole open pipeline, bucketed - not just today.
+   *
+   * /me/day deliberately stops at midnight; it is the day's work list. This is
+   * the answer to "what do I owe anyone this week", which had no screen at all:
+   * a follow-up agreed for Thursday was invisible from Monday night until
+   * Thursday morning.
+   */
+  app.get('/me/pipeline', async (req) => {
+    const user = req.requireUser();
+    const query = z
+      .object({
+        bucket: z
+          .enum(['immediate', 'overdue', 'callback', 'callback_upcoming', 'fresh',
+                 'followup_today', 'followup_upcoming'])
+          .optional(),
+        limit: z.coerce.number().int().min(1).max(500).default(200),
+      })
+      .parse(req.query);
+
+    return req.tx(async (q) => {
+      const [counts, rows] = await Promise.all([
+        q.many<{ bucket: string; count: number }>(
+          `select bucket, count(*)::int as count
+             from crm.v_my_pipeline
+            where caller_id = $1 or counsellor_id = $1
+            group by bucket`,
+          [user.id],
+        ),
+        q.many<{ lead_id: string }>(
+          `select * from crm.v_my_pipeline
+            where (caller_id = $1 or counsellor_id = $1)
+              and ($2::text is null or bucket = $2)
+            order by case bucket
+                       when 'immediate'         then 0
+                       when 'overdue'           then 1
+                       when 'callback'          then 2
+                       when 'fresh'             then 3
+                       when 'followup_today'    then 4
+                       when 'callback_upcoming' then 5
+                       else 6
+                     end,
+                     minutes_overdue desc,
+                     next_action_at asc
+            limit $3`,
+          [user.id, query.bucket ?? null, query.limit],
+        ),
+      ]);
+
+      await logLeadAccess(q, user.id, rows.map((r) => r.lead_id), 'list', req.ip);
+      return {
+        counts: Object.fromEntries(counts.map((c) => [c.bucket, Number(c.count)])),
+        total: counts.reduce((a, c) => a + Number(c.count), 0),
+        leads: rows,
+      };
+    });
+  });
+
+  /**
    * The handful of settings the browser itself needs.
    *
    * These live in crm.settings with everything else, but /admin/settings is

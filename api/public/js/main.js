@@ -14,7 +14,7 @@ import * as people from './views/people.js';
 import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 
 const NAV = [
-  { hash: '#/day', label: 'My Day', roles: ['caller'] },
+  { hash: '#/day', label: 'My Pipeline', roles: ['caller', 'counsellor'] },
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
   { hash: '#/collections', label: 'Collections', roles: ['counsellor', 'admin', 'ops'] },
   { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
@@ -34,7 +34,7 @@ const VIEWS = {
 };
 
 const TITLES = {
-  day: 'My Day', floor: 'Floor', collections: 'Collections', dash: 'Dashboards',
+  day: 'My Pipeline', floor: 'Floor', collections: 'Collections', dash: 'Dashboards',
   leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
 };
