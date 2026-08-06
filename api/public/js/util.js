@@ -125,3 +125,20 @@ export function parseTalk(text) {
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
 }
+
+/**
+ * Point every brand image at the real artwork, falling back to the bundled SVG.
+ *
+ * Done here rather than with an inline onerror attribute: inline handlers are
+ * the first thing a Content-Security-Policy blocks, and the failure would be
+ * an invisible broken image rather than an error anyone notices.
+ */
+export function wireLogoFallback(root = document) {
+  root.querySelectorAll('img[data-logo]').forEach((img) => {
+    img.addEventListener('error', function once() {
+      img.removeEventListener('error', once);
+      img.src = 'brand/logo.svg';
+    });
+    img.src = 'brand/logo.png';
+  });
+}

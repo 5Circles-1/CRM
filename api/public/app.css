@@ -46,7 +46,6 @@ a:hover { text-decoration: underline; }
   color: #fff; font-weight: 700; font-size: 17px;
   padding: 6px 10px 16px; letter-spacing: .2px;
 }
-.sidebar .logo span { color: #7ea2f0; }
 .sidebar a.nav {
   display: block; padding: 10px 12px; border-radius: 8px;
   color: #c9d4e3; font-weight: 500;
@@ -331,3 +330,17 @@ button.chip:hover { border-color: #c8d4ea; }
 }
 .chip.on b { color: var(--brand-ink); }
 .chip.hot.on { background: var(--bad); border-color: var(--bad); color: #fff; }
+
+/* ---- brand ---- */
+
+/* The mark is served as brand/logo.png with brand/logo.svg as the fallback, so
+   dropping the real artwork in place needs no code change. */
+.sidebar .logo { display: flex; align-items: center; gap: 10px; }
+.logo-mark { width: 34px; height: 34px; border-radius: 50%; flex: none; }
+.logo-text { line-height: 1.15; }
+.logo-text b { color: #7ea2f0; font-weight: 700; }
+
+.login-logo {
+  display: block; width: 76px; height: 76px; border-radius: 50%;
+  margin: 0 auto 14px;
+}

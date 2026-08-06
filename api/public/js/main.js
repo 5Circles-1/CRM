@@ -1,5 +1,5 @@
 import { get, post } from './api.js';
-import { esc, h, minsLabel, toast } from './util.js';
+import { esc, h, minsLabel, toast, wireLogoFallback } from './util.js';
 import { renderLogin } from './views/login.js';
 import * as day from './views/day.js';
 import * as lead from './views/lead.js';
@@ -77,7 +77,10 @@ function renderShell(app) {
   app.appendChild(h(`
     <div class="shell">
       <nav class="sidebar">
-        <div class="logo">5 Circles <span>CRM</span></div>
+        <div class="logo">
+          <img data-logo alt="" class="logo-mark">
+          <span class="logo-text">5 Circles <b>CRM</b></span>
+        </div>
         ${items.map((n) => `<a class="nav" data-nav="${n.hash}" href="${n.hash}">${esc(n.label)}</a>`).join('')}
         <div class="foot">Sales floor · IST</div>
       </nav>
@@ -101,6 +104,7 @@ function renderShell(app) {
     boot();
   });
 
+  wireLogoFallback(app);
   wireBell();
   startAlerts();
   startLiveRefresh();

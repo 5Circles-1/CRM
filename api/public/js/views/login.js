@@ -1,11 +1,12 @@
 import { api, post } from '../api.js';
-import { h } from '../util.js';
+import { h, wireLogoFallback } from '../util.js';
 
 export function renderLogin(app, onSuccess) {
   app.innerHTML = '';
   const box = h(`
     <div class="login-wrap">
       <form class="login">
+        <img data-logo alt="5 Circles" class="login-logo">
         <h1>5 Circles CRM</h1>
         <div class="sub">Sales floor sign in</div>
         <div class="err" data-testid="login-error"></div>
@@ -43,6 +44,7 @@ export function renderLogin(app, onSuccess) {
   });
 
   app.appendChild(box);
+  wireLogoFallback(box);
   box.querySelector('input[name=email]').focus();
 }
 

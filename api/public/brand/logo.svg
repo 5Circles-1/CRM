@@ -1,0 +1,42 @@
+<!--
+  5 Circles mark — a stand-in, drawn to match the supplied logo.
+
+  This is NOT the original artwork. The real file could not be written from the
+  chat attachment, so this approximates it: blue gradient disc, the numeral 5
+  formed by a flag and an open ring, and CIRCLES set along the lower-left arc.
+
+  To use the real thing, drop the PNG in beside this file as logo.png — every
+  place the logo appears prefers logo.png and falls back to this only if it is
+  missing, so no code changes are needed:
+
+    scp "C:\path\to\logo.png" root@167.71.226.179:/opt/crm/api/public/brand/logo.png
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" role="img"
+     aria-label="5 Circles">
+  <defs>
+    <linearGradient id="fiveCirclesDisc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0"   stop-color="#12a3e8"/>
+      <stop offset="0.5" stop-color="#0d84d6"/>
+      <stop offset="1"   stop-color="#152f8c"/>
+    </linearGradient>
+    <path id="circlesArc" fill="none"
+          d="M 78 268 A 176 176 0 0 0 300 432"/>
+  </defs>
+
+  <circle cx="250" cy="250" r="250" fill="url(#fiveCirclesDisc)"/>
+
+  <!-- The 5: a horizontal flag, a short descender, and a near-closed ring.
+       The gap sits top-right, which is what makes the ring read as a 5. -->
+  <g fill="none" stroke="#ffffff" stroke-width="52" stroke-linecap="butt">
+    <path d="M 306 96 L 168 96 L 168 208"/>
+    <path d="M 168 208 A 104 104 0 1 1 168 300"
+          stroke-linecap="round"/>
+  </g>
+  <path d="M 318 86 A 190 190 0 0 1 352 372"
+        fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round"/>
+
+  <text font-family="Verdana, Geneva, sans-serif" font-size="60" font-weight="700"
+        fill="#ffffff" letter-spacing="6">
+    <textPath href="#circlesArc" startOffset="6%">CIRCLES</textPath>
+  </text>
+</svg>
