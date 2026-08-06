@@ -42,6 +42,21 @@ const STATUS = [
   ['nurture', 'Nurture'],
 ];
 
+/**
+ * The follow-up round a lead is on, in the language of the old Excel, whose
+ * FU1..FU5 columns are how the floor still thinks. One call made means the
+ * next dial is the 1st follow-up, and so on.
+ */
+const ROUNDS = [
+  ['', 'Any round'],
+  ['0', 'Fresh — no call yet'],
+  ['1', 'Due 1st follow-up'],
+  ['2', 'Due 2nd follow-up'],
+  ['3', 'Due 3rd follow-up'],
+  ['4', 'Due 4th follow-up'],
+  ['5plus', 'Due 5th follow-up or later'],
+];
+
 const WHATSAPP = [
   ['', 'WhatsApp: any'],
   ['sent', 'WhatsApp sent'],
@@ -81,6 +96,9 @@ export async function render(outlet) {
         <label class="f">WhatsApp
           <select name="whatsapp">${WHATSAPP.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
         </label>
+        <label class="f">Follow-up round
+          <select name="attempts">${ROUNDS.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
+        </label>
         <button class="btn" id="clear">Clear</button>
       </div>
 
@@ -90,7 +108,7 @@ export async function render(outlet) {
 
   const input = panel.querySelector('[name=q]');
   const results = panel.querySelector('#results');
-  const controls = ['lastDisposition', 'due', 'status', 'whatsapp'];
+  const controls = ['lastDisposition', 'due', 'status', 'whatsapp', 'attempts'];
   let timer = null;
 
   const readControls = () => {
@@ -136,7 +154,7 @@ export async function render(outlet) {
         <div style="overflow-x:auto">
         <table class="table"><thead><tr>
           <th>Name</th><th>Phone</th><th>Status</th><th>Last outcome</th>
-          <th>Next action</th><th class="num">Attempts</th><th>WA</th><th></th>
+          <th>Next action</th><th class="num">Calls so far</th><th>WA</th><th></th>
         </tr></thead><tbody>
         ${data.leads.map((l) => `
           <tr>

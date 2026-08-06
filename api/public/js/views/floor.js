@@ -1,12 +1,32 @@
 import { get, post } from '../api.js';
-import { agoLabel, badge, esc, fmtDT, h, minsLabel, toast } from '../util.js';
+import { agoLabel, badge, esc, fmtDT, fmtINR, fmtTalk, h, minsLabel, toast } from '../util.js';
+
+/**
+ * The leaderboard parameters, and what wins each one.
+ *
+ * Winners are computed, never picked: whoever tops each metric holds that
+ * trophy, ties share it, and a metric nobody has scored on yet has no winner
+ * rather than crowning a row of zeros. Callers and counsellors compete on the
+ * same board - the old Excel credited both the Executive and the Counsellor on
+ * every visit and every payment, so a board that split them would break the
+ * shared credit the floor is used to.
+ */
+const TROPHIES = [
+  { key: 'dials',       label: 'Most calls',        icon: '📞' },
+  { key: 'connects',    label: 'Most connects',     icon: '🎯' },
+  { key: 'interested',  label: 'Most interested',   icon: '✨' },
+  { key: 'walked_in',   label: 'Most walk-ins',     icon: '🚶' },
+  { key: 'deals',       label: 'Most conversions',  icon: '🏆' },
+  { key: 'revenue',     label: 'Most revenue',      icon: '💰', fmt: (v) => fmtINR(v) },
+  { key: 'talk_seconds', label: 'Most talk time',   icon: '⏱️', fmt: (v) => fmtTalk(v) },
+];
 
 /**
  * The counsellor's home: who is on the floor, what is leaking, what needs
  * transferring (requirement 8), and their own negotiations.
  */
 export async function render(outlet, me) {
-  const [floor, immediate, leakage, candidates, targets, qualified, negotiation] = await Promise.all([
+  const [floor, immediate, leakage, candidates, targets, qualified, negotiation, today] = await Promise.all([
     get('/dashboards/floor'),
     get('/queues/immediate'),
     get('/dashboards/leakage'),
@@ -14,9 +34,48 @@ export async function render(outlet, me) {
     get('/transfers/targets').catch(() => []),
     get('/leads?status=qualified&limit=100'),
     get('/leads?status=negotiation&limit=100'),
+    get('/performance?days=1').catch(() => []),
   ]);
 
   outlet.innerHTML = '';
+
+  // --- the leaderboard: who is winning what, computed live ---
+  let boardDays = 1;
+  const board = h('<div class="panel"></div>');
+  outlet.appendChild(board);
+
+  const drawBoard = async () => {
+    const rows = boardDays === 1 ? today : await get(`/performance?days=${boardDays}`);
+    board.innerHTML = '';
+    board.appendChild(h(`
+      <div class="row spread">
+        <h2 class="mt0">Leaderboard <small>winners update automatically as calls are logged</small></h2>
+        <div class="chips" style="margin:0">
+          ${[[1, 'Today'], [7, 'This week'], [30, 'This month']].map(([d, l]) => `
+            <button class="chip ${d === boardDays ? 'on' : ''}" data-board-days="${d}">${l}</button>`).join('')}
+        </div>
+      </div>`));
+
+    const cards = h('<div class="trophy-grid"></div>');
+    for (const t of TROPHIES) {
+      const top = Math.max(0, ...rows.map((r) => Number(r[t.key] ?? 0)));
+      // A row of zeros has no winner. Crowning one would reward whoever
+      // happens to sort first, which is worse than an empty card.
+      const winners = top > 0 ? rows.filter((r) => Number(r[t.key] ?? 0) === top) : [];
+      cards.appendChild(h(`
+        <div class="trophy${winners.length ? '' : ' idle'}">
+          <div class="trophy-head">${t.icon} ${esc(t.label)}</div>
+          ${winners.length === 0
+            ? '<div class="trophy-none">no scores yet</div>'
+            : `<div class="trophy-name">${winners.map((w) => esc(w.full_name)).join(' & ')}</div>
+               <div class="trophy-value">${esc((t.fmt ?? String)(top))}</div>`}
+        </div>`));
+    }
+    board.appendChild(cards);
+    board.querySelectorAll('[data-board-days]').forEach((b) =>
+      b.addEventListener('click', () => { boardDays = Number(b.dataset.boardDays); drawBoard(); }));
+  };
+  await drawBoard();
 
   // --- leakage summary chips ---
   //
@@ -122,26 +181,47 @@ export async function render(outlet, me) {
       </tbody></table>`}
     </div>`));
 
-  // --- floor live ---
+  // --- today's scoreboard, in the shape of the old Excel EOD tab ---
+  //
+  // Same columns the floor filled in by hand every evening - total calls,
+  // answered, unanswered, interested, not interested, expected walk-in, walk-in
+  // done, conversions - except nobody types them any more.
+  const byUser = Object.fromEntries((Array.isArray(today) ? today : []).map((r) => [r.user_id, r]));
   outlet.appendChild(h(`
     <div class="panel">
-      <h2>Floor live</h2>
+      <h2>Today's scoreboard <small>the EOD sheet, filling itself in</small></h2>
+      <div style="overflow-x:auto">
       <table class="table" data-testid="floor-live"><thead><tr>
-        <th>Person</th><th>Status</th><th class="num">Logged</th><th class="num">Dials</th>
-        <th class="num">Connects</th><th class="num">Urgent in queue</th><th>Last call</th>
+        <th>Person</th><th>Status</th><th class="num">Hours</th>
+        <th class="num">Calls</th><th class="num">Connects</th><th class="num">No answer</th>
+        <th class="num">Interested</th><th class="num">Not interested</th>
+        <th class="num">Visits promised</th><th class="num">Walked in</th>
+        <th class="num">Deals</th><th class="num">Urgent waiting</th>
       </tr></thead><tbody>
-      ${floor.map((r) => `
+      ${floor.map((r) => {
+        const perf = byUser[r.user_id] ?? {};
+        return `
         <tr>
           <td>${esc(r.full_name)} <span class="hint">${esc(r.role)}</span></td>
           <td>${r.currently_logged_in ? '<span class="badge b-ok">on floor</span>' : '<span class="badge b-mute">off</span>'}
               ${r.is_late ? '<span class="badge b-warn">late</span>' : ''}</td>
           <td class="num">${esc(minsLabel(r.logged_minutes_today))}</td>
-          <td class="num">${Number(r.dials_today)}${r.dial_target ? ` / ${Number(r.dial_target)}` : ''}</td>
-          <td class="num">${Number(r.connects_today)}</td>
+          <td class="num">${Number(perf.dials ?? 0)}${r.dial_target ? ` / ${Number(r.dial_target)}` : ''}</td>
+          <td class="num">${Number(perf.connects ?? 0)}</td>
+          <td class="num">${Number(perf.not_answered ?? 0)}</td>
+          <td class="num">${Number(perf.interested ?? 0)}</td>
+          <td class="num">${Number(perf.not_interested ?? 0)}</td>
+          <td class="num">${Number(perf.visits_promised ?? 0)}</td>
+          <td class="num">${Number(perf.walked_in ?? 0)}</td>
+          <td class="num">${Number(perf.deals ?? 0)}</td>
           <td class="num">${Number(r.urgent_in_queue) > 0 ? `<span class="badge b-bad">${Number(r.urgent_in_queue)}</span>` : '0'}</td>
-          <td>${esc(fmtDT(r.last_call_at))}</td>
-        </tr>`).join('')}
-      </tbody></table>
+        </tr>`;
+      }).join('')}
+      </tbody></table></div>
+      <div class="hint" style="margin-top:8px">
+        “Connects” needs 30+ seconds of real talk. “Visits promised” is what the client
+        said; “walked in” is what happened. Deals count the person who closed them.
+      </div>
     </div>`));
 
   // --- leakage detail, grouped by type ---

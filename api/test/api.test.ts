@@ -1651,3 +1651,33 @@ describe('the leakage board can be worked one problem at a time', () => {
     }
   });
 });
+
+describe('the follow-up round filter', () => {
+  it('lists leads by how many calls they have had, like the old FU columns', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Second Round');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const next = new Date(Date.now() + 3.6e6).toISOString();
+    for (let i = 0; i < 2; i += 1) {
+      await h.app.inject({
+        method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+        payload: { disposition: 'not_answered', durationSeconds: 0, nextActionAt: next },
+      });
+    }
+
+    const two = await h.app.inject({ method: 'GET', url: '/leads?attempts=2', headers: auth(a1) });
+    assert.ok(two.json().leads.some((l: { id: string }) => l.id === leadId),
+      'a lead with two calls is due its 2nd follow-up');
+
+    const three = await h.app.inject({ method: 'GET', url: '/leads?attempts=3', headers: auth(a1) });
+    assert.ok(!three.json().leads.some((l: { id: string }) => l.id === leadId));
+  });
+
+  it('groups the long tail as 5plus rather than a dropdown per number', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Eighth Round');
+    fixtureSql(`update crm.leads set attempt_count = 8 where id = '${leadId}';`);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/leads?attempts=5plus', headers: auth(a1) });
+    assert.ok(res.json().leads.some((l: { id: string }) => l.id === leadId),
+      'the eighth follow-up lives in the 5+ list');
+  });
+});

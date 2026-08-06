@@ -181,6 +181,10 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
         lastDisposition: dispositionSchema.optional(),
         due: z.enum(['overdue', 'today', 'untouched', 'contacted']).optional(),
         whatsapp: z.enum(['sent', 'not_sent']).optional(),
+        // Which follow-up round the lead is on. The old Excel had a column per
+        // follow-up (FU1..FU5), and the floor thinks in those terms: "give me
+        // everyone due their 3rd follow-up" is a list they worked daily.
+        attempts: z.enum(['0', '1', '2', '3', '4', '5plus']).optional(),
         limit: z.coerce.number().int().min(1).max(200).default(50),
         offset: z.coerce.number().int().min(0).default(0),
       })
@@ -209,6 +213,10 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
                    when 'sent'     then whatsapp_sent_at is not null
                    when 'not_sent' then whatsapp_sent_at is null
                  end)
+            and ($8::text is null or case $8
+                   when '5plus' then attempt_count >= 5
+                   else attempt_count = $8::int
+                 end)
           order by next_action_at asc nulls last, created_at desc
           limit $3 offset $4`,
         [
@@ -219,6 +227,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
           query.lastDisposition ?? null,
           query.due ?? null,
           query.whatsapp ?? null,
+          query.attempts ?? null,
         ],
       );
 

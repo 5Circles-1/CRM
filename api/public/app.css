@@ -388,3 +388,18 @@ button.chip:hover { border-color: #c8d4ea; }
 @media (max-width: 1100px) { .chart-grid { grid-template-columns: 1fr; } }
 .stat.tone-good .v { color: var(--ok); }
 .stat.tone-bad  .v { color: var(--bad); }
+
+/* ---- leaderboard ---- */
+.trophy-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 12px; margin-top: 12px;
+}
+.trophy {
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px;
+  background: linear-gradient(180deg, #fff, #f7f9fc);
+}
+.trophy.idle { opacity: .55; }
+.trophy-head { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.trophy-name { font-weight: 700; font-size: 15px; margin-top: 6px; }
+.trophy-value { color: var(--brand); font-weight: 700; font-variant-numeric: tabular-nums; }
+.trophy-none { color: var(--muted); font-size: 13px; margin-top: 6px; }
