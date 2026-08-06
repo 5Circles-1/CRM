@@ -1824,3 +1824,42 @@ describe('overall standings', () => {
     assert.ok(Number(cfg['ui.refresh_seconds']) >= 5, 'live screens know their cadence');
   });
 });
+
+describe('attendance till date', () => {
+  it('rolls up days present, total minutes, and an attendance rate', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/attendance/summary', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    const s = res.json();
+    // The before() hook put every caller on the floor an hour ago, so today
+    // exists in everyone's record.
+    assert.ok(Number(s.days_present) >= 1);
+    assert.ok(Number(s.total_minutes) >= 1, 'time logged till date is real minutes');
+    assert.ok(Number(s.floor_days_since_joining) >= Number(s.days_present),
+      'the denominator can never be smaller than the days attended');
+    assert.ok(Number(s.attendance_pct) > 0 && Number(s.attendance_pct) <= 100);
+  });
+
+  it('gives the counsellor the whole floor, but not a caller', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const all = await h.app.inject({ method: 'GET', url: '/attendance/summary', headers: auth(cs) });
+    assert.equal(all.statusCode, 200);
+    assert.ok(all.json().length >= 4, 'every active person with a record appears');
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const own = await h.app.inject({ method: 'GET', url: '/attendance/summary', headers: auth(a1) });
+    assert.equal(own.statusCode, 403, 'the floor-wide rollup is for floor managers');
+  });
+
+  it('never counts a day the floor did not work against anyone', async () => {
+    // A fresh floor day exists only if someone was present on it - so the
+    // denominator equals the count of distinct business dates in the sessions
+    // table from the person''s first day, by construction.
+    const days = fixtureSql(`select count(distinct business_date) from crm.attendance_sessions;`).trim();
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const all = await h.app.inject({ method: 'GET', url: '/attendance/summary', headers: auth(cs) });
+    for (const row of all.json()) {
+      assert.ok(Number(row.floor_days_since_joining) <= Number(days));
+    }
+  });
+});

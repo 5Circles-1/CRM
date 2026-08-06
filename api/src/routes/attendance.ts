@@ -60,6 +60,30 @@ export async function attendanceRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
+  /**
+   * Attendance till date, for the whole floor. Days present are judged
+   * against "floor days" - dates anyone worked - so Sundays and holidays are
+   * never held against anybody.
+   */
+  app.get('/attendance/summary', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    return req.tx((q) =>
+      q.many(
+        `select * from crm.v_attendance_summary
+          where is_active
+          order by role, full_name`,
+      ),
+    );
+  });
+
+  /** The same rollup for the requesting user alone - every role gets their own. */
+  app.get('/me/attendance/summary', async (req) => {
+    const user = req.requireUser();
+    return req.tx((q) =>
+      q.one(`select * from crm.v_attendance_summary where user_id = $1`, [user.id]),
+    );
+  });
+
   app.get('/attendance/day/:date', async (req) => {
     req.requireRole('counsellor', 'admin', 'ops', 'viewer');
     const { date } = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).parse(req.params);
