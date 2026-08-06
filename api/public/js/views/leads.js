@@ -68,6 +68,11 @@ export async function render(outlet) {
   let filters = {};
   let preset = 'Everything';
 
+  // Every view starts by clearing the outlet; this one forgot, so the
+  // router's loading spinner stayed on screen above the panel, spinning
+  // forever - which read as "the page never finishes loading".
+  outlet.innerHTML = '';
+
   const panel = h(`
     <div class="panel">
       <h2>Find and re-tap <small>pick a list, or combine the filters</small></h2>
