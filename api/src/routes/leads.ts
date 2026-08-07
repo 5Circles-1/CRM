@@ -374,6 +374,63 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  /**
+   * Exclusive Events: leads from an event campaign (and any old lead pulled in
+   * by hand), grouped by event, live and tappable. RLS scopes it - a caller
+   * sees their own event leads, a counsellor the team's, an admin all.
+   */
+  app.get('/exclusive-events', async (req) => {
+    const user = req.requireUser();
+    return req.tx(async (q) => {
+      const events = await q.many(
+        `select exclusive_event,
+                count(*)::int                                        as total,
+                count(*) filter (where first_touched_at is null)::int as fresh,
+                count(*) filter (where walked_in_at is not null)::int as walked_in
+           from crm.leads
+          where exclusive_event is not null
+            and status not in ('won','lost','invalid','handed_off')
+          group by exclusive_event
+          order by exclusive_event`,
+      );
+      const { event } = z.object({ event: z.string().max(80).optional() }).parse(req.query);
+      const leads = event
+        ? await q.many<{ lead_id: string }>(
+            `select * from crm.v_exclusive_events
+              where exclusive_event = $1
+              order by created_at desc limit 500`,
+            [event],
+          )
+        : [];
+      if (leads.length) await logLeadAccess(q, user.id, leads.map((l) => l.lead_id), 'list', req.ip);
+      return { events, leads };
+    });
+  });
+
+  /** Pull an old lead into (or out of) an Exclusive Event. Counsellor/admin. */
+  app.put('/leads/:id/exclusive-event', async (req) => {
+    const user = req.requireRole('counsellor', 'admin', 'ops');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z.object({ event: z.string().max(80).nullable() }).parse(req.body ?? {});
+    const row = await req.tx(async (q) => {
+      const updated = await q.one(
+        `update crm.leads set exclusive_event = $2, updated_at = now()
+          where id = $1 returning id, exclusive_event`,
+        [id, body.event],
+      );
+      if (updated) {
+        await q.query(
+          `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
+           values ($1, 'exclusive_event_set', $2, $3)`,
+          [id, user.id, JSON.stringify({ event: body.event })],
+        );
+      }
+      return updated;
+    });
+    if (!row) throw notFound('lead not found');
+    return row;
+  });
+
   /** Mark a lead as ready for the counsellor. Feeds the qualification score. */
   app.post('/leads/:id/qualify', async (req) => {
     const user = req.requireUser();

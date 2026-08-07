@@ -78,6 +78,20 @@ export const JOBS: Job[] = [
     everyMs: 6 * 60 * 60_000,
     sql: 'select crm.purge_expired_sessions()',
   },
+  {
+    name: 'close_stale_attendance_sessions',
+    // A forgotten End shift must not block tomorrow's Start shift. Runs often
+    // enough that a session is closed soon after its day rolls over.
+    everyMs: 30 * 60_000,
+    sql: 'select crm.close_stale_sessions()',
+  },
+  {
+    name: 'notify_daily_shortfall',
+    // Self-gates to the evening and to once per counsellor per day, so running
+    // it every half hour simply means the nudge lands soon after shift end.
+    everyMs: 30 * 60_000,
+    sql: 'select crm.notify_daily_shortfall()',
+  },
 ];
 
 /** 09:00-20:00 IST, a little either side of the 09:30-18:30 shift. */

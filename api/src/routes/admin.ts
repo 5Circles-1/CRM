@@ -50,7 +50,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return req.tx((q) =>
       q.many(
         `select u.id, u.full_name, u.email, u.role, u.employee_code, u.is_active,
-                u.dialing_msisdn, u.avatar_url,
+                u.dialing_msisdn, u.avatar_url, u.can_transfer_leads,
                 crm.team_of(u.id, current_date) as team_id,
                 t.name as team_name, tm.rotation_order
            from crm.users u
@@ -185,6 +185,78 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return row;
   });
 
+  /**
+   * Grant or revoke a caller's right to hand off their own leads - the reward
+   * the leaderboard leader earns. Admin only; the rule itself lives in
+   * crm.transfer_lead.
+   */
+  app.put('/admin/users/:id/transfer-grant', async (req) => {
+    req.requireRole('admin');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z.object({ canTransfer: z.boolean() }).parse(req.body);
+    const row = await req.tx((q) =>
+      q.one(
+        `update crm.users set can_transfer_leads = $2, updated_at = now()
+          where id = $1 returning id, full_name, can_transfer_leads`,
+        [id, body.canTransfer],
+      ),
+    );
+    if (!row) throw notFound('no user with that id');
+    return row;
+  });
+
+  /* ---------------- annual targets and rewards ---------------- */
+
+  app.get('/admin/targets', async (req) => {
+    req.requireRole('admin', 'ops', 'counsellor', 'viewer');
+    const { year } = z
+      .object({ year: z.coerce.number().int().min(2020).max(2100).optional() })
+      .parse(req.query);
+    return req.tx((q) =>
+      q.many(
+        `select p.*, u.role
+           from crm.v_annual_target_progress p
+           join crm.users u on u.id = p.user_id
+          where ($1::int is null or p.year = $1)
+          order by u.role, u.full_name, p.metric`,
+        [year ?? null],
+      ),
+    );
+  });
+
+  app.post('/admin/targets', async (req, reply) => {
+    const admin = req.requireRole('admin');
+    const body = z
+      .object({
+        userId: uuid,
+        year: z.number().int().min(2020).max(2100),
+        metric: z.enum(['deals', 'revenue', 'collected', 'dials', 'connects', 'walkins']),
+        target: z.number().positive().max(1e12),
+        reward: z.string().min(1).max(300),
+        note: z.string().max(500).optional(),
+      })
+      .parse(req.body);
+    const row = await req.tx((q) =>
+      q.one(
+        `insert into crm.annual_targets (user_id, year, metric, target, reward, note, created_by)
+         values ($1, $2, $3, $4, $5, $6, $7)
+         on conflict (user_id, year, metric) do update
+           set target = excluded.target, reward = excluded.reward,
+               note = excluded.note, updated_at = now()
+         returning id, user_id, year, metric, target, reward, note`,
+        [body.userId, body.year, body.metric, body.target, body.reward, body.note ?? null, admin.id],
+      ),
+    );
+    return reply.status(201).send(row);
+  });
+
+  app.post('/admin/targets/:id/delete', async (req) => {
+    req.requireRole('admin');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    await req.tx((q) => q.query(`delete from crm.annual_targets where id = $1`, [id]));
+    return { ok: true };
+  });
+
   app.post('/admin/users/:id/reset-password', async (req) => {
     req.requireRole('admin');
     const { id } = z.object({ id: uuid }).parse(req.params);
@@ -214,7 +286,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return req.tx((q) =>
       q.many(
         `select id, name, spreadsheet_id, worksheet_name, column_map,
-                pinned_team_id, default_priority, is_active, last_synced_at
+                pinned_team_id, default_priority, is_active, last_synced_at,
+                is_exclusive, exclusive_label
            from crm.lead_sources order by name`,
       ),
     );
@@ -228,6 +301,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     pinnedTeamId: uuid.nullable().optional(),
     defaultPriority: z.enum(['immediate', 'normal']).default('normal'),
     isActive: z.boolean().default(true),
+    isExclusive: z.boolean().default(false),
+    exclusiveLabel: z.string().max(80).optional(),
   });
 
   app.post('/admin/sources', async (req, reply) => {
@@ -236,9 +311,11 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const row = await req.tx((q) =>
       q.one(
         `insert into crm.lead_sources
-           (name, spreadsheet_id, worksheet_name, column_map, pinned_team_id, default_priority, is_active)
-         values ($1, $2, $3, coalesce($4::jsonb, '{}'::jsonb), $5, $6, $7)
-         returning id, name, spreadsheet_id, worksheet_name, column_map, default_priority, is_active`,
+           (name, spreadsheet_id, worksheet_name, column_map, pinned_team_id,
+            default_priority, is_active, is_exclusive, exclusive_label)
+         values ($1, $2, $3, coalesce($4::jsonb, '{}'::jsonb), $5, $6, $7, $8, $9)
+         returning id, name, spreadsheet_id, worksheet_name, column_map, default_priority,
+                   is_active, is_exclusive, exclusive_label`,
         [
           body.name,
           body.spreadsheetId ? normaliseSpreadsheetId(body.spreadsheetId) : null,
@@ -247,6 +324,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           body.pinnedTeamId ?? null,
           body.defaultPriority,
           body.isActive,
+          body.isExclusive,
+          body.isExclusive ? (body.exclusiveLabel ?? body.name) : null,
         ],
       ),
     );
@@ -273,10 +352,14 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
            pinned_team_id   = case when $9 then null else coalesce($6, pinned_team_id) end,
            default_priority = coalesce($7::crm.lead_priority, default_priority),
            is_active        = coalesce($8, is_active),
+           is_exclusive     = coalesce($10, is_exclusive),
+           exclusive_label  = case when $10 is null then exclusive_label
+                                   when $10 then coalesce($11, exclusive_label, name)
+                                   else null end,
            updated_at       = now()
          where id = $1
          returning id, name, spreadsheet_id, worksheet_name, column_map,
-                   pinned_team_id, default_priority, is_active`,
+                   pinned_team_id, default_priority, is_active, is_exclusive, exclusive_label`,
         [
           id,
           body.name ?? null,
@@ -287,6 +370,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           body.defaultPriority ?? null,
           body.isActive ?? null,
           unpin,
+          body.isExclusive ?? null,
+          body.exclusiveLabel ?? null,
         ],
       ),
     );

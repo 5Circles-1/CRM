@@ -1,10 +1,13 @@
 import { get, post, put } from '../api.js';
 import { avatarHtml, esc, fmtDT, fmtINR, h, openModal, toast } from '../util.js';
 
+const fmtNum = (v) => Number(v || 0).toLocaleString('en-IN');
+
 /** Ops/admin surface: settings, users, ingestion, quarantine, security alerts. */
 const TABS = [
   ['settings', 'Settings'],
   ['users', 'Users'],
+  ['targets', 'Targets & rewards'],
   ['ingest', 'Ingestion'],
   ['products', 'Products'],
   ['quarantine', 'Quarantine'],
@@ -19,7 +22,7 @@ export async function render(outlet, me) {
   outlet.appendChild(tabs);
   outlet.appendChild(body);
 
-  const draw = { settings, users, ingest, products, quarantine, alerts };
+  const draw = { settings, users, targets, ingest, products, quarantine, alerts };
   tabs.addEventListener('click', (e) => {
     const tab = e.target?.dataset?.tab;
     if (!tab) return;
@@ -70,6 +73,107 @@ async function settings(body, me) {
   });
 }
 
+/* ---------------- annual targets & rewards ---------------- */
+
+const TARGET_METRICS = [
+  ['deals', 'Deals closed'], ['revenue', 'Revenue booked (₹)'], ['collected', 'Cash collected (₹)'],
+  ['dials', 'Dials'], ['connects', 'Connects'], ['walkins', 'Walk-ins'],
+];
+
+async function targets(body, me) {
+  const year = new Date().getFullYear();
+  const [rows, list] = await Promise.all([
+    get(`/admin/targets?year=${year}`),
+    get('/admin/users'),
+  ]);
+  body.innerHTML = '';
+  const people = list.filter((u) => u.is_active && ['caller', 'counsellor'].includes(u.role));
+
+  const panel = h(`
+    <div class="panel">
+      <div class="row spread">
+        <h2 class="mt0">Annual targets & rewards <small>${year}</small></h2>
+        ${me.role === 'admin' ? '<button class="btn primary" id="new-target">Set a target</button>' : ''}
+      </div>
+      ${rows.length === 0 ? '<div class="empty">No annual targets set yet.</div>' : `
+      <table class="table"><thead><tr>
+        <th>Person</th><th>Metric</th><th class="num">Target</th><th class="num">Achieved</th>
+        <th>Progress</th><th>Reward</th><th></th>
+      </tr></thead><tbody>
+      ${rows.map((t) => {
+        const pct = Number(t.target) > 0 ? Math.min(100, Math.round((Number(t.achieved) / Number(t.target)) * 100)) : 0;
+        const metricLabel = (TARGET_METRICS.find((m) => m[0] === t.metric) || [t.metric, t.metric])[1];
+        const done = Number(t.achieved) >= Number(t.target);
+        return `<tr>
+          <td>${esc(t.full_name)} <span class="hint">${esc(t.role)}</span></td>
+          <td>${esc(metricLabel)}</td>
+          <td class="num">${fmtNum(t.target)}</td>
+          <td class="num">${fmtNum(t.achieved)}</td>
+          <td style="width:170px">
+            <div class="bar-mini"><div style="width:${pct}%"></div></div>
+            <span class="hint">${pct}%${done ? ' · 🎉 reached' : ''}</span></td>
+          <td>${esc(t.reward)}</td>
+          <td class="right">${me.role === 'admin' ? `<button class="btn small danger t-del" data-id="${esc(t.id)}">Remove</button>` : ''}</td>
+        </tr>`;
+      }).join('')}
+      </tbody></table>`}
+      <div class="hint" style="margin-top:8px">Rewards are yours to word — a bonus, a trophy, a trip. Progress is counted from live activity across the year.</div>
+    </div>`);
+  body.appendChild(panel);
+
+  panel.querySelector('#new-target')?.addEventListener('click', () => {
+    const bodyEl = h(`
+      <div>
+        <div class="frow">
+          <label class="f">Person
+            <select name="user">${people.map((u) => `<option value="${esc(u.id)}">${esc(u.full_name)} (${esc(u.role)})</option>`).join('')}</select>
+          </label>
+          <label class="f">Metric
+            <select name="metric">${TARGET_METRICS.map((m) => `<option value="${m[0]}">${m[1]}</option>`).join('')}</select>
+          </label>
+        </div>
+        <div class="frow">
+          <label class="f">Annual target <input name="target" type="number" min="1" step="1" required></label>
+          <label class="f">Year <input name="year" type="number" value="${year}" min="2020" max="2100"></label>
+        </div>
+        <label class="f">Reward on completion <input name="reward" maxlength="300" required placeholder="e.g. ₹50,000 bonus + a weekend trip"></label>
+      </div>`);
+    const footer = h('<div><button class="btn primary">Save target</button></div>');
+    const { close } = openModal('Set an annual target', bodyEl, footer);
+    footer.querySelector('button').addEventListener('click', async () => {
+      const target = Number(bodyEl.querySelector('[name=target]').value);
+      const reward = bodyEl.querySelector('[name=reward]').value.trim();
+      if (!target || target <= 0) { toast('Enter a target above zero.', 'err'); return; }
+      if (!reward) { toast('Describe the reward.', 'err'); return; }
+      try {
+        await post('/admin/targets', {
+          userId: bodyEl.querySelector('[name=user]').value,
+          year: Number(bodyEl.querySelector('[name=year]').value),
+          metric: bodyEl.querySelector('[name=metric]').value,
+          target, reward,
+        });
+        toast('Target saved.');
+        close();
+        targets(body, me);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    });
+  });
+
+  panel.addEventListener('click', async (e) => {
+    if (!e.target.classList?.contains('t-del')) return;
+    if (!confirm('Remove this target?')) return;
+    try {
+      await post(`/admin/targets/${e.target.dataset.id}/delete`);
+      toast('Target removed.');
+      targets(body, me);
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+}
+
 /* ---------------- users ---------------- */
 
 async function users(body, me) {
@@ -97,6 +201,7 @@ async function users(body, me) {
           <td>${u.is_active ? '<span class="badge b-ok">active</span>' : '<span class="badge b-mute">deactivated</span>'}</td>
           <td class="right">${me.role !== 'admin' ? '' : u.is_active
             ? `<button class="btn small u-avatar" data-id="${esc(u.id)}">${u.avatar_url ? 'Change icon' : 'Set icon'}</button>
+               ${u.role === 'caller' ? `<button class="btn small u-grant" data-id="${esc(u.id)}" data-on="${u.can_transfer_leads ? '1' : '0'}">${u.can_transfer_leads ? '★ Can transfer' : 'Allow transfer'}</button>` : ''}
                <button class="btn small u-pwd" data-id="${esc(u.id)}">Reset password</button>
                <button class="btn small danger u-deact" data-id="${esc(u.id)}">Deactivate</button>`
             : `<button class="btn small u-react" data-id="${esc(u.id)}">Reactivate</button>`}</td>
@@ -113,6 +218,18 @@ async function users(body, me) {
 
     if (e.target.classList.contains('u-avatar')) {
       avatarModal(list.find((u) => u.id === id), () => users(body, me));
+      return;
+    }
+
+    if (e.target.classList.contains('u-grant')) {
+      const turnOn = e.target.dataset.on !== '1';
+      try {
+        await put(`/admin/users/${id}/transfer-grant`, { canTransfer: turnOn });
+        toast(turnOn ? 'Transfer rights granted — this caller can now hand off her leads.' : 'Transfer rights removed.');
+        users(body, me);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
       return;
     }
 
@@ -531,6 +648,13 @@ function sourceModal(source, teams, onDone) {
       <label class="f">Column map <span class="hint">(optional JSON: field → sheet header; common headers are auto-detected)</span>
         <textarea name="map" rows="3" placeholder='{"full_name":"Full Name","phone":"Phone Number"}'>${esc(mapText)}</textarea>
       </label>
+      <label class="f" style="flex-direction:row;align-items:center;gap:10px">
+        <input type="checkbox" name="exclusive" ${source?.is_exclusive ? 'checked' : ''} style="width:auto">
+        <span>This is an <b>Exclusive Event</b> — its leads appear on the Exclusive Events page</span>
+      </label>
+      <label class="f" name="exclusive-label-wrap">Event name <span class="hint">shown on the Exclusive Events page; defaults to the source name</span>
+        <input name="exclusive_label" maxlength="80" placeholder="e.g. Diwali 2026" value="${esc(source?.exclusive_label ?? '')}">
+      </label>
     </div>`);
   bodyEl.querySelector('[name=priority]').value = source?.default_priority ?? 'normal';
   bodyEl.querySelector('[name=team]').value = source?.pinned_team_id ?? '';
@@ -556,6 +680,8 @@ function sourceModal(source, teams, onDone) {
       // so unpinning a source has to be said explicitly.
       pinnedTeamId: bodyEl.querySelector('[name=team]').value || null,
       columnMap,
+      isExclusive: bodyEl.querySelector('[name=exclusive]').checked,
+      exclusiveLabel: bodyEl.querySelector('[name=exclusive_label]').value.trim() || undefined,
     };
     try {
       if (editing) await put(`/admin/sources/${source.id}`, payload);

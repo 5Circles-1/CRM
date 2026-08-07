@@ -917,6 +917,122 @@ select crm_test.check(
     where lead_id = (select id from crm.leads where full_name = 'Will Visit Lead')), null);
 
 -- =============================================================================
+-- REQUIREMENT 11: the owner's third round - attendance fix, targets, rewards,
+-- star-caller transfer, daily shortfall, exclusive events.
+-- =============================================================================
+
+-- A session left open from yesterday must not block today's Start shift.
+-- Counsellor B is used because they have no other session, so the unbounded
+-- stale session cannot overlap one from earlier in the test.
+do $$
+declare
+  v_u uuid := '22222222-0000-0000-0000-000000000006';
+begin
+  -- Simulate a forgotten End shift: an open session dated two days ago.
+  insert into crm.attendance_sessions (user_id, started_at)
+  values (v_u, (current_date - 2 + time '09:30') at time zone 'Asia/Kolkata');
+end $$;
+
+select crm.close_stale_sessions('22222222-0000-0000-0000-000000000006') as _closed \gset
+
+select crm_test.check(
+  'R11', 'a session left open from a previous day is auto-closed',
+  (select ended_at is not null and auto_closed
+     from crm.attendance_sessions
+    where user_id = '22222222-0000-0000-0000-000000000006'
+      and business_date = current_date - 2), null);
+
+select crm_test.check(
+  'R11', 'and the person has no lingering open session blocking a new shift',
+  (select not exists (
+     select 1 from crm.attendance_sessions
+      where user_id = '22222222-0000-0000-0000-000000000006' and ended_at is null)), null);
+
+-- Star-caller transfer: an ordinary caller cannot, a granted caller can.
+do $$
+declare
+  v_lead uuid;
+  v_a1 uuid := '22222222-0000-0000-0000-000000000001';
+  v_src uuid := '33333333-0000-0000-0000-000000000001';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status, next_action_at, assigned_at)
+  values (v_src, 'Star Transfer', '+919555200001', v_a1, crm.team_of(v_a1, current_date), 'working', now(), now())
+  returning id into v_lead;
+end $$;
+
+do $$
+declare v_lead uuid; v_a1 uuid := '22222222-0000-0000-0000-000000000001';
+        v_a2 uuid := '22222222-0000-0000-0000-000000000002';
+begin
+  select id into v_lead from crm.leads where full_name = 'Star Transfer';
+  begin
+    perform crm.transfer_lead(v_lead, v_a2, 'load_balance', v_a1);
+    perform crm_test.check('R11', 'an ordinary caller still cannot transfer', false,
+                           'the transfer unexpectedly succeeded');
+  exception when insufficient_privilege then
+    perform crm_test.check('R11', 'an ordinary caller still cannot transfer', true, null);
+  end;
+end $$;
+
+update crm.users set can_transfer_leads = true where id = '22222222-0000-0000-0000-000000000001';
+
+do $$
+declare v_lead uuid; v_a1 uuid := '22222222-0000-0000-0000-000000000001';
+        v_a2 uuid := '22222222-0000-0000-0000-000000000002';
+begin
+  select id into v_lead from crm.leads where full_name = 'Star Transfer';
+  perform crm.transfer_lead(v_lead, v_a2, 'load_balance', v_a1);
+end $$;
+
+select crm_test.check(
+  'R11', 'a granted star caller may hand off their own lead',
+  (select caller_id = '22222222-0000-0000-0000-000000000002'
+     from crm.leads where full_name = 'Star Transfer'), null);
+
+-- Annual target progress reflects real activity.
+do $$
+declare v_cns uuid := '22222222-0000-0000-0000-000000000005';
+begin
+  insert into crm.annual_targets (user_id, year, metric, target, reward)
+  values (v_cns, extract(year from current_date)::int, 'deals', 50, 'A weekend trip');
+end $$;
+
+select crm_test.check(
+  'R11', 'an annual target reports achieved-so-far and its reward',
+  (select reward = 'A weekend trip' and achieved >= 0
+     from crm.v_annual_target_progress
+    where user_id = '22222222-0000-0000-0000-000000000005'
+      and metric = 'deals'), null);
+
+-- Daily shortfall view produces a target and a shortfall figure per counsellor.
+select crm_test.check(
+  'R11', 'the daily shortfall view gives each counsellor a target and shortfall',
+  (select count(*) >= 1 from crm.v_counsellor_daily_shortfall
+    where daily_target > 0), null);
+
+-- Exclusive Events: a lead from an event source is tagged automatically.
+do $$
+declare v_src uuid;
+begin
+  insert into crm.lead_sources (name, is_exclusive, exclusive_label, default_priority)
+  values ('Diwali Campaign Sheet', true, 'Diwali 2026', 'immediate')
+  returning id into v_src;
+  insert into crm.leads (source_id, full_name, phone_e164, team_id, status, next_action_at)
+  values (v_src, 'Event Lead', '+919555200002', crm.team_of('22222222-0000-0000-0000-000000000001', current_date),
+          'working', now());
+end $$;
+
+select crm_test.check(
+  'R11', 'a lead from an exclusive-event source is tagged with the event name',
+  (select exclusive_event = 'Diwali 2026' from crm.leads where full_name = 'Event Lead'), null);
+
+select crm_test.check(
+  'R11', 'the exclusive-event lead shows on the Exclusive Events view',
+  (select count(*) = 1 from crm.v_exclusive_events
+    where lead_id = (select id from crm.leads where full_name = 'Event Lead')
+      and exclusive_event = 'Diwali 2026'), null);
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

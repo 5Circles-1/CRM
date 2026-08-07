@@ -1,5 +1,5 @@
-import { get } from '../api.js';
-import { badge, esc, fmtDT, h } from '../util.js';
+import { get, post } from '../api.js';
+import { badge, esc, fmtDT, h, toast } from '../util.js';
 
 /**
  * Find a lead, or build a re-tap list and work it.
@@ -63,10 +63,20 @@ const WHATSAPP = [
   ['not_sent', 'WhatsApp not sent'],
 ];
 
-export async function render(outlet) {
+export async function render(outlet, me) {
   const dispositions = await get('/meta/dispositions').catch(() => []);
   let filters = {};
   let preset = 'Everything';
+
+  // Who may hand a set of leads to a teammate: counsellors and admins always,
+  // and a caller who has earned the transfer grant (the leaderboard reward).
+  const canTransfer = ['counsellor', 'admin', 'ops'].includes(me?.role) || Boolean(me?.can_transfer_leads);
+  let transferTargets = [];
+  if (canTransfer) {
+    const url = me.role === 'caller' ? '/me/transfer-targets' : '/transfers/targets';
+    transferTargets = await get(url).catch(() => []);
+  }
+  const selected = new Set();
 
   // Every view starts by clearing the outlet; this one forgot, so the
   // router's loading spinner stayed on screen above the panel, spinning
@@ -150,19 +160,38 @@ export async function render(outlet) {
         results.appendChild(h('<div class="empty">Nothing you can see matches that.</div>'));
         return;
       }
+      selected.clear();
       results.appendChild(h(`
         <div class="row spread" style="margin:6px 0">
           <b>${data.leads.length} lead${data.leads.length === 1 ? '' : 's'}</b>
           <span class="hint">worked top to bottom, most overdue first</span>
         </div>`));
+
+      // The transfer bar, for those allowed to reassign a whole set at once.
+      let bar = null;
+      if (canTransfer && transferTargets.length > 0) {
+        bar = h(`
+          <div class="row" data-testid="bulk-transfer-bar" style="margin:4px 0 10px;gap:10px;align-items:center;display:none">
+            <b id="sel-count">0 selected</b>
+            <span>→</span>
+            <select id="bulk-target" style="border:1px solid var(--line);border-radius:8px;padding:7px">
+              ${transferTargets.map((t) => `<option value="${esc(t.id)}">${esc(t.full_name)}${t.on_shift ? '' : ' (off floor)'} · ${Number(t.leads_today)} today</option>`).join('')}
+            </select>
+            <button class="btn small primary" id="bulk-go">Transfer selected</button>
+          </div>`);
+        results.appendChild(bar);
+      }
+
       results.appendChild(h(`
         <div style="overflow-x:auto">
         <table class="table"><thead><tr>
+          ${canTransfer ? '<th></th>' : ''}
           <th>Name</th><th>Phone</th><th>Status</th><th>Last outcome</th>
           <th>Next action</th><th class="num">Calls so far</th><th>WA</th><th></th>
         </tr></thead><tbody>
         ${data.leads.map((l) => `
           <tr>
+            ${canTransfer ? `<td><input type="checkbox" class="sel" value="${esc(l.id)}"></td>` : ''}
             <td>${esc(l.full_name ?? 'Unnamed')}</td>
             <td class="mono">${esc(l.phone_e164)}</td>
             <td>${badge(l.status)}</td>
@@ -175,6 +204,33 @@ export async function render(outlet) {
             <td class="right"><a href="#/lead/${esc(l.id)}">open</a></td>
           </tr>`).join('')}
         </tbody></table></div>`));
+
+      if (bar) {
+        const table = results.querySelector('table');
+        const refreshBar = () => {
+          bar.style.display = selected.size > 0 ? 'flex' : 'none';
+          bar.querySelector('#sel-count').textContent = `${selected.size} selected`;
+        };
+        table.addEventListener('change', (e) => {
+          if (!e.target.classList.contains('sel')) return;
+          if (e.target.checked) selected.add(e.target.value); else selected.delete(e.target.value);
+          refreshBar();
+        });
+        bar.querySelector('#bulk-go').addEventListener('click', async (e) => {
+          if (selected.size === 0) return;
+          const toCallerId = bar.querySelector('#bulk-target').value;
+          e.target.disabled = true;
+          try {
+            const r = await post('/leads/transfer-bulk', { leadIds: [...selected], toCallerId, reason: 'load_balance' });
+            toast(`Transferred ${r.moved}${r.failed?.length ? `, ${r.failed.length} could not move` : ''}.`,
+              r.failed?.length ? 'err' : 'ok');
+            run();
+          } catch (err) {
+            toast(err.message, 'err');
+            e.target.disabled = false;
+          }
+        });
+      }
     } catch (err) {
       results.innerHTML = '';
       results.appendChild(h(`<div class="empty">${esc(err.message)}</div>`));

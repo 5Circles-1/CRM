@@ -22,6 +22,54 @@
   --shadow: 0 1px 2px rgba(16, 26, 43, .06), 0 1px 8px rgba(16, 26, 43, .05);
 }
 
+/* Dark mode. Every colour is a token, so the theme is a token swap: only the
+   roles change, nothing downstream needs to know which theme is on. Triggered
+   by an explicit choice (data-theme="dark") the toggle stamps on <html>. */
+:root[data-theme="dark"] {
+  --bg: #0e141c;
+  --panel: #161f2b;
+  --ink: #e7edf5;
+  --muted: #93a4b8;
+  --line: #263243;
+  --brand: #5b8def;
+  --brand-ink: #0e141c;
+  --ok: #4ade80;
+  --ok-bg: #12301f;
+  --warn: #fbbf24;
+  --warn-bg: #38290d;
+  --bad: #f87171;
+  --bad-bg: #3a1717;
+  --info: #7aa7f5;
+  --info-bg: #14233d;
+  --sidebar: #0a1119;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 1px 10px rgba(0, 0, 0, .35);
+}
+/* A few places used near-white literals; map them to tokens so dark holds up. */
+:root[data-theme="dark"] .msg,
+:root[data-theme="dark"] .avatar { background: var(--panel); }
+:root[data-theme="dark"] .notif.unread { background: #12203a; }
+:root[data-theme="dark"] .radar-hot td { background: #2a1e14; }
+:root[data-theme="dark"] .trophy { background: linear-gradient(180deg, var(--panel), #10161f); }
+:root[data-theme="dark"] .table tr.click:hover td,
+:root[data-theme="dark"] .btn:hover,
+:root[data-theme="dark"] .alert-bell:hover,
+:root[data-theme="dark"] .alert-row:hover { background: #1d2939; }
+:root[data-theme="dark"] .viz-bar-track { background: #223042; }
+/* SVG charts: CSS beats presentation attributes, so the axis text and grid
+   follow the theme without touching the chart code. Data series keep their
+   vivid colours, which read fine on either background. */
+:root[data-theme="dark"] .viz-svg text,
+:root[data-theme="dark"] .viz-donut-svg text { fill: var(--muted); }
+:root[data-theme="dark"] .viz-svg line { stroke: var(--line); }
+:root[data-theme="dark"] .viz-donut-svg path { stroke: var(--panel); }
+
+.theme-toggle {
+  background: transparent; border: 1px solid var(--line); color: var(--ink);
+  border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.theme-toggle:hover { background: var(--bg); }
+
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {

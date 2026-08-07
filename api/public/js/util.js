@@ -151,6 +151,58 @@ export function avatarHtml(name, url, size = 32) {
 }
 
 /**
+ * Party poppers for the leaderboard winner. A short confetti burst on a
+ * throwaway full-screen canvas - no library, no leftover DOM. Respects a
+ * reduced-motion preference, because a celebration should never be a headache.
+ */
+export function confettiBurst() {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText =
+    'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:9999';
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  document.body.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  const colours = ['#eb6834', '#2a78d6', '#1baf7a', '#eda100', '#e87ba4', '#7c4dff'];
+  const N = 140;
+  // Poppers fly in from the two top corners, as if launched over the board.
+  const bits = Array.from({ length: N }, (_, i) => {
+    const left = i < N / 2;
+    return {
+      x: left ? 40 : canvas.width - 40,
+      y: 60,
+      vx: (left ? 1 : -1) * (3 + Math.random() * 5),
+      vy: -(4 + Math.random() * 6),
+      g: 0.15 + Math.random() * 0.1,
+      size: 5 + Math.random() * 6,
+      rot: Math.random() * Math.PI,
+      vr: (Math.random() - 0.5) * 0.3,
+      colour: colours[i % colours.length],
+    };
+  });
+  const start = performance.now();
+  const DURATION = 2600;
+  const tick = (now) => {
+    const t = now - start;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const b of bits) {
+      b.vy += b.g; b.x += b.vx; b.y += b.vy; b.rot += b.vr;
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(b.rot);
+      ctx.globalAlpha = Math.max(0, 1 - t / DURATION);
+      ctx.fillStyle = b.colour;
+      ctx.fillRect(-b.size / 2, -b.size / 2, b.size, b.size * 0.6);
+      ctx.restore();
+    }
+    if (t < DURATION) requestAnimationFrame(tick);
+    else canvas.remove();
+  };
+  requestAnimationFrame(tick);
+}
+
+/**
  * Point every brand image at the real artwork, falling back to the bundled SVG.
  *
  * Done here rather than with an inline onerror attribute: inline handlers are

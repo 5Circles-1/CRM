@@ -1,5 +1,9 @@
 import { get, post } from '../api.js';
-import { agoLabel, avatarHtml, badge, esc, fmtDT, fmtINR, fmtTalk, h, minsLabel, toast } from '../util.js';
+import { agoLabel, avatarHtml, badge, confettiBurst, esc, fmtDT, fmtINR, fmtTalk, h, minsLabel, openModal, toast } from '../util.js';
+
+// Remember who we last cheered, so the confetti fires when a NEW leader takes
+// the top spot - not on every 30-second live refresh.
+let lastCelebrated = null;
 
 /**
  * The leaderboard parameters, and what wins each one.
@@ -59,12 +63,14 @@ export async function render(outlet, me) {
     board.innerHTML = '';
     board.appendChild(h(`
       <div class="row spread">
-        <h2 class="mt0">Leaderboard <small>updates live as calls are logged</small></h2>
+        <h2 class="mt0">Leaderboard <small>updates live as calls are logged</small>
+          <button class="btn small" id="score-help" style="margin-left:8px">How points work</button></h2>
         <div class="chips" style="margin:0">
           ${[[1, 'Today'], [7, 'This week'], [30, 'This month']].map(([d, l]) => `
             <button class="chip ${d === boardDays ? 'on' : ''}" data-board-days="${d}">${l}</button>`).join('')}
         </div>
       </div>`));
+    board.querySelector('#score-help')?.addEventListener('click', showScoringHelp);
 
     // Overall standings: every metric, one weighted number. The podium is the
     // motivation; the list under it is the fairness - everyone can see where
@@ -72,6 +78,15 @@ export async function render(outlet, me) {
     if (overall.length > 0) {
       const podium = overall.slice(0, 3);
       const medals = ['🥇', '🥈', '🥉'];
+
+      // Party poppers for the leader — only when the leader actually changes,
+      // and only on the "Today" board, so a live refresh does not keep firing.
+      const leader = overall[0];
+      if (boardDays === 1 && leader && Number(leader.overall_points) > 0
+          && leader.user_id !== lastCelebrated) {
+        lastCelebrated = leader.user_id;
+        confettiBurst();
+      }
       board.appendChild(h(`
         <div class="podium" data-testid="overall-podium">
           ${podium.map((p, i) => `
@@ -460,6 +475,38 @@ export async function render(outlet, me) {
     const row = e.target.closest?.('tr.click[data-lead]');
     if (row) location.hash = `#/lead/${row.dataset.lead}`;
   });
+}
+
+/**
+ * Plain-language explanation of the scoring, shown from the leaderboard. The
+ * numbers must match the DB weights (leaderboard.weight_* settings); this is
+ * the human-readable version of that formula.
+ */
+function showScoringHelp() {
+  const body = h(`
+    <div style="max-width:560px">
+      <p class="mt0">The <b>overall winner</b> is whoever scores highest across every
+      metric combined — not just calls, and not just money.</p>
+      <p>Each metric is turned into a share of the best on the floor: if the top
+      performer made 50 connects and you made 25, you get half the connect points.
+      Those shares are then weighted and added up, out of 100:</p>
+      <table class="table"><thead><tr><th>Metric</th><th class="num">Weight</th></tr></thead><tbody>
+        <tr><td>Conversions (deals closed)</td><td class="num">25</td></tr>
+        <tr><td>Revenue booked</td><td class="num">25</td></tr>
+        <tr><td>Genuine connects (30s+ talk)</td><td class="num">15</td></tr>
+        <tr><td>Dials</td><td class="num">10</td></tr>
+        <tr><td>Interested outcomes</td><td class="num">10</td></tr>
+        <tr><td>Walk-ins</td><td class="num">10</td></tr>
+        <tr><td>Talk time</td><td class="num">5</td></tr>
+      </tbody></table>
+      <p class="hint">So conversions and revenue matter most, but a caller who dials hard
+      and connects well still climbs. A metric nobody has scored on yet counts for no
+      one. The weights are editable in <b>Admin → Settings</b> (the
+      <span class="mono">leaderboard.*</span> values) — change them and the board
+      re-ranks. The per-metric trophies below the podium show who leads each single
+      metric.</p>
+    </div>`);
+  openModal('How the leaderboard points are calculated', body);
 }
 
 function labelLeak(t) {

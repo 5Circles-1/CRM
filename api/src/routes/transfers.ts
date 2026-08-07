@@ -51,12 +51,16 @@ export async function transferRoutes(app: FastifyInstance): Promise<void> {
         body.note ?? null,
       ]);
 
-      return q.one(
+      // A star caller who transfers her own lead away can no longer see it
+      // (RLS: it now belongs to the receiver), so the read-back returns null.
+      // The transfer still happened; report the new owner rather than 500ing.
+      const row = await q.one(
         `select id, caller_id, team_id, transfer_count, na_streak,
                 next_action_at, next_action_note
            from crm.leads where id = $1`,
         [id],
       );
+      return row ?? { id, caller_id: body.toCallerId, transferred: true };
     });
   });
 
@@ -80,5 +84,75 @@ export async function transferRoutes(app: FastifyInstance): Promise<void> {
           order by on_shift desc, leads_today asc`,
       ),
     );
+  });
+
+  /**
+   * Teammates a star caller can hand leads to (their own team, minus
+   * themselves). Only for a caller who holds the transfer grant; the rule is
+   * also enforced in crm.transfer_lead, this just powers the picker.
+   */
+  app.get('/me/transfer-targets', async (req) => {
+    const user = req.requireUser();
+    return req.tx(async (q) => {
+      const me = await q.one<{ can_transfer_leads: boolean }>(
+        `select can_transfer_leads from crm.users where id = $1`,
+        [user.id],
+      );
+      if (!me?.can_transfer_leads && user.role === 'caller') return [];
+      return q.many(
+        `select u.id, u.full_name, crm.is_on_shift(u.id) as on_shift,
+                (select count(*) from crm.leads l
+                  where l.caller_id = u.id
+                    and crm.ist_date(l.created_at) = crm.ist_date(now())) as leads_today
+           from crm.users u
+           join crm.team_memberships tm on tm.user_id = u.id and tm.period @> current_date
+          where u.role = 'caller' and u.is_active and u.id <> $1
+            and tm.team_id = crm.team_of($1, current_date)
+          order by on_shift desc, leads_today asc`,
+        [user.id],
+      );
+    });
+  });
+
+  /**
+   * Bulk transfer - the star caller (or a counsellor/admin) hands a whole set
+   * of their leads to one teammate in a single action. Each lead goes through
+   * crm.transfer_lead, so the authority rule and the per-lead cap both hold;
+   * leads that fail (already at the cap, not the actor's) are reported, not
+   * silently skipped.
+   */
+  app.post('/leads/transfer-bulk', async (req) => {
+    const user = req.requireUser();
+    const body = z
+      .object({
+        leadIds: z.array(uuid).min(1).max(200),
+        toCallerId: uuid,
+        reason: z.enum(['not_answered_streak', 'language_mismatch', 'caller_unavailable',
+                        'load_balance', 'escalation', 'other']).default('load_balance'),
+        note: z.string().max(500).optional(),
+      })
+      .parse(req.body);
+
+    return req.tx(async (q) => {
+      let moved = 0;
+      const failed: Array<{ leadId: string; reason: string }> = [];
+      for (const leadId of body.leadIds) {
+        // A savepoint per lead: without it, the first failed transfer aborts
+        // the whole transaction and every later lead fails too. This isolates
+        // each one so a capped lead does not sink the rest of the batch.
+        await q.query('savepoint sp');
+        try {
+          await q.query('select crm.transfer_lead($1, $2, $3::crm.transfer_reason, $4, $5)', [
+            leadId, body.toCallerId, body.reason, user.id, body.note ?? null,
+          ]);
+          await q.query('release savepoint sp');
+          moved += 1;
+        } catch (err) {
+          await q.query('rollback to savepoint sp');
+          failed.push({ leadId, reason: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      return { moved, failed };
+    });
   });
 }

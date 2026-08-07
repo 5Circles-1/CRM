@@ -13,6 +13,7 @@ import * as leads from './views/leads.js';
 import * as people from './views/people.js';
 import * as team from './views/team.js';
 import * as history from './views/history.js';
+import * as exclusive from './views/exclusive.js';
 import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 
 const NAV = [
@@ -22,6 +23,7 @@ const NAV = [
   { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/leads', label: 'Find lead', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/people', label: 'Performance', roles: ['caller', 'counsellor', 'admin', 'ops'] },
+  { hash: '#/exclusive', label: 'Exclusive Events', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/history', label: 'Previous months', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/team', label: 'Team', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/score', label: 'My Score', roles: ['caller', 'counsellor'] },
@@ -34,18 +36,42 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, floor, collections, dash, leads, people, score, attendance, admin, lead, team, history,
+  day, floor, collections, dash, leads, people, score, attendance, admin, lead,
+  team, history, exclusive,
 };
 
 const TITLES = {
   day: 'My Pipeline', floor: 'Floor', collections: 'Collections', dash: 'Dashboards',
   leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
-  team: 'Team', history: 'Previous months',
+  team: 'Team', history: 'Previous months', exclusive: 'Exclusive Events',
 };
 
 let me = null;
 let showingLogin = false;
+
+/**
+ * Theme. The floor runs in bright rooms and dark ones; the choice is theirs and
+ * it persists. Applied to <html> before first paint so there is no flash of the
+ * wrong theme. Default is light unless they picked dark before.
+ */
+function applyTheme(theme) {
+  const t = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('crm-theme', t); } catch { /* private mode */ }
+}
+function initTheme() {
+  let saved = 'light';
+  try { saved = localStorage.getItem('crm-theme') || 'light'; } catch { /* ignore */ }
+  applyTheme(saved);
+}
+function toggleTheme() {
+  const now = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  applyTheme(now);
+  const btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = now === 'dark' ? '☀️' : '🌙';
+}
+initTheme();
 
 /** Idempotent: a burst of 401s (boot + shift widget) renders login once. */
 function showLogin() {
@@ -94,6 +120,7 @@ function renderShell(app) {
           <h1 id="page-title"></h1>
           <span class="live-badge" id="live-badge" title="This page refreshes itself — no F5 needed"><span class="live-dot"></span>Live</span>
           <div class="shift" id="shift-widget"></div>
+          <button class="theme-toggle" id="theme-btn" title="Toggle dark / light">${document.documentElement.getAttribute('data-theme') === 'dark' ? '☀️' : '🌙'}</button>
           ${bellMarkup()}
           <div class="userchip"><b>${esc(me.full_name)}</b>${esc(me.role)}${me.team_name ? ' · ' + esc(me.team_name) : ''}</div>
           <button class="btn small" id="logout-btn">Log out</button>
@@ -109,6 +136,8 @@ function renderShell(app) {
     location.hash = '';
     boot();
   });
+
+  document.getElementById('theme-btn')?.addEventListener('click', toggleTheme);
 
   wireLogoFallback(app);
   wireBell();

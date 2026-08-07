@@ -14,6 +14,10 @@ export async function attendanceRoutes(app: FastifyInstance): Promise<void> {
     const user = req.requireUser();
 
     const row = await req.tx(async (q) => {
+      // First, close any session left open from a previous day - otherwise it
+      // blocks today's Start shift and the person's hours never begin counting.
+      await q.query('select crm.close_stale_sessions($1)', [user.id]);
+
       const open = await q.one<{ id: string; started_at: Date }>(
         `select id, started_at from crm.attendance_sessions
           where user_id = $1 and ended_at is null`,

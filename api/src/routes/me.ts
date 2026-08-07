@@ -15,6 +15,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     return req.tx(async (q) => {
       const row = await q.one(
         `select u.id, u.full_name, u.email, u.role, u.employee_code,
+                u.can_transfer_leads,
                 crm.team_of(u.id, current_date) as team_id,
                 t.name as team_name,
                 crm.is_on_shift(u.id) as on_shift

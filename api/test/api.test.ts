@@ -397,7 +397,7 @@ describe('lead transfer', () => {
       payload: { toCallerId: USERS.callerA2, reason: 'not_answered_streak' },
     });
     assert.equal(res.statusCode, 403);
-    assert.match(res.json().message, /counsellor or admin/);
+    assert.match(res.json().message, /not allowed to transfer/);
   });
 
   it('lets the counsellor transfer, and hands the lead over cleanly', async () => {
@@ -2040,5 +2040,124 @@ describe('live floor activity (API)', () => {
     assert.equal(feed.statusCode, 200);
     assert.ok(feed.json().some((r: { lead_id: string }) => r.lead_id === leadId),
       'the interested outcome shows on the floor feed at once');
+  });
+});
+
+describe('star-caller transfer and bulk transfer (API)', () => {
+  it('lets an admin grant a caller transfer rights, and then that caller can hand off her own lead', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const grant = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerA1}/transfer-grant`, headers: auth(admin),
+      payload: { canTransfer: true },
+    });
+    assert.equal(grant.statusCode, 200);
+    assert.equal(grant.json().can_transfer_leads, true);
+
+    const leadId = makeLeadFor(USERS.callerA1, 'Star Own Lead');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/transfer`, headers: auth(a1),
+      payload: { toCallerId: USERS.callerA2, reason: 'load_balance' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().caller_id, USERS.callerA2);
+  });
+
+  it('bulk-transfers a set of leads and reports per-lead outcomes', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerA1}/transfer-grant`, headers: auth(admin),
+      payload: { canTransfer: true },
+    });
+    const l1 = makeLeadFor(USERS.callerA1, 'Bulk One');
+    const l2 = makeLeadFor(USERS.callerA1, 'Bulk Two');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/leads/transfer-bulk', headers: auth(a1),
+      payload: { leadIds: [l1, l2], toCallerId: USERS.callerA2, reason: 'load_balance' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().moved, 2);
+  });
+
+  it('does not let an ungranted caller bulk-transfer', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerA1}/transfer-grant`, headers: auth(admin),
+      payload: { canTransfer: false },
+    });
+    const l1 = makeLeadFor(USERS.callerA1, 'Bulk Denied');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/leads/transfer-bulk', headers: auth(a1),
+      payload: { leadIds: [l1], toCallerId: USERS.callerA2, reason: 'load_balance' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().moved, 0);
+    assert.equal(res.json().failed.length, 1);
+  });
+});
+
+describe('annual targets (API)', () => {
+  it('lets an admin set a target with a reward and reports progress', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const year = new Date().getUTCFullYear();
+    const set = await h.app.inject({
+      method: 'POST', url: '/admin/targets', headers: auth(admin),
+      payload: { userId: USERS.counsellorA, year, metric: 'deals', target: 100, reward: 'Bonus + trophy' },
+    });
+    assert.equal(set.statusCode, 201);
+
+    const list = await h.app.inject({ method: 'GET', url: `/admin/targets?year=${year}`, headers: auth(admin) });
+    const row = list.json().find((t: { user_id: string; metric: string }) => t.user_id === USERS.counsellorA && t.metric === 'deals');
+    assert.ok(row, 'the target is listed');
+    assert.equal(row.reward, 'Bonus + trophy');
+    assert.ok(Number(row.achieved) >= 0);
+  });
+
+  it('does not let a caller create a target', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/admin/targets', headers: auth(a1),
+      payload: { userId: USERS.callerA1, year: 2026, metric: 'dials', target: 1000, reward: 'x' },
+    });
+    assert.equal(res.statusCode, 403);
+  });
+});
+
+describe('exclusive events (API)', () => {
+  it('tags a lead into an event and lists it on the events view', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Event Tagged');
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const put = await h.app.inject({
+      method: 'PUT', url: `/leads/${leadId}/exclusive-event`, headers: auth(cs),
+      payload: { event: 'Summer Special' },
+    });
+    assert.equal(put.statusCode, 200);
+    assert.equal(put.json().exclusive_event, 'Summer Special');
+
+    const list = await h.app.inject({ method: 'GET', url: '/exclusive-events?event=Summer%20Special', headers: auth(cs) });
+    assert.ok(list.json().events.some((e: { exclusive_event: string }) => e.exclusive_event === 'Summer Special'));
+    assert.ok(list.json().leads.some((l: { lead_id: string }) => l.lead_id === leadId));
+  });
+
+  it('auto-tags leads created from an exclusive-event source', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const src = await h.app.inject({
+      method: 'POST', url: '/admin/sources', headers: auth(admin),
+      payload: { name: 'Event Sheet', isExclusive: true, exclusiveLabel: 'Republic Day', defaultPriority: 'immediate' },
+    });
+    assert.equal(src.statusCode, 201);
+    assert.equal(src.json().is_exclusive, true);
+    const csv = 'Full Name,Phone Number\nEvent Person,9812333001';
+    const run = await h.app.inject({
+      method: 'POST', url: `/ingest/sources/${src.json().id}/csv`, headers: auth(admin),
+      payload: { csv },
+    });
+    assert.equal(run.statusCode, 200);
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const list = await h.app.inject({ method: 'GET', url: '/exclusive-events', headers: auth(cs) });
+    assert.ok(list.json().events.some((e: { exclusive_event: string }) => e.exclusive_event === 'Republic Day'),
+      'the event source produced a tagged event');
   });
 });
