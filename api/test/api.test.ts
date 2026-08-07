@@ -1863,3 +1863,182 @@ describe('attendance till date', () => {
     }
   });
 });
+
+describe('escalation ladder and pools (API)', () => {
+  it('escalates a lead to the counsellor after two no-connect caller attempts, and off the caller pipeline', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'API Escalate');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    for (let i = 0; i < 2; i += 1) {
+      const r = await h.app.inject({
+        method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+        payload: { disposition: 'not_answered', durationSeconds: 0 },
+      });
+      assert.equal(r.statusCode, 201);
+    }
+    // The caller no longer sees it in their pipeline (it belongs to the counsellor now).
+    const mine = await h.app.inject({ method: 'GET', url: '/me/pipeline', headers: auth(a1) });
+    assert.ok(!mine.json().leads.some((l: { lead_id: string }) => l.lead_id === leadId),
+      'an escalated lead leaves the caller pipeline');
+
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const theirs = await h.app.inject({ method: 'GET', url: '/me/pipeline', headers: auth(cs) });
+    assert.ok(theirs.json().leads.some((l: { lead_id: string }) => l.lead_id === leadId),
+      'and appears on the counsellor pipeline');
+  });
+
+  it('drops a lead into the re-tap pool when the counsellor also cannot reach it, with no overdue alert', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'API Retap');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    for (let i = 0; i < 2; i += 1) {
+      await h.app.inject({
+        method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+        payload: { disposition: 'not_answered', durationSeconds: 0 },
+      });
+    }
+    const cs = await login(h.app, EMAILS.counsellorA);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(cs),
+      payload: { disposition: 'not_answered', durationSeconds: 0 },
+    });
+    const pool = await h.app.inject({ method: 'GET', url: '/me/retap-pool', headers: auth(cs) });
+    assert.ok(pool.json().leads.some((l: { lead_id: string }) => l.lead_id === leadId),
+      'the unreachable lead is parked in the re-tap pool');
+
+    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(cs) });
+    assert.ok(!alerts.json().alerts.some(
+      (a: { lead_id: string; kind: string }) => a.lead_id === leadId && a.kind.includes('overdue')),
+      'a re-tap lead never nags as overdue');
+  });
+
+  it('lets someone claim a parked lead back into live work', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'API Claim');
+    fixtureSql(`update crm.leads set status='nurture', pool='retap', retap_since=now(),
+                 next_action_at=null where id='${leadId}';`);
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const r = await h.app.inject({ method: 'POST', url: `/leads/${leadId}/claim`, headers: auth(cs) });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.json().status, 'working');
+    assert.equal(r.json().pool, null);
+  });
+});
+
+describe('per-lead reminders (API)', () => {
+  it('mutes a lead so it raises no reminder', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'API Mute');
+    fixtureSql(`update crm.leads set next_action_at = now() - interval '2 hours',
+                 first_touched_at = now() - interval '3 hours', attempt_count = 1
+               where id='${leadId}';`);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const before = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    assert.ok(before.json().alerts.some((a: { lead_id: string }) => a.lead_id === leadId),
+      'an overdue lead alerts before muting');
+
+    const put = await h.app.inject({
+      method: 'PUT', url: `/leads/${leadId}/reminder`, headers: auth(a1),
+      payload: { muted: true },
+    });
+    assert.equal(put.statusCode, 200);
+    assert.equal(put.json().reminder_muted, true);
+
+    const after = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    assert.ok(!after.json().alerts.some((a: { lead_id: string }) => a.lead_id === leadId),
+      'and is silent after muting');
+  });
+
+  it('raises a custom reminder at the chosen time', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'API Custom Reminder');
+    fixtureSql(`update crm.leads set first_touched_at = now() - interval '1 hour',
+                 attempt_count = 1 where id='${leadId}';`);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await h.app.inject({
+      method: 'PUT', url: `/leads/${leadId}/reminder`, headers: auth(a1),
+      payload: { at: past, note: 'Call after lunch' },
+    });
+    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    assert.ok(alerts.json().alerts.some(
+      (a: { lead_id: string; kind: string }) => a.lead_id === leadId && a.kind === 'custom_reminder'),
+      'the custom reminder fires once it is due');
+  });
+});
+
+describe('team chat (API)', () => {
+  it('lets an admin broadcast to the whole floor, and everyone reads it', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const post = await h.app.inject({
+      method: 'POST', url: '/messages', headers: auth(admin),
+      payload: { body: 'Stand-up at 9:30 sharp.' },
+    });
+    assert.equal(post.statusCode, 201);
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const feed = await h.app.inject({ method: 'GET', url: '/messages', headers: auth(a1) });
+    assert.ok(feed.json().some((m: { body: string }) => m.body === 'Stand-up at 9:30 sharp.'),
+      'a floor-wide message reaches a caller');
+  });
+
+  it('does not let a caller broadcast', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const r = await h.app.inject({
+      method: 'POST', url: '/messages', headers: auth(a1),
+      payload: { body: 'I should not be able to say this' },
+    });
+    assert.equal(r.statusCode, 403);
+  });
+});
+
+describe('historical upload (API)', () => {
+  it('imports previous-month records into the pool, deduping re-uploads', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const csv = 'Full Name,Phone Number,City\nApril Client,9812000001,Pune\nApril Two,9812000002,Mumbai';
+    const teamId = fixtureSql(`select id from crm.teams order by rotation_order limit 1;`).trim();
+
+    const first = await h.app.inject({
+      method: 'POST', url: '/admin/history/import', headers: auth(admin),
+      payload: { csv, teamId, month: '2026-04' },
+    });
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.json().created, 2);
+
+    // Re-uploading the same month is idempotent - all duplicates, nothing new.
+    const again = await h.app.inject({
+      method: 'POST', url: '/admin/history/import', headers: auth(admin),
+      payload: { csv, teamId, month: '2026-04' },
+    });
+    assert.equal(again.json().created, 0);
+    assert.equal(again.json().duplicate, 2);
+
+    const months = await h.app.inject({
+      method: 'GET', url: '/dashboards/previous-months', headers: auth(admin),
+    });
+    assert.ok(months.json().months.some((m: { month: string; leads: number }) => m.month === '2026-04' && m.leads >= 2));
+  });
+
+  it('does not let a caller import history', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const r = await h.app.inject({
+      method: 'POST', url: '/admin/history/import', headers: auth(a1),
+      payload: { csv: 'Full Name,Phone Number\nX,9812000009', teamId: USERS.callerA1, month: '2026-04' },
+    });
+    assert.equal(r.statusCode, 403);
+  });
+});
+
+describe('live floor activity (API)', () => {
+  it('reflects a logged outcome on the floor feed, filterable by disposition', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'API Activity');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'connected_interested', durationSeconds: 120,
+                 callbackAt: new Date(Date.now() + 3.6e6).toISOString() },
+    });
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const feed = await h.app.inject({
+      method: 'GET', url: '/dashboards/activity?disposition=connected_interested', headers: auth(cs),
+    });
+    assert.equal(feed.statusCode, 200);
+    assert.ok(feed.json().some((r: { lead_id: string }) => r.lead_id === leadId),
+      'the interested outcome shows on the floor feed at once');
+  });
+});

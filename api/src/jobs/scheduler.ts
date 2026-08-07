@@ -40,6 +40,13 @@ export const JOBS: Job[] = [
     sql: 'select crm.expire_missed_callbacks()',
   },
   {
+    name: 'escalate_stuck_leads',
+    // Hourly is plenty for a days-long deadline, and it keeps the cross-team
+    // moves batched rather than trickling one lead across all day.
+    everyMs: 60 * 60_000,
+    sql: 'select crm.escalate_stuck_leads(200)',
+  },
+  {
     name: 'detect_bulk_access',
     everyMs: 5 * 60_000,
     sql: 'select crm.detect_bulk_access()',

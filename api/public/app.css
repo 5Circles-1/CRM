@@ -453,3 +453,13 @@ button.chip:hover { border-color: #c8d4ea; }
   0% { box-shadow: 0 0 0 0 rgba(21, 128, 61, .5); }
   100% { box-shadow: 0 0 0 8px rgba(21, 128, 61, 0); }
 }
+
+/* ---- team chat + notifications ---- */
+.compose textarea { font: inherit; }
+.msg { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: #fff; }
+.msg.pinned { border-color: #c7d7f8; background: var(--info-bg); }
+.msg-head { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+.msg-body { white-space: pre-wrap; }
+.notif { border-bottom: 1px solid var(--line); padding: 10px 4px; }
+.notif:last-child { border-bottom: 0; }
+.notif.unread { background: #fbfdff; border-left: 3px solid var(--brand); padding-left: 10px; }

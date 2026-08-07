@@ -143,6 +143,50 @@ export async function render(outlet, me) {
     </div>`);
   outlet.appendChild(chips);
 
+  // --- live activity: every outcome logged today, filterable by disposition ---
+  //
+  // The answer to "leads are going missing": whatever a caller records shows
+  // here at once. Nothing is hidden - the filter narrows, it never drops.
+  const activityPanel = h('<div class="panel" data-testid="floor-activity"></div>');
+  outlet.appendChild(activityPanel);
+  let dispFilter = '';
+  const DISPO_LABEL = (d) => String(d ?? '').replace(/_/g, ' ');
+  const drawActivity = async () => {
+    const rows = await get(`/dashboards/activity${dispFilter ? `?disposition=${dispFilter}` : ''}`).catch(() => []);
+    // Build the filter chips from the outcomes actually seen today.
+    const seen = [...new Set((Array.isArray(rows) ? rows : []).map((r) => r.disposition))];
+    const allDispos = dispFilter && !seen.includes(dispFilter) ? [dispFilter, ...seen] : seen;
+    // innerHTML, not h(): this panel has several sibling nodes (header, chips,
+    // table) and h() keeps only the first element - which is exactly how the
+    // chips and table went missing the first time.
+    activityPanel.innerHTML = `
+      <div class="row spread">
+        <h2 class="mt0">Live activity <small>every call logged today — updates on its own</small></h2>
+      </div>
+      <div class="chips" data-testid="activity-chips">
+        <button class="chip ${dispFilter === '' ? 'on' : ''}" data-disp="">All outcomes</button>
+        ${allDispos.map((d) => `<button class="chip ${dispFilter === d ? 'on' : ''}" data-disp="${esc(d)}">${esc(DISPO_LABEL(d))}</button>`).join('')}
+      </div>
+      ${(!Array.isArray(rows) || rows.length === 0)
+        ? '<div class="empty">No calls logged yet today.</div>'
+        : `<div style="overflow-x:auto"><table class="table"><thead><tr>
+             <th>Time</th><th>Who</th><th>Lead</th><th>Outcome</th><th class="num">Talk</th>
+           </tr></thead><tbody>
+           ${rows.slice(0, 100).map((r) => `
+             <tr>
+               <td>${esc(fmtDT(r.started_at))}</td>
+               <td>${esc(r.by_name)} <span class="hint">${esc(r.by_role)}</span></td>
+               <td><a href="#/lead/${esc(r.lead_id)}">${esc(r.lead_name ?? 'Lead')}</a>
+                   <span class="hint mono">${esc(r.phone_e164)}</span></td>
+               <td>${badge(r.disposition)}${r.is_connect ? ' <span class="badge b-ok">connect</span>' : ''}</td>
+               <td class="num">${esc(fmtTalk(r.duration_seconds))}</td>
+             </tr>`).join('')}
+           </tbody></table></div>`}`;
+    activityPanel.querySelectorAll('[data-disp]').forEach((b) =>
+      b.addEventListener('click', () => { dispFilter = b.dataset.disp; drawActivity(); }));
+  };
+  await drawActivity();
+
   // --- follow-up radar: whose promises are slipping, before they are lost ---
   //
   // The leakage list shows the leads; this shows the people. Sorted worst

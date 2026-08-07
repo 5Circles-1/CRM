@@ -16,6 +16,7 @@ import { adminRoutes } from './routes/admin.ts';
 import { ingestRoutes } from './routes/ingest.ts';
 import { deviceLogRoutes } from './routes/deviceLogs.ts';
 import { dealRoutes } from './routes/deals.ts';
+import { messageRoutes } from './routes/messages.ts';
 
 export async function buildServer(config: Config, db?: Database): Promise<FastifyInstance> {
   const database = db ?? new Database(config.databaseUrl);
@@ -63,6 +64,7 @@ export async function buildServer(config: Config, db?: Database): Promise<Fastif
     await ingestRoutes(scope);
     await deviceLogRoutes(scope);
     await dealRoutes(scope);
+    await messageRoutes(scope);
   });
 
   app.addHook('onClose', async () => {

@@ -11,24 +11,30 @@ import { agoLabel, esc, fmtDT, h } from '../util.js';
  * and Thursday morning. Upcoming work now has a home.
  */
 
+// Order matters: fresh leads sit at the very top of the day, breached work in
+// its own bucket near the bottom, and promised visits get a home of their own.
 const BUCKETS = [
   { key: 'immediate', label: 'Call now', hot: true,
     blurb: 'Immediate leads still inside their first-touch window' },
-  { key: 'overdue', label: 'Overdue', hot: true,
-    blurb: 'Past the time you promised — clear these first' },
+  { key: 'fresh', label: 'Fresh — call first', hot: true,
+    blurb: 'Never dialled — work these before anything else' },
   { key: 'callback', label: 'Callbacks today',
     blurb: 'Times the client asked for' },
-  { key: 'fresh', label: 'Fresh',
-    blurb: 'Never dialled' },
+  { key: 'will_visit', label: 'Visits promised',
+    blurb: 'Said they would come in — confirm and chase the walk-in' },
   { key: 'followup_today', label: 'Follow-ups today',
     blurb: 'Already contacted, due again today' },
+  { key: 'overdue', label: 'Overdue', hot: true,
+    blurb: 'Past the time you promised — clear these next' },
+  { key: 'breached', label: 'Breached',
+    blurb: 'Long past due — its own tab; may move to the other team if left' },
   { key: 'callback_upcoming', label: 'Callbacks later',
     blurb: 'Booked for a future day' },
   { key: 'followup_upcoming', label: 'Follow-ups later',
     blurb: 'Agreed for a future day — nothing to do yet' },
 ];
 
-export async function render(outlet) {
+export async function render(outlet, me) {
   let active = null; // null = everything, in priority order
 
   const draw = async () => {
@@ -83,30 +89,93 @@ export async function render(outlet) {
           ? 'Nothing in this list right now.'
           : 'Queue clear — nothing open. New leads land here automatically.'
       }</div></div>`));
-      return;
+    } else {
+      // Grouped even when unfiltered, so "one bulk list" never happens again.
+      for (const b of BUCKETS) {
+        const group = leads.filter((l) => l.bucket === b.key);
+        if (group.length === 0) continue;
+        outlet.appendChild(h(`
+          <div class="section-h">${esc(b.label)} <span class="count">· ${group.length}</span>
+            ${b.blurb ? `<span class="hint" style="font-weight:400"> — ${esc(b.blurb)}</span>` : ''}
+          </div>`));
+        const wrap = h(`<div data-testid="bucket-${esc(b.key)}"></div>`);
+        for (const l of group) wrap.appendChild(card(l));
+        outlet.appendChild(wrap);
+      }
     }
 
-    // Grouped even when unfiltered, so "one bulk list" never happens again.
-    for (const b of BUCKETS) {
-      const group = leads.filter((l) => l.bucket === b.key);
-      if (group.length === 0) continue;
-      outlet.appendChild(h(`
-        <div class="section-h">${esc(b.label)} <span class="count">· ${group.length}</span>
-          ${b.blurb ? `<span class="hint" style="font-weight:400"> — ${esc(b.blurb)}</span>` : ''}
-        </div>`));
-      const wrap = h(`<div data-testid="bucket-${esc(b.key)}"></div>`);
-      for (const l of group) wrap.appendChild(card(l));
-      outlet.appendChild(wrap);
-    }
+    // Extra lists that live beside the day, not inside its priority order:
+    // the "moving soon" warning for everyone, and the re-tap pool the
+    // counsellor works when they choose. Only shown while unfiltered.
+    if (!active) await drawExtras(outlet, me);
   };
 
   await draw();
 }
 
+/**
+ * The lists that sit beside the day: leads about to move to the other team
+ * (a warning, so they get worked first), and the re-tap pool of leads nobody
+ * could reach (worked when there is a gap, never nagging).
+ */
+async function drawExtras(outlet, me) {
+  const [watch, pool] = await Promise.all([
+    get('/me/cross-team-watch').catch(() => ({ leads: [] })),
+    ['counsellor', 'admin', 'ops'].includes(me?.role)
+      ? get('/me/retap-pool').catch(() => ({ leads: [] }))
+      : Promise.resolve({ leads: [] }),
+  ]);
+
+  if (watch.leads.length > 0) {
+    outlet.appendChild(h(`
+      <div class="section-h">Moving to the other team soon <span class="count">· ${watch.leads.length}</span>
+        <span class="hint" style="font-weight:400"> — work these before they transfer away</span></div>`));
+    const wrap = h('<div data-testid="cross-team-watch"></div>');
+    for (const l of watch.leads) {
+      wrap.appendChild(h(`
+        <a class="leadcard" href="#/lead/${esc(l.lead_id)}">
+          <div class="r1">
+            <span class="name">${esc(l.full_name ?? 'Unnamed lead')}</span>
+            <span class="phone mono">${esc(l.phone_e164)}</span>
+            <span style="margin-left:auto"><span class="badge b-warn">moves ${esc(fmtDT(l.moves_at))}</span></span>
+          </div>
+          <div class="r2"><span>idle since ${esc(fmtDT(l.idle_since))}</span></div>
+        </a>`));
+    }
+    outlet.appendChild(wrap);
+  }
+
+  if (pool.leads.length > 0) {
+    outlet.appendChild(h(`
+      <div class="section-h">Re-tap pool <span class="count">· ${pool.leads.length}</span>
+        <span class="hint" style="font-weight:400"> — nobody could reach these; tap when you have a gap</span></div>`));
+    const wrap = h('<div data-testid="retap-pool"></div>');
+    for (const l of pool.leads) {
+      wrap.appendChild(h(`
+        <a class="leadcard" href="#/lead/${esc(l.lead_id)}">
+          <div class="r1">
+            <span class="name">${esc(l.full_name ?? 'Unnamed lead')}</span>
+            <span class="phone mono">${esc(l.phone_e164)}</span>
+            <span style="margin-left:auto"><span class="badge b-mute">${Number(l.attempt_count)} attempts</span></span>
+          </div>
+          <div class="r2">
+            <span>last: ${l.last_disposition ? esc(String(l.last_disposition).replace(/_/g, ' ')) : '—'}</span>
+            <span>in pool since ${esc(fmtDT(l.retap_since))}</span>
+          </div>
+        </a>`));
+    }
+    outlet.appendChild(wrap);
+  }
+}
+
 function card(l) {
   const when =
     l.bucket === 'overdue' ? `<span class="badge b-bad">overdue ${agoLabel(l.minutes_overdue)}</span>`
+    : l.bucket === 'breached' ? `<span class="badge b-bad">breached ${agoLabel(l.minutes_overdue)}</span>`
     : l.bucket === 'immediate' ? '<span class="badge b-bad">CALL NOW</span>'
+    : l.bucket === 'fresh' ? '<span class="badge b-warn">FRESH</span>'
+    : l.bucket === 'will_visit'
+      ? `<span class="badge b-ok" title="Visit expected">🚶 ${esc(fmtDT(l.walkin_expected_at ?? l.next_action_at))}</span>`
     : l.bucket === 'callback' || l.bucket === 'callback_upcoming'
       ? `<span class="badge b-info">${esc(fmtDT(l.callback_at ?? l.next_action_at))}</span>`
     : `<span class="badge b-mute">${esc(fmtDT(l.next_action_at))}</span>`;

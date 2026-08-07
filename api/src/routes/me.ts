@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { logLeadAccess } from '../http/context.ts';
+import { notFound } from '../http/errors.ts';
 
 const uuid = z.string().uuid();
 
@@ -76,36 +77,43 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     const query = z
       .object({
         bucket: z
-          .enum(['immediate', 'overdue', 'callback', 'callback_upcoming', 'fresh',
-                 'followup_today', 'followup_upcoming'])
+          .enum(['immediate', 'fresh', 'callback', 'will_visit', 'followup_today',
+                 'overdue', 'breached', 'callback_upcoming', 'followup_upcoming'])
           .optional(),
         limit: z.coerce.number().int().min(1).max(500).default(200),
       })
       .parse(req.query);
 
+    // queue_owner_id is what the ladder computes: an escalated lead belongs to
+    // the counsellor, a normal one to the caller. Filtering on it is what makes
+    // a lead leave the caller's list the moment it escalates. Fresh leads sort
+    // first, always; breached work sits in its own bucket at the bottom.
     return req.tx(async (q) => {
       const [counts, rows] = await Promise.all([
         q.many<{ bucket: string; count: number }>(
           `select bucket, count(*)::int as count
              from crm.v_my_pipeline
-            where caller_id = $1 or counsellor_id = $1
+            where queue_owner_id = $1
             group by bucket`,
           [user.id],
         ),
         q.many<{ lead_id: string }>(
           `select * from crm.v_my_pipeline
-            where (caller_id = $1 or counsellor_id = $1)
+            where queue_owner_id = $1
               and ($2::text is null or bucket = $2)
             order by case bucket
                        when 'immediate'         then 0
-                       when 'overdue'           then 1
+                       when 'fresh'             then 1
                        when 'callback'          then 2
-                       when 'fresh'             then 3
+                       when 'will_visit'        then 3
                        when 'followup_today'    then 4
-                       when 'callback_upcoming' then 5
-                       else 6
+                       when 'overdue'           then 5
+                       when 'breached'          then 6
+                       when 'callback_upcoming' then 7
+                       else 8
                      end,
                      minutes_overdue desc,
+                     created_at desc,
                      next_action_at asc
             limit $3`,
           [user.id, query.bucket ?? null, query.limit],
@@ -118,6 +126,118 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
         total: counts.reduce((a, c) => a + Number(c.count), 0),
         leads: rows,
       };
+    });
+  });
+
+  /** The re-tap pool: leads nobody could reach, parked for tapping later. */
+  app.get('/me/retap-pool', async (req) => {
+    const user = req.requireUser();
+    return req.tx(async (q) => {
+      const rows = await q.many<{ lead_id: string }>(
+        `select * from crm.v_retap_pool
+          order by retap_since asc nulls last limit 300`,
+      );
+      await logLeadAccess(q, user.id, rows.map((r) => r.lead_id), 'list', req.ip);
+      return { count: rows.length, leads: rows };
+    });
+  });
+
+  /** Leads about to move to the other team unless worked - the warning tab. */
+  app.get('/me/cross-team-watch', async (req) => {
+    const user = req.requireUser();
+    return req.tx(async (q) => {
+      const rows = await q.many<{ lead_id: string }>(
+        `select * from crm.v_cross_team_watch
+          where queue_owner_id = $1
+          order by moves_at asc limit 300`,
+        [user.id],
+      );
+      return { count: rows.length, leads: rows };
+    });
+  });
+
+  /** Pick a parked lead (re-tap or previous-month) back into live work. */
+  app.post('/leads/:id/claim', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    return req.tx(async (q) => {
+      await q.query('select crm.claim_parked_lead($1, $2)', [id, user.id]);
+      return q.one(
+        `select id, status, pool, caller_id, counsellor_id, escalation_stage,
+                next_action_at from crm.leads where id = $1`,
+        [id],
+      );
+    });
+  });
+
+  /** Set or clear the per-lead reminder: mute it, or choose a time. */
+  app.put('/leads/:id/reminder', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({
+        muted: z.boolean().optional(),
+        at: z.coerce.date().nullable().optional(),
+        note: z.string().max(200).nullable().optional(),
+      })
+      .parse(req.body ?? {});
+
+    return req.tx(async (q) => {
+      const row = await q.one(
+        `update crm.leads
+            set reminder_muted = coalesce($2, reminder_muted),
+                reminder_at    = case when $3 then $4::timestamptz else reminder_at end,
+                reminder_note  = case when $3 then $5 else reminder_note end,
+                updated_at = now()
+          where id = $1
+          returning id, reminder_muted, reminder_at, reminder_note`,
+        [
+          id,
+          body.muted ?? null,
+          'at' in body,
+          body.at ?? null,
+          body.note ?? null,
+        ],
+      );
+      if (!row) throw notFound('lead not found');
+      await q.query(
+        `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
+         values ($1, 'reminder_set', $2, $3)`,
+        [id, user.id, JSON.stringify({ muted: body.muted, at: body.at, note: body.note })],
+      );
+      return row;
+    });
+  });
+
+  /** My notifications (cross-team arrivals and the like), newest first. */
+  app.get('/me/notifications', async (req) => {
+    const user = req.requireUser();
+    return req.tx(async (q) => {
+      const rows = await q.many(
+        `select id, kind, title, body, lead_id, created_at, read_at
+           from crm.notifications
+          where user_id = $1
+          order by (read_at is null) desc, created_at desc
+          limit 100`,
+        [user.id],
+      );
+      return { count: rows.length, unread: rows.filter((r) => !(r as { read_at: unknown }).read_at).length, notifications: rows };
+    });
+  });
+
+  app.post('/me/notifications/read', async (req) => {
+    req.requireUser();
+    const body = z.object({ id: uuid.optional() }).parse(req.body ?? {});
+    return req.tx(async (q) => {
+      if (body.id) {
+        await q.query(
+          `update crm.notifications set read_at = now() where id = $1 and read_at is null`,
+          [body.id],
+        );
+      } else {
+        await q.query(`update crm.notifications set read_at = now() where read_at is null`);
+      }
+      return { ok: true };
     });
   });
 
@@ -389,15 +509,30 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
    * route needing to know the difference.
    */
   app.get('/me/alerts', async (req) => {
-    req.requireUser();
+    const user = req.requireUser();
     return req.tx(async (q) => {
+      // The lead-derived alerts, plus unread notifications (cross-team arrivals)
+      // folded in so the same bell and the same popup cover both. A notification
+      // carries no lead due-time, so its "age" is how long it has gone unread.
       const alerts = await q.many(
-        `select kind, severity, lead_id, lead_name, phone_e164, due_at, title, callback_id,
-                round(extract(epoch from (now() - due_at)) / 60)::int as minutes_late
-           from crm.v_my_alerts
+        `select * from (
+           select kind, severity, lead_id, lead_name, phone_e164, due_at, title, callback_id,
+                  round(extract(epoch from (now() - due_at)) / 60)::int as minutes_late,
+                  null::uuid as notification_id
+             from crm.v_my_alerts
+           union all
+           select n.kind, 'warning', n.lead_id, l.full_name, l.phone_e164,
+                  n.created_at, n.title, null,
+                  round(extract(epoch from (now() - n.created_at)) / 60)::int,
+                  n.id
+             from crm.notifications n
+             left join crm.leads l on l.id = n.lead_id
+            where n.read_at is null and n.user_id = $1
+         ) a
           order by case severity when 'critical' then 0 when 'warning' then 1 else 2 end,
                    due_at asc
           limit 100`,
+        [user.id],
       );
       return {
         count: alerts.length,
