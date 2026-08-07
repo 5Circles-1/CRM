@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { hashPassword } from '../auth/credentials.ts';
-import { normaliseSpreadsheetId } from '../ingest/source.ts';
-import { notFound } from '../http/errors.ts';
+import { normaliseSpreadsheetId, rowsFromCsv } from '../ingest/source.ts';
+import { mapRow } from '../ingest/worker.ts';
+import { badRequest, notFound } from '../http/errors.ts';
 
 const uuid = z.string().uuid();
 
@@ -340,6 +341,98 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           order by ir.created_at desc limit 500`,
       ),
     );
+  });
+
+  /**
+   * Upload a previous month's records, team-wise and month-wise.
+   *
+   * These are history, not live leads: they land parked in the previous-month
+   * pool (status nurture, no caller, no SLA clock) so they never clog the
+   * calling queue, and the counsellor works them from the Previous-months tab
+   * when they choose. Excel exports to CSV in one click, so the same paste box
+   * as normal ingestion takes them; the team and month are chosen here rather
+   * than guessed from the file.
+   */
+  app.post('/admin/history/import', async (req) => {
+    const user = req.requireRole('admin', 'ops');
+    const body = z
+      .object({
+        csv: z.string().min(1).max(20_000_000),
+        teamId: uuid,
+        // The calendar month these records belong to, as YYYY-MM.
+        month: z.string().regex(/^\d{4}-\d{2}$/),
+        columnMap: z.record(z.string()).optional(),
+      })
+      .parse(req.body);
+
+    const rows = rowsFromCsv(body.csv);
+    if (rows.length === 0) throw badRequest('no data rows found in the CSV');
+
+    const monthStart = `${body.month}-01`;
+    const batch = `${body.month}-${Date.now().toString(36)}`;
+
+    return req.tx(async (q) => {
+      const team = await q.one<{ id: string }>(
+        `select id from crm.teams where id = $1 and is_active`,
+        [body.teamId],
+      );
+      if (!team) throw badRequest('unknown or inactive team');
+
+      let created = 0;
+      let duplicate = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+
+      for (const row of rows) {
+        try {
+          const { mapped, extra } = mapRow(row.values, body.columnMap ?? {});
+          const rawPhone = mapped.phone ?? '';
+          const norm = await q.one<{ normalise_phone: string | null }>(
+            'select crm.normalise_phone($1) as normalise_phone',
+            [rawPhone],
+          );
+          const phone = norm?.normalise_phone ?? null;
+          if (!phone) {
+            skipped += 1;
+            continue;
+          }
+          // De-duplicate within the same imported month, so re-uploading the
+          // same sheet does not double the pool.
+          const exists = await q.one<{ id: string }>(
+            `select id from crm.leads
+              where phone_e164 = $1 and pool = 'previous_month' and imported_month = $2::date`,
+            [phone, monthStart],
+          );
+          if (exists) {
+            duplicate += 1;
+            continue;
+          }
+          await q.query(
+            `insert into crm.leads
+               (full_name, phone_e164, phone_raw, email, city, team_id, status,
+                pool, is_historical, imported_month, import_batch, extra)
+             values ($1, $2, $3, nullif($4,''), nullif($5,''), $6, 'nurture',
+                     'previous_month', true, $7::date, $8, $9)`,
+            [
+              mapped.full_name ?? null,
+              phone,
+              rawPhone,
+              mapped.email ?? '',
+              mapped.city ?? '',
+              body.teamId,
+              monthStart,
+              batch,
+              JSON.stringify(extra),
+            ],
+          );
+          created += 1;
+        } catch (err) {
+          errors.push(`${row.rowKey}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      return { batch, seen: rows.length, created, duplicate, skipped, errors };
+    });
   });
 
   /** Audit trail for one record. */

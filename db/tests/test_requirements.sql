@@ -709,6 +709,214 @@ select crm_test.check(
   (select count(*) > 0 from crm.security_alerts where alert_type = 'bulk_lead_access'), null);
 
 -- =============================================================================
+-- REQUIREMENT 10: the floor's second round - escalation ladder, pools,
+-- cross-team moves, per-lead reminders, history and chat.
+-- =============================================================================
+
+-- CNS_A leads Team A; make sure the seeded counsellor is the team lead.
+select crm_test.check(
+  'R10', 'the team counsellor is resolvable',
+  (select crm.team_counsellor(crm.team_of(:A1, current_date)) = :CNS_A), null);
+
+-- Two no-connect attempts by a caller escalate the lead to the counsellor.
+do $$
+declare
+  v_lead uuid;
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_team uuid;
+begin
+  v_team := crm.team_of(v_a1, current_date);
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, assigned_at)
+  values (v_src, 'Escalate Me', '+919555100001', v_a1, v_team, 'working',
+          now(), now())
+  returning id into v_lead;
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, v_a1, 'not_answered', 0);
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, v_a1, 'not_answered', 0);
+end $$;
+
+select crm_test.check(
+  'R10', 'after two no-connect caller attempts the lead moves to the counsellor',
+  (select escalation_stage = 'counsellor' and counsellor_id = :CNS_A
+     from crm.leads where full_name = 'Escalate Me'), null);
+
+select crm_test.check(
+  'R10', 'an escalated lead is queued to the counsellor, not the caller',
+  (select queue_owner_id = :CNS_A from crm.v_my_pipeline
+    where lead_id = (select id from crm.leads where full_name = 'Escalate Me')), null);
+
+-- The counsellor also cannot reach it -> re-tap pool, and NOT overdue.
+do $$
+declare v_lead uuid; v_cns uuid := '22222222-0000-0000-0000-000000000005';
+begin
+  select id into v_lead from crm.leads where full_name = 'Escalate Me';
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, v_cns, 'not_answered', 0);
+end $$;
+
+select crm_test.check(
+  'R10', 'a counsellor who also cannot reach it drops the lead into the re-tap pool',
+  (select status = 'nurture' and pool = 'retap' and next_action_at is null
+     from crm.leads where full_name = 'Escalate Me'), null);
+
+select crm_test.check(
+  'R10', 'a re-tap lead shows in the pool and never as an overdue alert',
+  (select
+     (select count(*) = 1 from crm.v_retap_pool
+       where lead_id = (select id from crm.leads where full_name = 'Escalate Me'))
+     and
+     (select count(*) = 0 from crm.v_my_alerts
+       where lead_id = (select id from crm.leads where full_name = 'Escalate Me')
+         and kind in ('action_overdue', 'follow_up_due'))), null);
+
+-- Claiming a parked lead brings it back to life.
+do $$
+declare v_lead uuid; v_cns uuid := '22222222-0000-0000-0000-000000000005';
+begin
+  select id into v_lead from crm.leads where full_name = 'Escalate Me';
+  perform crm.claim_parked_lead(v_lead, v_cns);
+end $$;
+
+select crm_test.check(
+  'R10', 'claiming a parked lead makes it live again with a fresh action',
+  (select status = 'working' and pool is null and next_action_at > now()
+     from crm.leads where full_name = 'Escalate Me'), null);
+
+-- Cross-team move: a lead nobody has worked for long enough goes to the other
+-- team as a fresh, unassigned lead, and notifies that team's counsellor.
+do $$
+declare
+  v_lead uuid;
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_team uuid;
+begin
+  v_team := crm.team_of(v_a1, current_date);
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, assigned_at, created_at)
+  values (v_src, 'Stale Lead', '+919555100002', v_a1, v_team, 'working',
+          now() - interval '30 days', now() - interval '30 days', now() - interval '30 days')
+  returning id into v_lead;
+end $$;
+
+select crm.escalate_stuck_leads() as _moved \gset
+
+select crm_test.check(
+  'R10', 'a lead untouched past the cutoff moves to the other team',
+  (select team_id <> crm.team_of(:A1, current_date) and caller_id is null
+          and cross_team_count = 1
+     from crm.leads where full_name = 'Stale Lead'), null);
+
+select crm_test.check(
+  'R10', 'the receiving team counsellor is notified of the cross-team arrival',
+  (select count(*) >= 1 from crm.notifications n
+     join crm.leads l on l.id = n.lead_id
+    where l.full_name = 'Stale Lead' and n.kind = 'cross_team_in'), null);
+
+-- Per-lead reminder: muting silences the nag; a custom time raises exactly one.
+do $$
+declare
+  v_lead uuid;
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, assigned_at, first_touched_at, attempt_count,
+                         reminder_muted)
+  values (v_src, 'Muted Lead', '+919555100003', v_a1, crm.team_of(v_a1, current_date),
+          'working', now() - interval '2 hours', now() - interval '3 hours',
+          now() - interval '3 hours', 1, true)
+  returning id into v_lead;
+end $$;
+
+select crm_test.check(
+  'R10', 'a muted lead raises no follow-up or overdue reminder',
+  (select count(*) = 0 from crm.v_my_alerts
+    where lead_id = (select id from crm.leads where full_name = 'Muted Lead')), null);
+
+do $$
+declare
+  v_lead uuid;
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, assigned_at, first_touched_at, attempt_count,
+                         reminder_at, reminder_note)
+  values (v_src, 'Custom Reminder', '+919555100004', v_a1, crm.team_of(v_a1, current_date),
+          'working', now() + interval '1 day', now() - interval '1 hour',
+          now() - interval '1 hour', 1, now() - interval '1 minute', 'Ring at noon')
+  returning id into v_lead;
+end $$;
+
+select crm_test.check(
+  'R10', 'a custom reminder that has come due raises one alert for the owner',
+  (select count(*) = 1 from crm.v_my_alerts
+    where lead_id = (select id from crm.leads where full_name = 'Custom Reminder')
+      and kind = 'custom_reminder' and user_id = :A1), null);
+
+-- Historical import: a previous-month lead is parked, tappable, not in the queue.
+do $$
+declare
+  v_lead uuid;
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, team_id, status,
+                         pool, is_historical, imported_month, import_batch)
+  values (v_src, 'April Record', '+919555100005', crm.team_of(v_a1, current_date),
+          'nurture', 'previous_month', true, date '2026-04-01', 'apr-upload')
+  returning id into v_lead;
+end $$;
+
+select crm_test.check(
+  'R10', 'an uploaded historical lead lands in the previous-month pool',
+  (select month_label = 'Apr 2026' from crm.v_previous_month_pool
+    where lead_id = (select id from crm.leads where full_name = 'April Record')), null);
+
+select crm_test.check(
+  'R10', 'a historical lead never appears in the live pipeline',
+  (select count(*) = 0 from crm.v_my_pipeline
+    where lead_id = (select id from crm.leads where full_name = 'April Record')), null);
+
+-- Team chat: an admin broadcast to the whole floor is readable.
+do $$
+declare v_admin uuid := '22222222-0000-0000-0000-00000000000a';
+begin
+  insert into crm.team_messages (author_id, team_id, body)
+  values (v_admin, null, 'Floor-wide notice: stand-up at 9:30.');
+end $$;
+
+select crm_test.check(
+  'R10', 'a floor-wide chat message exists and is scoped to no single team',
+  (select count(*) = 1 from crm.team_messages
+    where team_id is null and body like 'Floor-wide notice%'), null);
+
+-- The will-visit bucket exists so promised visits have a home.
+do $$
+declare
+  v_lead uuid;
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, assigned_at, first_touched_at, attempt_count,
+                         walkin_expected_at)
+  values (v_src, 'Will Visit Lead', '+919555100006', v_a1, crm.team_of(v_a1, current_date),
+          'working', now() + interval '2 hours', now() - interval '1 hour',
+          now() - interval '1 hour', 1, now() + interval '1 day')
+  returning id into v_lead;
+end $$;
+
+select crm_test.check(
+  'R10', 'a promised visit lands in the will_visit bucket, not lost among follow-ups',
+  (select bucket = 'will_visit' from crm.v_my_pipeline
+    where lead_id = (select id from crm.leads where full_name = 'Will Visit Lead')), null);
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

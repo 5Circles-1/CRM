@@ -11,6 +11,8 @@ import * as dash from './views/dash.js';
 import * as admin from './views/admin.js';
 import * as leads from './views/leads.js';
 import * as people from './views/people.js';
+import * as team from './views/team.js';
+import * as history from './views/history.js';
 import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 
 const NAV = [
@@ -20,6 +22,8 @@ const NAV = [
   { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/leads', label: 'Find lead', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/people', label: 'Performance', roles: ['caller', 'counsellor', 'admin', 'ops'] },
+  { hash: '#/history', label: 'Previous months', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/team', label: 'Team', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/score', label: 'My Score', roles: ['caller', 'counsellor'] },
   { hash: '#/attendance', label: 'Attendance', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/admin', label: 'Admin', roles: ['admin', 'ops'] },
@@ -30,13 +34,14 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, floor, collections, dash, leads, people, score, attendance, admin, lead,
+  day, floor, collections, dash, leads, people, score, attendance, admin, lead, team, history,
 };
 
 const TITLES = {
   day: 'My Pipeline', floor: 'Floor', collections: 'Collections', dash: 'Dashboards',
   leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
+  team: 'Team', history: 'Previous months',
 };
 
 let me = null;
@@ -231,7 +236,7 @@ function markLive() {
  * a page underneath someone who is typing, selecting text, or mid-form is
  * worse than a stale number, so all three suppress the tick.
  */
-const LIVE_VIEWS = new Set(['day', 'floor', 'collections', 'people', 'dash']);
+const LIVE_VIEWS = new Set(['day', 'floor', 'collections', 'people', 'dash', 'team']);
 let liveTimer = null;
 
 function currentViewName() {

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { logLeadAccess } from '../http/context.ts';
 
 /**
  * Requirement 2: dashboards for caller and counsellor performance.
@@ -192,6 +193,61 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
           order by overdue_now desc, callbacks_due desc, due_next_hour desc, full_name`,
       ),
     );
+  });
+
+  /**
+   * Live floor activity: every outcome logged today, newest first, filterable
+   * by disposition. This is what makes "a lead I worked went missing"
+   * impossible to say - whatever a caller records is here at once.
+   */
+  app.get('/dashboards/activity', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    const { disposition, limit } = z
+      .object({
+        disposition: z.string().max(40).optional(),
+        limit: z.coerce.number().int().min(1).max(500).default(200),
+      })
+      .parse(req.query);
+    return req.tx((q) =>
+      q.many(
+        `select * from crm.v_floor_activity
+          where ($1::text is null or disposition = $1::crm.disposition)
+          order by started_at desc
+          limit $2`,
+        [disposition ?? null, limit],
+      ),
+    );
+  });
+
+  /**
+   * Previous months' uploaded records, grouped by month and team. RLS scopes a
+   * counsellor to their own team; an admin sees every month. Tappable from its
+   * own tab so old records get a second life without touching the live queue.
+   */
+  app.get('/dashboards/previous-months', async (req) => {
+    const user = req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    const { month } = z
+      .object({ month: z.string().regex(/^\d{4}-\d{2}$/).optional() })
+      .parse(req.query);
+    return req.tx(async (q) => {
+      const months = await q.many(
+        `select to_char(imported_month, 'YYYY-MM') as month,
+                month_label, team_id, team_name, count(*)::int as leads
+           from crm.v_previous_month_pool
+          group by imported_month, month_label, team_id, team_name
+          order by imported_month desc, team_name`,
+      );
+      const leads = month
+        ? await q.many<{ lead_id: string }>(
+            `select * from crm.v_previous_month_pool
+              where to_char(imported_month, 'YYYY-MM') = $1
+              order by created_at desc limit 500`,
+            [month],
+          )
+        : [];
+      if (leads.length) await logLeadAccess(q, user.id, leads.map((l) => l.lead_id), 'list', req.ip);
+      return { months, leads };
+    });
   });
 
   /** Security alerts. Admin only - the floor cannot read the watchers. */

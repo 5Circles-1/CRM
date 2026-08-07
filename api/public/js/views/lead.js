@@ -1,4 +1,4 @@
-import { get, post } from '../api.js';
+import { get, post, put } from '../api.js';
 import { badge, esc, fmtDT, fmtINR, fmtTalk, h, localToIso, openModal, parseTalk, toast, tomorrowAt } from '../util.js';
 
 const OPEN_STATUSES = new Set(['new', 'working', 'callback', 'qualified', 'negotiation']);
@@ -42,10 +42,12 @@ export async function render(outlet, me, params) {
           </div>
         </div>
         <div class="row">
+          ${lead.pool ? '<button class="btn primary" data-act="claim" data-testid="claim-btn">Pick up &amp; work</button>' : ''}
           ${open ? '<button class="btn primary" data-act="call" data-testid="log-call-btn">Log a call</button>' : ''}
           <button class="btn" data-act="whatsapp" data-testid="whatsapp-btn">${lead.whatsapp_sent_at ? '✓ WhatsApp sent' : 'Mark WhatsApp sent'}</button>
           <button class="btn" data-act="walkin" data-testid="walkin-btn">${lead.walked_in_at ? '✓ Walked in' : 'Mark walked in'}</button>
           ${open ? '<button class="btn" data-act="callback">Set callback</button>' : ''}
+          ${open ? `<button class="btn" data-act="reminder" data-testid="reminder-btn">${lead.reminder_muted ? '🔕 Reminders off' : '⏰ Reminder'}</button>` : ''}
           ${open && me.role === 'caller' ? '<button class="btn" data-act="qualify">Qualify → counsellor</button>' : ''}
           ${open && canTransfer ? '<button class="btn" data-act="transfer" data-testid="transfer-btn">Transfer</button>' : ''}
           ${canBook ? '<button class="btn primary" data-act="deal" data-testid="book-deal-btn">Book deal</button>' : ''}
@@ -131,10 +133,65 @@ export async function render(outlet, me, params) {
       return;
     }
     if (act === 'callback') callbackModal(lead, () => render(outlet, me, params));
+    if (act === 'reminder') reminderModal(lead, () => render(outlet, me, params));
     if (act === 'qualify') qualifyModal(lead, () => render(outlet, me, params));
     if (act === 'transfer') transferModal(lead, () => render(outlet, me, params));
     if (act === 'deal') dealModal(lead, () => render(outlet, me, params));
+    if (act === 'claim') {
+      try {
+        await post(`/leads/${lead.id}/claim`);
+        toast('Picked up — it is on your list now with a fresh action.');
+        render(outlet, me, params);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    }
   };
+}
+
+/**
+ * The per-lead reminder choice. Two independent things: whether this lead
+ * reminds you at all, and a one-off time you want to be nudged. Muting is the
+ * answer to "stop nagging me about this one"; the time is "but do remind me
+ * on Friday".
+ */
+function reminderModal(lead, onDone) {
+  const body = h(`
+    <div>
+      <label class="f" style="flex-direction:row;align-items:center;gap:10px">
+        <input type="checkbox" name="muted" ${lead.reminder_muted ? 'checked' : ''} style="width:auto">
+        <span>Mute all reminders for this lead</span>
+      </label>
+      <label class="f">Remind me at a specific time <span class="hint">optional — leave blank for none</span>
+        <input name="at" type="datetime-local" value="${lead.reminder_at ? toLocalInput(lead.reminder_at) : ''}">
+      </label>
+      <label class="f">Reminder note <input name="note" maxlength="200" placeholder="e.g. call after 6pm" value="${esc(lead.reminder_note ?? '')}"></label>
+    </div>`);
+  const footer = h('<div><button class="btn primary" data-testid="reminder-save">Save reminder</button></div>');
+  const { close } = openModal('Reminder for this lead', body, footer);
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    const atVal = body.querySelector('[name=at]').value;
+    try {
+      await put(`/leads/${lead.id}/reminder`, {
+        muted: body.querySelector('[name=muted]').checked,
+        at: atVal ? localToIso(atVal) : null,
+        note: body.querySelector('[name=note]').value.trim() || null,
+      });
+      toast('Reminder saved.');
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+}
+
+/** ISO timestamp -> a value a datetime-local input accepts (floor-local time). */
+function toLocalInput(iso) {
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 function eventLabel(e) {
@@ -150,6 +207,11 @@ function eventLabel(e) {
     case 'deal_booked': return `Deal booked · ${fmtINR(p.amount)}`;
     case 're_enquiry': return 'Re-enquired through a lead form — priority raised';
     case 'parked_nurture': return 'Parked in nurture after exhausting attempts';
+    case 'escalated_to_counsellor': return 'Escalated — caller could not reach; moved to the counsellor';
+    case 'moved_to_retap': return 'Moved to the re-tap pool — tap again later';
+    case 'claimed_from_pool': return 'Picked up from a pool and put back into work';
+    case 'cross_team_transfer': return `Moved to the other team after ${Number(p.after_days ?? '')} days untouched`;
+    case 'reminder_set': return `Reminder ${p.muted ? 'muted' : 'set'}${p.at ? ' for ' + fmtDT(p.at) : ''}`;
     default: return String(e.event_type).replace(/_/g, ' ');
   }
 }
