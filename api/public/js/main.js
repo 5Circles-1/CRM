@@ -96,12 +96,22 @@ function renderShell(app) {
           <div class="shift" id="shift-widget"></div>
           ${bellMarkup()}
           <div class="userchip"><b>${esc(me.full_name)}</b>${esc(me.role)}${me.team_name ? ' · ' + esc(me.team_name) : ''}</div>
+          <button class="btn small" id="theme-btn" title="Light or dim">◐</button>
           <button class="btn small" id="pwd-btn" title="Change my password">Password</button>
           <button class="btn small" id="logout-btn">Log out</button>
         </div>
         <div class="content" id="outlet"></div>
       </div>
     </div>`));
+
+  // Dim theme: dark chrome, light cards - remembered per browser. The cards
+  // stay light because every chart colour was validated on a light surface.
+  const applyTheme = () => document.documentElement.dataset.theme = localStorage.getItem('crm-theme') ?? '';
+  applyTheme();
+  document.getElementById('theme-btn').addEventListener('click', () => {
+    localStorage.setItem('crm-theme', localStorage.getItem('crm-theme') === 'dim' ? '' : 'dim');
+    applyTheme();
+  });
 
   document.getElementById('pwd-btn').addEventListener('click', () => changeMyPassword());
 

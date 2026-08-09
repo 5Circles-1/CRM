@@ -471,3 +471,16 @@ button.chip:hover { border-color: #c8d4ea; }
   margin-top: 10px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
   background: var(--info-bg); color: var(--ink); line-height: 1.55;
 }
+
+/* ---- dim theme ----
+   Dark chrome, light content cards. The cards stay light deliberately: every
+   chart colour on them was contrast-validated against a light surface, so
+   darkening the cards would un-validate the lot. */
+:root[data-theme="dim"] { --bg: #0d1524; --ink: #16202e; --line: #dfe5ee; }
+:root[data-theme="dim"] body { background: var(--bg); }
+:root[data-theme="dim"] .topbar { background: #101a2b; border-color: #1d2c46; }
+:root[data-theme="dim"] .topbar h1, :root[data-theme="dim"] .userchip b { color: #fff; }
+:root[data-theme="dim"] .userchip, :root[data-theme="dim"] .shift { color: #c9d4e3; }
+:root[data-theme="dim"] .content { background: var(--bg); }
+:root[data-theme="dim"] .section-h { color: #c9d4e3; }
+:root[data-theme="dim"] .chips .chip:not(.on):not(.hot) { background: #16233a; color: #c9d4e3; border-color: #24365a; }
