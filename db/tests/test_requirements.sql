@@ -444,6 +444,24 @@ select crm_test.check(
      from crm.leads where first_touch_due_at is not null
     order by created_at desc limit 1), null);
 
+-- R1: presence means TODAY. An open session from a previous day is a
+-- forgotten logout, never a reason to hand its owner a lead.
+insert into crm.users (id, full_name, email, role) values
+  ('22222222-0000-0000-0000-0000000000fb', 'Ghost Session', 'ghost@5circles.test', 'caller')
+on conflict do nothing;
+insert into crm.attendance_sessions (user_id, started_at)
+values ('22222222-0000-0000-0000-0000000000fb', now() - interval '2 days');
+
+select crm_test.check(
+  'R1', 'an open session from a previous day does not count as on shift',
+  not crm.is_on_shift('22222222-0000-0000-0000-0000000000fb'), null);
+
+-- Retire the fixture so the scoring counts later in this file stay exact.
+update crm.attendance_sessions set ended_at = started_at + interval '1 hour'
+ where user_id = '22222222-0000-0000-0000-0000000000fb';
+update crm.users set is_active = false, deactivated_at = now()
+ where id = '22222222-0000-0000-0000-0000000000fb';
+
 -- =============================================================================
 -- REQUIREMENT 6: a 9-hour login is visible per person per day
 -- =============================================================================
