@@ -80,8 +80,16 @@ export const JOBS: Job[] = [
   },
 ];
 
-/** 09:00-20:00 IST, a little either side of the 09:30-18:30 shift. */
+/**
+ * Mon-Sat, 09:00-19:00 IST - a little either side of the 09:30-18:30 shift.
+ *
+ * Sunday matters as much as the hours: the gate used to check the hour only,
+ * so every shift-hours job ran happily through the team's day off, sweeping
+ * and reassigning leads nobody was there to take.
+ */
 function withinShiftHours(now = new Date()): boolean {
+  const istDay = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'short' }).format(now);
+  if (istDay === 'Sun') return false;
   const istHour = Number(
     new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Asia/Kolkata',
@@ -89,7 +97,7 @@ function withinShiftHours(now = new Date()): boolean {
       hour12: false,
     }).format(now),
   );
-  return istHour >= 9 && istHour < 20;
+  return istHour >= 9 && istHour < 19;
 }
 
 export class Scheduler {

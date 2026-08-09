@@ -1191,7 +1191,7 @@ describe('an untouched lead moves to another caller', () => {
     // Requirement 9 in practice: a lead sitting on someone who has not started
     // it is a pipeline leak, and the counsellor is not watching a stopwatch.
     const leadId = makeLeadFor(USERS.callerA1, 'Untouched');
-    fixtureSql(`update crm.leads set assigned_at = now() - interval '11 minutes',
+    fixtureSql(`update crm.leads set assigned_at = now() - interval '3 days',
                        first_touched_at = null, attempt_count = 0, status = 'new'
                  where id = '${leadId}';`);
 
@@ -1221,7 +1221,7 @@ describe('an untouched lead moves to another caller', () => {
   it('stops moving a lead nobody wants, rather than circulating it forever', async () => {
     const leadId = makeLeadFor(USERS.callerA1, 'Hot Potato');
     for (let i = 0; i < 4; i += 1) {
-      fixtureSql(`update crm.leads set assigned_at = now() - interval '11 minutes',
+      fixtureSql(`update crm.leads set assigned_at = now() - interval '3 days',
                          first_touched_at = null, attempt_count = 0, status = 'new'
                    where id = '${leadId}';`);
       fixtureSql(`select crm.reassign_untouched_leads();`);

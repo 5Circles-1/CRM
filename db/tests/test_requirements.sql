@@ -160,12 +160,15 @@ begin
   perform crm.assign_lead(v_lead);
 end $$;
 
+-- The window is 30 WORKING minutes now, so on a Sunday the deadline is
+-- legitimately Monday morning - the assertion is against the working clock,
+-- not against the wall.
 select crm_test.check(
-  'R5', 'immediate lead gets the 5-minute first-touch SLA',
-  (select first_touch_due_at <= now() + interval '6 minutes'
+  'R5', 'immediate lead gets a 30-working-minute first-touch SLA',
+  (select first_touch_due_at > now()
+      and first_touch_due_at <= crm.add_working_minutes(now(), 31)
      from crm.leads where full_name = 'Hot Lead'),
-  (select 'due in ' || round(extract(epoch from (first_touch_due_at - now()))/60) || ' min'
-     from crm.leads where full_name = 'Hot Lead'));
+  (select 'due ' || first_touch_due_at from crm.leads where full_name = 'Hot Lead'));
 
 select crm_test.check(
   'R5', 'immediate lead appears on the immediate queue',
@@ -213,6 +216,14 @@ select crm_test.check(
 select crm_test.check(
   'R4', 'my-day queue is populated for a caller',
   (select count(*) > 0 from crm.v_my_day where caller_id = :A1), null);
+
+-- An overdue lead so the bucket test holds on any day of the week: on a
+-- Sunday every fresh lead's next action is Monday, which empties v_my_day of
+-- everything except callbacks and whatever is genuinely late.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                       next_action_at, first_touched_at, attempt_count)
+values (:SRC, 'Long Overdue', '+919555000099', :A1, crm.team_of(:A1, current_date),
+        'working', now() - interval '2 days', now() - interval '3 days', 1);
 
 select crm_test.check(
   'R4', 'my-day buckets leads into immediate / overdue / callback / fresh',
@@ -346,8 +357,11 @@ end $$;
 -- with no contact at all, where nobody is choosing to keep them.
 insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
                        next_action_at, assigned_at)
+-- Backdated three days, not eleven minutes: the sweep clock now counts only
+-- working minutes, so a test running on a Sunday would find that eleven
+-- wall-clock minutes contain zero working ones and correctly refuse to sweep.
 values (:SRC, 'Untouched Sweep', '+919555000001', :A1, crm.team_of(:A1, current_date),
-        'new', now(), now() - interval '11 minutes');
+        'new', now(), now() - interval '3 days');
 
 -- With A2 away there is nobody in Team A to move it to. Handing it to another
 -- absent caller would look like progress and change nothing, so it stays put.
@@ -399,6 +413,36 @@ select crm_test.check(
      left join crm.leads l on l.id = a.lead_id
      left join crm.users u on u.id = a.user_id
     where l.id is null or u.id is null), null);
+
+-- R5: the SLA clock only runs while the floor is open (Mon-Sat 09:30-18:30 IST).
+-- Fixed dates: 2026-08-08 is a Saturday, 2026-08-09 a Sunday.
+select crm_test.check(
+  'R5', 'a Saturday-evening lead is due Monday morning, not during Sunday',
+  crm.add_working_minutes('2026-08-08 18:25:00+05:30', 30)
+    = '2026-08-10 09:55:00+05:30'::timestamptz, null);
+
+select crm_test.check(
+  'R5', 'a lead arriving on Sunday starts its clock at Monday 09:30',
+  crm.add_working_minutes('2026-08-09 11:00:00+05:30', 30)
+    = '2026-08-10 10:00:00+05:30'::timestamptz, null);
+
+select crm_test.check(
+  'R5', 'mid-shift, thirty minutes means thirty minutes',
+  crm.add_working_minutes('2026-08-11 11:00:00+05:30', 30)
+    = '2026-08-11 11:30:00+05:30'::timestamptz, null);
+
+select crm_test.check(
+  'R5', 'a two-day allowance carries across the Sunday without counting it',
+  crm.add_working_minutes('2026-08-08 09:00:00+05:30', 1080)
+    = '2026-08-10 18:30:00+05:30'::timestamptz, null);
+
+select crm_test.check(
+  'R5', 'a new lead''s first-touch deadline lands inside working hours',
+  (select extract(dow from first_touch_due_at at time zone 'Asia/Kolkata') <> 0
+      and (extract(hour from first_touch_due_at at time zone 'Asia/Kolkata') * 60
+           + extract(minute from first_touch_due_at at time zone 'Asia/Kolkata')) between 570 and 1110
+     from crm.leads where first_touch_due_at is not null
+    order by created_at desc limit 1), null);
 
 -- =============================================================================
 -- REQUIREMENT 6: a 9-hour login is visible per person per day
