@@ -2040,5 +2040,34 @@ describe('live floor activity (API)', () => {
     assert.equal(feed.statusCode, 200);
     assert.ok(feed.json().some((r: { lead_id: string }) => r.lead_id === leadId),
       'the interested outcome shows on the floor feed at once');
+describe('a signed-in user can change their own password', () => {
+  it('changes it with the current password, and the old one stops working', async () => {
+    const token = await login(h.app, EMAILS.callerA2);
+    const res = await h.app.inject({
+      method: 'POST', url: '/auth/change-password', headers: auth(token),
+      payload: { currentPassword: TEST_PASSWORD, newPassword: 'a-brand-new-secret-1' },
+    });
+    assert.equal(res.statusCode, 200);
+
+    const old = await h.app.inject({
+      method: 'POST', url: '/auth/login',
+      payload: { email: EMAILS.callerA2, password: TEST_PASSWORD },
+    });
+    assert.equal(old.statusCode, 401, 'the old password must die immediately');
+
+    const fresh = await h.app.inject({
+      method: 'POST', url: '/auth/login',
+      payload: { email: EMAILS.callerA2, password: 'a-brand-new-secret-1' },
+    });
+    assert.equal(fresh.statusCode, 200);
+  });
+
+  it('refuses without the current password, so a walk-up cannot hijack a session', async () => {
+    const token = await login(h.app, EMAILS.callerB1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/auth/change-password', headers: auth(token),
+      payload: { currentPassword: 'wrong-guess-here', newPassword: 'whatever-else-12' },
+    });
+    assert.equal(res.statusCode, 401);
   });
 });

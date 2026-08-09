@@ -463,3 +463,11 @@ button.chip:hover { border-color: #c8d4ea; }
 .notif { border-bottom: 1px solid var(--line); padding: 10px 4px; }
 .notif:last-child { border-bottom: 0; }
 .notif.unread { background: #fbfdff; border-left: 3px solid var(--brand); padding-left: 10px; }
+.linklike {
+  background: none; border: 0; color: var(--brand); cursor: pointer;
+  font: inherit; font-size: 13px; margin-top: 12px; display: block; width: 100%;
+}
+.forgot-help {
+  margin-top: 10px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+  background: var(--info-bg); color: var(--ink); line-height: 1.55;
+}

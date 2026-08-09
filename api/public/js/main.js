@@ -1,5 +1,5 @@
 import { get, post } from './api.js';
-import { esc, h, minsLabel, toast, wireLogoFallback } from './util.js';
+import { esc, h, minsLabel, openModal, toast, wireLogoFallback } from './util.js';
 import { renderLogin } from './views/login.js';
 import * as day from './views/day.js';
 import * as lead from './views/lead.js';
@@ -96,11 +96,14 @@ function renderShell(app) {
           <div class="shift" id="shift-widget"></div>
           ${bellMarkup()}
           <div class="userchip"><b>${esc(me.full_name)}</b>${esc(me.role)}${me.team_name ? ' · ' + esc(me.team_name) : ''}</div>
+          <button class="btn small" id="pwd-btn" title="Change my password">Password</button>
           <button class="btn small" id="logout-btn">Log out</button>
         </div>
         <div class="content" id="outlet"></div>
       </div>
     </div>`));
+
+  document.getElementById('pwd-btn').addEventListener('click', () => changeMyPassword());
 
   document.getElementById('logout-btn').addEventListener('click', async () => {
     await post('/auth/logout').catch(() => {});
@@ -115,6 +118,43 @@ function renderShell(app) {
   startAlerts();
   startLiveRefresh();
   refreshShift();
+}
+
+/**
+ * Self-service password change, from anywhere in the app.
+ *
+ * This existed as an endpoint since day one and was reachable only through the
+ * forced first-login flow - so the answer to "how do I change my password" was
+ * "you can't, unless we make you". Forgetting it entirely is the other case:
+ * the sign-in screen now says who to ask, and the admin's own lockout is
+ * covered by the server-side rescue tool.
+ */
+function changeMyPassword() {
+  const bodyEl = h(`
+    <div>
+      <label class="f">Current password <input name="cur" type="password" autocomplete="current-password"></label>
+      <label class="f">New password
+        <span class="hint">at least 10 characters</span>
+        <input name="p1" type="password" autocomplete="new-password"></label>
+      <label class="f">New password again <input name="p2" type="password" autocomplete="new-password"></label>
+    </div>`);
+  const footer = h('<div><button class="btn primary">Change password</button></div>');
+  const { close } = openModal('Change my password', bodyEl, footer);
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    const cur = bodyEl.querySelector('[name=cur]').value;
+    const p1 = bodyEl.querySelector('[name=p1]').value;
+    const p2 = bodyEl.querySelector('[name=p2]').value;
+    if (p1.length < 10) { toast('The new password needs at least 10 characters.', 'err'); return; }
+    if (p1 !== p2) { toast('The two new passwords do not match.', 'err'); return; }
+    try {
+      await post('/auth/change-password', { currentPassword: cur, newPassword: p1 });
+      toast('Password changed.');
+      close();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
 }
 
 async function refreshShift() {

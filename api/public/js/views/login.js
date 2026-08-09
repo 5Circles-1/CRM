@@ -17,6 +17,13 @@ export function renderLogin(app, onSuccess) {
           <input name="password" type="password" autocomplete="current-password" required data-testid="login-password">
         </label>
         <button class="btn primary" type="submit" style="width:100%" data-testid="login-submit">Sign in</button>
+        <button class="linklike" type="button" id="forgot">Forgot your password?</button>
+        <div class="forgot-help" id="forgot-help" hidden>
+          Ask your admin — they can set you a new temporary password in
+          <b>Admin&nbsp;→&nbsp;Users&nbsp;→&nbsp;Reset&nbsp;password</b>, and you'll choose your own at
+          next sign-in. If you <i>are</i> the admin, whoever manages the server can run the
+          rescue tool in <span class="mono">api/src/tools/reset-password.ts</span>.
+        </div>
       </form>
     </div>`);
 
@@ -45,6 +52,9 @@ export function renderLogin(app, onSuccess) {
 
   app.appendChild(box);
   wireLogoFallback(box);
+  box.querySelector('#forgot').addEventListener('click', () => {
+    box.querySelector('#forgot-help').hidden = false;
+  });
   box.querySelector('input[name=email]').focus();
 }
 
