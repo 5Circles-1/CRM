@@ -9,7 +9,7 @@ import { avatarHtml, esc, fmtDT, h, toast } from '../util.js';
  * Right: this person's notifications - cross-team arrivals and the like.
  */
 export async function render(outlet, me) {
-  const canPost = ['admin', 'ops'].includes(me.role);
+  const canPost = true;  // everyone may reply; RLS scopes them to their team or the floor
 
   const draw = async () => {
     const [messages, teams, notifs] = await Promise.all([

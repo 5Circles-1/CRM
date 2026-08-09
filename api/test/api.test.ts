@@ -1977,13 +1977,16 @@ describe('team chat (API)', () => {
       'a floor-wide message reaches a caller');
   });
 
-  it('does not let a caller broadcast', async () => {
+  it('lets a caller reply, but only inside their own fence', async () => {
+    // The floor asked to answer back, so the admin-only megaphone rule is
+    // gone - a caller may post to the floor or their own team, and the fence
+    // that remains is the other team's channel, held by RLS below.
     const a1 = await login(h.app, EMAILS.callerA1);
     const r = await h.app.inject({
       method: 'POST', url: '/messages', headers: auth(a1),
-      payload: { body: 'I should not be able to say this' },
+      payload: { body: 'Acknowledged.' },
     });
-    assert.equal(r.statusCode, 403);
+    assert.equal(r.statusCode, 201);
   });
 });
 
@@ -2072,5 +2075,63 @@ describe('a signed-in user can change their own password', () => {
       payload: { currentPassword: 'wrong-guess-here', newPassword: 'whatever-else-12' },
     });
     assert.equal(res.statusCode, 401);
+  });
+});
+
+describe('a forgotten shift ends itself', () => {
+  it('logs out an hour-idle session, backdated to the last real activity', async () => {
+    // A dedicated user, so no other test's shift activity can muddy the shape:
+    // on the floor three hours, never dialled, never opened a lead.
+    fixtureSql(`
+      insert into crm.users (id, full_name, email, role)
+      values ('22222222-0000-0000-0000-0000000000fa', 'Forgot To Leave', 'forgot@5circles.test', 'caller')
+      on conflict do nothing;
+      insert into crm.attendance_sessions (user_id, started_at)
+      values ('22222222-0000-0000-0000-0000000000fa', now() - interval '3 hours');
+    `);
+    const closed = Number(fixtureSql(`select crm.auto_logout_idle();`).trim());
+    assert.ok(closed >= 1, 'the idle session must be closed');
+
+    const row = fixtureSql(`
+      select ended_reason || ' ' || (ended_at < now() - interval '30 minutes')
+        from crm.attendance_sessions
+       where user_id = '22222222-0000-0000-0000-0000000000fa' and ended_reason = 'auto_idle'
+       order by started_at desc limit 1;`).trim();
+    assert.equal(row, 'auto_idle true',
+      'the silent hours are backdated away - idle time is not hours worked');
+  });
+
+  it('leaves an active session alone', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Keeps Working');
+    fixtureSql(`
+      insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, started_at)
+      values ('${leadId}', '${USERS.callerA1}', 'not_answered', 0, now() - interval '5 minutes');
+    `);
+    fixtureSql(`select crm.auto_logout_idle();`);
+    const open = fixtureSql(`
+      select count(*) from crm.attendance_sessions
+       where user_id = '${USERS.callerA1}' and ended_at is null;`).trim();
+    assert.equal(open, '1', 'a caller who dialled five minutes ago is not idle');
+  });
+});
+
+describe('everyone can speak in team chat', () => {
+  it('lets a caller reply to the floor', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/messages', headers: auth(a1),
+      payload: { body: 'Acknowledged - on it.' },
+    });
+    assert.equal(res.statusCode, 201);
+  });
+
+  it('stops a caller posting into the other team\'s channel', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const teamB = fixtureSql(`select id from crm.teams where name = 'Team B';`).trim();
+    const res = await h.app.inject({
+      method: 'POST', url: '/messages', headers: auth(a1),
+      payload: { body: 'sneaking in', teamId: teamB },
+    });
+    assert.equal(res.statusCode, 403, 'RLS must fence the channels, not the UI');
   });
 });

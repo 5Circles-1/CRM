@@ -32,7 +32,9 @@ export async function messageRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/messages', async (req, reply) => {
-    const user = req.requireRole('admin', 'ops');
+    // Everyone posts; RLS decides where. A caller writing to another team's
+    // channel gets 403 from the policy, not from a duplicate rule here.
+    const user = req.requireUser();
     const body = z
       .object({
         body: z.string().trim().min(1).max(2000),

@@ -74,6 +74,14 @@ export const JOBS: Job[] = [
     sql: 'select crm.park_exhausted_leads()',
   },
   {
+    name: 'auto_logout_idle',
+    // Runs around the clock on purpose: the forgotten logout happens at
+    // 18:40, and a shiftHoursOnly gate would leave the chair "occupied"
+    // until the next morning's first tick.
+    everyMs: 10 * 60_000,
+    sql: 'select crm.auto_logout_idle(100)',
+  },
+  {
     name: 'purge_expired_sessions',
     everyMs: 6 * 60 * 60_000,
     sql: 'select crm.purge_expired_sessions()',
