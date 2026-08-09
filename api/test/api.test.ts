@@ -2040,6 +2040,9 @@ describe('live floor activity (API)', () => {
     assert.equal(feed.statusCode, 200);
     assert.ok(feed.json().some((r: { lead_id: string }) => r.lead_id === leadId),
       'the interested outcome shows on the floor feed at once');
+  });
+});
+
 describe('a signed-in user can change their own password', () => {
   it('changes it with the current password, and the old one stops working', async () => {
     const token = await login(h.app, EMAILS.callerA2);
