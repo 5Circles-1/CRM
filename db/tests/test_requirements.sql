@@ -462,6 +462,69 @@ update crm.attendance_sessions set ended_at = started_at + interval '1 hour'
 update crm.users set is_active = false, deactivated_at = now()
  where id = '22222222-0000-0000-0000-0000000000fb';
 
+-- R1: performance tiers. RESTRICTED gets zero fresh leads; ACE holds the
+-- floor share; an expired pin lapses back to STANDARD.
+insert into crm.performance_tiers (user_id, tier, pinned_by, pin_reason)
+values (:B2, 'restricted', :ADMIN, 'acceptance: restricted exclusion');
+
+do $$
+declare i int; v uuid;
+begin
+  for i in 1..10 loop
+    insert into crm.leads (source_id, full_name, phone_e164, team_id)
+    values ('33333333-0000-0000-0000-000000000001', 'Tier R '||i,
+            '+9193000'||lpad(i::text,5,'0'), '11111111-0000-0000-0000-000000000002')
+    returning id into v;
+    perform crm.assign_lead(v);
+  end loop;
+end $$;
+
+select crm_test.check(
+  'R1', 'a RESTRICTED caller receives zero fresh leads',
+  (select count(*) = 0 from crm.leads
+    where full_name like 'Tier R %' and caller_id = :B2), null);
+
+select crm_test.check(
+  'R1', 'the exclusion is written to the pass-over audit, with its reason',
+  (select count(*) > 0 from crm.distribution_events
+    where passed_over @> jsonb_build_array(
+      jsonb_build_object('user_id', :B2, 'reason', 'restricted_excluded'))), null);
+
+-- ACE floor share on Team A: pin A1 ace, push 30, expect at least twice A2.
+insert into crm.performance_tiers (user_id, tier, pinned_by, pin_reason)
+values (:A1, 'ace', :ADMIN, 'acceptance: ace floor share');
+
+do $$
+declare i int; v uuid;
+begin
+  for i in 1..30 loop
+    insert into crm.leads (source_id, full_name, phone_e164, team_id)
+    values ('33333333-0000-0000-0000-000000000001', 'Tier A '||i,
+            '+9194000'||lpad(i::text,5,'0'), '11111111-0000-0000-0000-000000000001')
+    returning id into v;
+    perform crm.assign_lead(v);
+  end loop;
+end $$;
+
+select crm_test.check(
+  'R1', 'an ACE caller takes the floor share of a 30-lead batch',
+  (select count(*) filter (where caller_id = :A1)
+        >= 2 * count(*) filter (where caller_id = :A2)
+     from crm.leads where full_name like 'Tier A %'),
+  (select 'ace ' || count(*) filter (where caller_id = :A1)
+        || ' vs ' || count(*) filter (where caller_id = :A2)
+     from crm.leads where full_name like 'Tier A %'));
+
+-- An expired pin must lapse: yesterday's punishment does not outlive itself.
+update crm.performance_tiers
+   set pin_expires_at = now() - interval '1 hour' where user_id = :B2;
+select crm_test.check(
+  'R1', 'an expired RESTRICTED pin falls back to STANDARD automatically',
+  crm.tier_of(:B2) = 'standard', crm.tier_of(:B2));
+
+-- Clean the tier table so later assertions see the pre-tier world.
+delete from crm.performance_tiers;
+
 -- =============================================================================
 -- REQUIREMENT 6: a 9-hour login is visible per person per day
 -- =============================================================================

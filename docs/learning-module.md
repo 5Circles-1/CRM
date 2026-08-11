@@ -21,7 +21,17 @@ here carry the full detail, red flags and troubleshooting tables:
 4. **A connect needs 30+ seconds of real talk.** Outcomes describe what
    happened, not what looks good; job enquiries close as *invalid*, never
    *not interested*.
-5. **You see what is yours.** Callers see their own leads, counsellors their
+5. **Fresh leads follow performance.** Three tiers, recomputed against each
+   other (best walk-in converter over 30 days wins ACE; the weakest may be
+   RESTRICTED): ACE holds 66.7% of fresh leads, STANDARD splits the rest,
+   RESTRICTED receives none. **The road back for RESTRICTED is real and it is
+   worked, not waited for:** re-tap lists, internal transfers and offline
+   imports still flow to you, and conversions earned there count fully toward
+   the same ranking. Every exclusion is written to the audit log with a
+   reason; every pin has a named decision-maker and an expiry, and an expired
+   pin lapses on its own. Nobody is restricted by a formula alone — a pin is
+   a management decision you can see and appeal.
+6. **You see what is yours.** Callers see their own leads, counsellors their
    team, admin everything. That is the database enforcing it, not politeness.
 
 ## Caller track (three sessions, ~40 min each)
