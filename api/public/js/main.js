@@ -11,6 +11,7 @@ import * as dash from './views/dash.js';
 import * as admin from './views/admin.js';
 import * as leads from './views/leads.js';
 import * as people from './views/people.js';
+import * as advisory from './views/advisory.js';
 import * as team from './views/team.js';
 import * as history from './views/history.js';
 import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
@@ -19,6 +20,7 @@ const NAV = [
   { hash: '#/day', label: 'My Pipeline', roles: ['caller', 'counsellor'] },
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
   { hash: '#/collections', label: 'Collections', roles: ['counsellor', 'admin', 'ops'] },
+  { hash: '#/advisory', label: 'Advisory clients', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/leads', label: 'Find lead', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/people', label: 'Performance', roles: ['caller', 'counsellor', 'admin', 'ops'] },
@@ -34,11 +36,11 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, floor, collections, dash, leads, people, score, attendance, admin, lead, team, history,
+  day, floor, collections, advisory, dash, leads, people, score, attendance, admin, lead, team, history,
 };
 
 const TITLES = {
-  day: 'My Pipeline', floor: 'Floor', collections: 'Collections', dash: 'Dashboards',
+  day: 'My Pipeline', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', dash: 'Dashboards',
   leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
   team: 'Team', history: 'Previous months',

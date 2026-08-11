@@ -2135,3 +2135,40 @@ describe('everyone can speak in team chat', () => {
     assert.equal(res.statusCode, 403, 'RLS must fence the channels, not the UI');
   });
 });
+
+describe('advisory clients register', () => {
+  it('a client appears the moment real money is recorded, flagged until MITC and KYC are done', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Paying Client');
+    fixtureSql(`
+      insert into crm.deals (id, lead_id, product_id, counsellor_id, booked_amount)
+      values ('77777777-0000-0000-0000-000000000001', '${leadId}',
+              (select id from crm.products limit 1), '${USERS.counsellorA}', 50000);
+      insert into crm.payments (deal_id, amount, mode, recorded_by)
+      values ('77777777-0000-0000-0000-000000000001', 20000, 'upi', '${USERS.counsellorA}');
+    `);
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(cs) });
+    assert.equal(res.statusCode, 200);
+    const row = res.json().find((r: { deal_id: string }) => r.deal_id === '77777777-0000-0000-0000-000000000001');
+    assert.ok(row, 'paid means listed - booked-but-unpaid does not');
+    assert.equal(row.client_status, 'active');
+    assert.equal(row.mitc_done_at, null, 'checkpoints start pending');
+  });
+
+  it('ticking MITC records who and when, and it cannot be unticked', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'PUT', url: '/advisory/77777777-0000-0000-0000-000000000001',
+      headers: auth(cs), payload: { mitcDone: true },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.json().mitc_done_at);
+    assert.equal(res.json().mitc_by, USERS.counsellorA);
+  });
+
+  it('a caller cannot reach the register at all', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(a1) });
+    assert.equal(res.statusCode, 403);
+  });
+});
