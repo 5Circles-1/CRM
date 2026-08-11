@@ -484,3 +484,98 @@ button.chip:hover { border-color: #c8d4ea; }
 :root[data-theme="dim"] .content { background: var(--bg); }
 :root[data-theme="dim"] .section-h { color: #c9d4e3; }
 :root[data-theme="dim"] .chips .chip:not(.on):not(.hot) { background: #16233a; color: #c9d4e3; border-color: #24365a; }
+
+/* =========================================================================
+   Trading-floor tokens (WP A). Brand from the actual logo: #0281C2 / #076F9E.
+   Numbers are the product: tabular figures everywhere digits update.
+   ========================================================================= */
+:root {
+  --brand: #0281C2;
+  --brand-deep: #076F9E;
+  --gain: #0ca30c;
+  --loss: #d03b3b;
+  --viz-ink: #16202e; --viz-muted: #5b6b7f; --viz-grid: #e3e8ef;
+  --viz-s1:#2a78d6; --viz-s2:#eb6834; --viz-s3:#1baf7a;
+  --viz-s4:#eda100; --viz-s5:#e87ba4; --viz-s6:#008300;
+}
+.num, .mono, .stat .v, .tk-num, .chip b, .viz-bar-value {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* ---- ticker strip ---- */
+.ticker {
+  display: flex; gap: 26px; flex-wrap: wrap; align-items: baseline;
+  padding: 8px 22px; background: var(--sidebar); color: #c9d4e3;
+  border-bottom: 1px solid #1d2c46; font-size: 13px;
+}
+.tk { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; }
+.tk-label { text-transform: uppercase; font-size: 10.5px; letter-spacing: .06em; color: #7e8fa9; }
+.tk-num { color: #fff; font-weight: 700; font-size: 14.5px; }
+.tk-delta { font-size: 11.5px; font-weight: 700; }
+.tk-delta.up { color: #35c76f; }
+.tk-delta.down { color: #ff7a76; }
+.tk-delta.flat { color: #7e8fa9; }
+
+/* ---- circuit breaker ---- */
+.freeze-banner {
+  background: repeating-linear-gradient(135deg, #2b2410, #2b2410 12px, #33290f 12px, #33290f 24px);
+  color: #ffd479; padding: 9px 22px; font-size: 13.5px; letter-spacing: .01em;
+  border-bottom: 1px solid #4a3c12;
+}
+
+/* ---- confetti (WP K): pure CSS pieces, pointer-events none, ~1.4s ---- */
+.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 200; overflow: hidden; }
+.confetti i {
+  position: absolute; top: -12px; width: 9px; height: 14px; display: block;
+  animation: confetti-fall 1.3s ease-in forwards;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(105vh) rotate(540deg); opacity: .9; }
+}
+
+/* =========================================================================
+   DARK THEME - full sweep. Every component reads tokens; charts re-read at
+   draw time. Dark chart steps are the validated dark-surface palette.
+   ========================================================================= */
+:root[data-theme="dark"] {
+  --bg: #0b1322; --panel: #141e33; --ink: #e8ecf4; --muted: #97a4bb;
+  --line: #24304b; --brand: #2ea3e6; --brand-ink: #06263a;
+  --ok: #35c76f; --ok-bg: #11301f; --warn: #f2b23e; --warn-bg: #31270f;
+  --bad: #ff7a76; --bad-bg: #3a1715; --info: #6aa9ff; --info-bg: #14243f;
+  --sidebar: #0a1120; --shadow: 0 1px 2px rgba(0,0,0,.5), 0 1px 10px rgba(0,0,0,.4);
+  --viz-ink: #e8ecf4; --viz-muted: #97a4bb; --viz-grid: #24304b;
+  --viz-s1:#3987e5; --viz-s2:#d95926; --viz-s3:#199e70;
+  --viz-s4:#c98500; --viz-s5:#d55181; --viz-s6:#008300;
+}
+:root[data-theme="dark"] body { background: var(--bg); color: var(--ink); }
+:root[data-theme="dark"] .content { background: var(--bg); }
+:root[data-theme="dark"] .topbar { background: #0e1728; border-color: var(--line); }
+:root[data-theme="dark"] .topbar h1, :root[data-theme="dark"] .userchip b { color: var(--ink); }
+:root[data-theme="dark"] .panel, :root[data-theme="dark"] .stat,
+:root[data-theme="dark"] .leadcard, :root[data-theme="dark"] .modal,
+:root[data-theme="dark"] .alert-panel, :root[data-theme="dark"] .trophy,
+:root[data-theme="dark"] .alert-pop, :root[data-theme="dark"] .msg {
+  background: var(--panel); border-color: var(--line); color: var(--ink);
+}
+:root[data-theme="dark"] .trophy { background: linear-gradient(180deg, #15203a, #101a30); }
+:root[data-theme="dark"] .table th { color: var(--muted); border-color: var(--line); }
+:root[data-theme="dark"] .table td { border-color: var(--line); color: var(--ink); }
+:root[data-theme="dark"] .table tr:hover td { background: #182642; }
+:root[data-theme="dark"] input, :root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  background: #0f1930; color: var(--ink); border-color: var(--line) !important;
+}
+:root[data-theme="dark"] input::placeholder, :root[data-theme="dark"] textarea::placeholder { color: #5c6b85; }
+:root[data-theme="dark"] .btn { background: #182642; color: var(--ink); border-color: var(--line); }
+
+:root[data-theme="dark"] .btn.primary { background: var(--brand); color: #fff; }
+:root[data-theme="dark"] .chips .chip:not(.on) { background: #10192e; color: var(--muted); border-color: var(--line); }
+:root[data-theme="dark"] .section-h, :root[data-theme="dark"] .hint { color: var(--muted); }
+:root[data-theme="dark"] .empty { color: var(--muted); }
+:root[data-theme="dark"] .b-mute { background: #1c2740; color: var(--muted); }
+:root[data-theme="dark"] pre.json { background: #0f1930; border-color: var(--line); color: var(--ink); }
+:root[data-theme="dark"] .viz-bar-track { background: #10192e; }
+:root[data-theme="dark"] .overlay { background: rgba(4, 8, 16, .66); }
+:root[data-theme="dark"] .login, :root[data-theme="dark"] .login-wrap .login { background: var(--panel); color: var(--ink); }
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #26334f; }
+:root[data-theme="dark"] ::-webkit-scrollbar-track { background: #0e1626; }

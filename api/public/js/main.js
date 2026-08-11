@@ -102,17 +102,30 @@ function renderShell(app) {
           <button class="btn small" id="pwd-btn" title="Change my password">Password</button>
           <button class="btn small" id="logout-btn">Log out</button>
         </div>
+        <div id="ticker-strip"></div>
+        <div id="freeze-banner"></div>
         <div class="content" id="outlet"></div>
       </div>
     </div>`));
 
   // Dim theme: dark chrome, light cards - remembered per browser. The cards
   // stay light because every chart colour was validated on a light surface.
-  const applyTheme = () => document.documentElement.dataset.theme = localStorage.getItem('crm-theme') ?? '';
+  // Two full themes, light and dark, both token-driven. "dim" (the old
+  // half-measure) maps to dark so nobody's saved choice breaks. Default
+  // follows the operating system.
+  const applyTheme = () => {
+    let t = localStorage.getItem('crm-theme');
+    if (t === 'dim') t = 'dark';
+    if (t === null) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : '';
+    document.documentElement.dataset.theme = t;
+    return t;
+  };
   applyTheme();
   document.getElementById('theme-btn').addEventListener('click', () => {
-    localStorage.setItem('crm-theme', localStorage.getItem('crm-theme') === 'dim' ? '' : 'dim');
+    const cur = applyTheme();
+    localStorage.setItem('crm-theme', cur === 'dark' ? 'light' : 'dark');
     applyTheme();
+    route(); // charts read their colours at draw time, so redraw the page
   });
 
   document.getElementById('pwd-btn').addEventListener('click', () => changeMyPassword());
@@ -130,6 +143,9 @@ function renderShell(app) {
   startAlerts();
   startLiveRefresh();
   refreshShift();
+  startTicker();
+  startFreezeBanner();
+  celebrate(me);
 }
 
 /**
@@ -167,6 +183,95 @@ function changeMyPassword() {
       toast(err.message, 'err');
     }
   });
+}
+
+/* ---- the ticker strip: five numbers, deltas vs yesterday (WP A4) ---- */
+
+const tickerDelta = (today, yday, fmt = (v) => String(v)) => {
+  const d = Number(today) - Number(yday);
+  const cls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat';
+  const glyph = d > 0 ? '\u25b2' : d < 0 ? '\u25bc' : '\u2022';
+  return `<span class="tk-num">${esc(fmt(today))}</span>
+          <span class="tk-delta ${cls}">${glyph} ${esc(fmt(Math.abs(d)))}</span>`;
+};
+
+async function drawTicker() {
+  const host = document.getElementById('ticker-strip');
+  if (!host) return;
+  try {
+    const t = await get('/dashboards/ticker');
+    const inr = (v) => '\u20b9' + Number(v).toLocaleString('en-IN');
+    host.innerHTML = `
+      <div class="ticker">
+        <span class="tk"><span class="tk-label">Collected today</span>${tickerDelta(t.collected_today, t.collected_yday, inr)}</span>
+        <span class="tk"><span class="tk-label">Fresh leads</span>${tickerDelta(t.leads_today, t.leads_yday)}</span>
+        <span class="tk"><span class="tk-label">Walk-ins</span>${tickerDelta(t.walkins_today, t.walkins_yday)}</span>
+        <span class="tk"><span class="tk-label">Conversions</span>${tickerDelta(t.deals_today, t.deals_yday)}</span>
+        <span class="tk"><span class="tk-label">On floor</span><span class="tk-num">${Number(t.on_floor)}</span></span>
+      </div>`;
+  } catch { host.innerHTML = ''; }
+}
+let tickerTimer = null;
+function startTicker() {
+  drawTicker();
+  if (tickerTimer) clearInterval(tickerTimer);
+  tickerTimer = setInterval(drawTicker, 60_000);
+  tickerTimer.unref?.();
+}
+
+/* ---- circuit breaker banner during the lunch freeze (WP C) ---- */
+
+let freezeCfg = null;
+async function startFreezeBanner() {
+  try {
+    const cfg = await get('/meta/ui-settings');
+    freezeCfg = {
+      start: Number(cfg['freeze.start_minutes'] ?? 840),
+      end: Number(cfg['freeze.end_minutes'] ?? 870),
+    };
+  } catch { freezeCfg = { start: 840, end: 870 }; }
+  const tick = () => {
+    const host = document.getElementById('freeze-banner');
+    if (!host) return;
+    const ist = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
+    const mow = ist.getHours() * 60 + ist.getMinutes();
+    const inFreeze = ist.getDay() !== 0 && mow >= freezeCfg.start && mow < freezeCfg.end;
+    if (!inFreeze) { host.innerHTML = ''; return; }
+    const left = freezeCfg.end * 60 - (mow * 60 + ist.getSeconds());
+    const mm = String(Math.floor(left / 60)).padStart(2, '0');
+    const ss = String(left % 60).padStart(2, '0');
+    const until = `${Math.floor(freezeCfg.end / 60) % 12 || 12}:${String(freezeCfg.end % 60).padStart(2, '0')} pm`;
+    host.innerHTML = `<div class="freeze-banner">\u23f8 Circuit breaker \u2014 lunch hold.
+      Nothing moves and no SLA runs. Resumes ${esc(until)} \u00b7 <b class="mono">${mm}:${ss}</b></div>`;
+  };
+  tick();
+  setInterval(tick, 1000);
+}
+
+/* ---- once-a-day celebration (WP K) ---- */
+
+function celebrate(user) {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const key = `crm-pop-${user.id}-${today}`;
+  if (localStorage.getItem(key) || localStorage.getItem('crm-pop-off') === '1') return;
+  localStorage.setItem(key, '1');
+
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    toast('\ud83c\udf89 New day on the floor \u2014 go get it.');
+    return;
+  }
+  const host = h('<div class="confetti" aria-hidden="true"></div>');
+  document.body.appendChild(host);
+  const colours = ['#0281C2', '#076F9E', '#eda100', '#1baf7a', '#e87ba4'];
+  for (let i = 0; i < 80; i += 1) {
+    const bit = document.createElement('i');
+    bit.style.left = `${Math.random() * 100}vw`;
+    bit.style.background = colours[i % colours.length];
+    bit.style.animationDelay = `${Math.random() * 0.3}s`;
+    bit.style.transform = `rotate(${Math.random() * 360}deg)`;
+    host.appendChild(bit);
+  }
+  setTimeout(() => host.remove(), 1600);
 }
 
 async function refreshShift() {

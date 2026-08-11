@@ -124,6 +124,41 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
+  /**
+   * The ticker strip: five numbers with yesterday deltas. Scoped by RLS on
+   * purpose - a caller's ticker is their own market, the admin's is the floor.
+   */
+  app.get('/dashboards/ticker', async (req) => {
+    req.requireUser();
+    return req.tx((q) =>
+      q.one(
+        `with days as (
+           select crm.ist_date(now()) as today, crm.ist_date(now()) - 1 as yday
+         )
+         select
+           (select coalesce(sum(p.amount),0) from crm.payments p, days d
+             where crm.ist_date(p.paid_at) = d.today)                       as collected_today,
+           (select coalesce(sum(p.amount),0) from crm.payments p, days d
+             where crm.ist_date(p.paid_at) = d.yday)                        as collected_yday,
+           (select count(*) from crm.leads l, days d
+             where crm.ist_date(l.created_at) = d.today)::int               as leads_today,
+           (select count(*) from crm.leads l, days d
+             where crm.ist_date(l.created_at) = d.yday)::int                as leads_yday,
+           (select count(*) from crm.leads l, days d
+             where crm.ist_date(l.walked_in_at) = d.today)::int             as walkins_today,
+           (select count(*) from crm.leads l, days d
+             where crm.ist_date(l.walked_in_at) = d.yday)::int              as walkins_yday,
+           (select count(*) from crm.deals dl, days d
+             where crm.ist_date(dl.booked_at) = d.today)::int               as deals_today,
+           (select count(*) from crm.deals dl, days d
+             where crm.ist_date(dl.booked_at) = d.yday)::int                as deals_yday,
+           (select count(*) from crm.attendance_sessions s
+             where s.ended_at is null
+               and crm.ist_date(s.started_at) = crm.ist_date(now()))::int   as on_floor`,
+      ),
+    );
+  });
+
   /** Collected against the office breakeven, with the pace check. */
   app.get('/dashboards/thermometer', async (req) => {
     req.requireRole('counsellor', 'admin', 'ops', 'viewer');

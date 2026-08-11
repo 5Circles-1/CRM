@@ -433,7 +433,9 @@ select crm_test.check(
 
 select crm_test.check(
   'R5', 'a two-day allowance carries across the Sunday without counting it',
-  crm.add_working_minutes('2026-08-08 09:00:00+05:30', 1080)
+  -- A working day is 510 minutes now that lunch (14:00-14:30) is off the
+  -- clock: Saturday 510 + Monday 510 lands exactly at Monday close.
+  crm.add_working_minutes('2026-08-08 09:00:00+05:30', 1020)
     = '2026-08-10 18:30:00+05:30'::timestamptz, null);
 
 select crm_test.check(
@@ -524,6 +526,23 @@ select crm_test.check(
 
 -- Clean the tier table so later assertions see the pre-tier world.
 delete from crm.performance_tiers;
+
+-- R5: the lunch freeze is a hole in working time. 2026-08-11 is a Tuesday.
+select crm_test.check(
+  'R5', 'a 30-minute SLA starting 13:50 lands at 14:50 - lunch is not counted',
+  crm.add_working_minutes('2026-08-11 13:50:00+05:30', 30)
+    = '2026-08-11 14:50:00+05:30'::timestamptz, null);
+
+select crm_test.check(
+  'R5', 'time inside the freeze window starts counting only at 14:30',
+  crm.add_working_minutes('2026-08-11 14:10:00+05:30', 10)
+    = '2026-08-11 14:40:00+05:30'::timestamptz, null);
+
+select crm_test.check(
+  'R5', 'in_freeze knows the window edges',
+  crm.in_freeze('2026-08-11 14:10:00+05:30')
+  and not crm.in_freeze('2026-08-11 14:35:00+05:30')
+  and not crm.in_freeze('2026-08-09 14:10:00+05:30'), null);  -- Sunday: floor closed anyway
 
 -- =============================================================================
 -- REQUIREMENT 6: a 9-hour login is visible per person per day

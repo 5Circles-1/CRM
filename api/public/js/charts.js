@@ -19,12 +19,29 @@ import { esc, h } from './util.js';
  * "series 3", so nothing can mistake a category for a judgement.
  */
 
+const tok = (name, fallback) => {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+};
+
+// Both palettes are validated sets for their surface (light on near-white,
+// dark steps against the dark card surface); the tokens select between them,
+// and charts re-read them at draw time so a theme change redraws correctly.
 export const SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'];
+const seriesNow = () => [1, 2, 3, 4, 5, 6].map((i) => tok(`--viz-s${i}`, SERIES[i - 1]));
 export const STATUS = { good: '#0ca30c', warning: '#fab219', serious: '#ec835a', critical: '#d03b3b' };
 
-const INK = '#16202e';
-const MUTED = '#5b6b7f';
-const GRID = '#e3e8ef';
+let INK = '#16202e';
+let MUTED = '#5b6b7f';
+let GRID = '#e3e8ef';
+let SURF = '#ffffff';
+function readTokens() {
+  INK = tok('--viz-ink', '#16202e');
+  MUTED = tok('--viz-muted', '#5b6b7f');
+  GRID = tok('--viz-grid', '#e3e8ef');
+  SURF = tok('--panel', '#ffffff');
+  SERIES.splice(0, SERIES.length, ...seriesNow());
+}
 
 const svgNS = 'http://www.w3.org/2000/svg';
 const el = (name, attrs = {}) => {
@@ -97,6 +114,7 @@ function hideTip() {
  * second scale would let the reader see a correlation the data does not have.
  */
 export function lineChart(rows, opts) {
+  readTokens();
   const {
     x, series, height = 220,
     formatX = (v) => String(v),
@@ -160,7 +178,7 @@ export function lineChart(rows, opts) {
     // A 2px surface ring keeps overlapping points readable where lines cross.
     rows.forEach((r, i) => {
       svg.appendChild(el('circle', {
-        cx: xAt(i), cy: yAt(r[s.key]), r: 4, fill: colour, stroke: '#fff', 'stroke-width': 2,
+        cx: xAt(i), cy: yAt(r[s.key]), r: 4, fill: colour, stroke: SURF, 'stroke-width': 2,
       }));
     });
   });
@@ -210,6 +228,7 @@ export function lineChart(rows, opts) {
  * telling two colours apart.
  */
 export function donutChart(slices, opts = {}) {
+  readTokens();
   const { size = 220, centreLabel = '', centreValue = '' } = opts;
   const kept = slices.filter((s) => Number(s.value) > 0);
   const wrap = h('<div class="viz viz-donut"></div>');
@@ -240,7 +259,7 @@ export function donutChart(slices, opts = {}) {
           L ${p(inner, end)} A ${inner} ${inner} 0 ${large} 0 ${p(inner, angle)} Z`,
       fill: SERIES[i % SERIES.length],
       // 2px surface gap between segments, so adjacent fills never merge.
-      stroke: '#fff', 'stroke-width': 2,
+      stroke: SURF, 'stroke-width': 2,
     });
     path.style.cursor = 'default';
     path.addEventListener('pointerenter', (e) =>
@@ -279,6 +298,7 @@ export function donutChart(slices, opts = {}) {
  * length as hue and spend the only free channel on what the bar already shows.
  */
 export function barChart(rows, opts = {}) {
+  readTokens();
   const { format = (v) => String(v), highlight = null } = opts;
   const wrap = h('<div class="viz viz-bars"></div>');
   if (rows.length === 0) {
