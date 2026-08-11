@@ -259,6 +259,7 @@ function newUserModal(teams, onDone) {
         <label class="f">Role
           <select name="role">
             <option value="caller">caller</option><option value="counsellor">counsellor</option>
+            <option value="mentor">mentor</option>
             <option value="ops">ops</option><option value="viewer">viewer</option><option value="admin">admin</option>
           </select>
         </label>

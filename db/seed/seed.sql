@@ -14,6 +14,7 @@ insert into crm.users (id, full_name, email, role, employee_code, dialing_msisdn
   ('22222222-0000-0000-0000-00000000000a', 'Admin User',    'admin@5circles.test',  'admin',      'ADM-01', null),
   ('22222222-0000-0000-0000-00000000000b', 'Ops User',      'ops@5circles.test',    'ops',        'OPS-01', null),
   ('22222222-0000-0000-0000-00000000000c', 'Founder',       'founder@5circles.test','viewer',     'FND-01', null),
+  ('22222222-0000-0000-0000-00000000000d', 'Mentor One',    'mentor@5circles.test', 'mentor',     'MNT-01', null),
   -- Team A
   ('22222222-0000-0000-0000-000000000001', 'Caller A1',     'a1@5circles.test',     'caller',     'CLR-01', '+919000000001'),
   ('22222222-0000-0000-0000-000000000002', 'Caller A2',     'a2@5circles.test',     'caller',     'CLR-02', '+919000000002'),

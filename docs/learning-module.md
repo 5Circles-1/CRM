@@ -34,6 +34,37 @@ here carry the full detail, red flags and troubleshooting tables:
 6. **You see what is yours.** Callers see their own leads, counsellors their
    team, admin everything. That is the database enforcing it, not politeness.
 
+## Mentor track (one session — and the health-chip rulebook)
+
+A paying client appears on the **Mentors** tab the moment money is recorded —
+nobody adds them by hand. The job is one habit: **after every client contact,
+log the touchpoint in three taps** (channel → outcome → upsell potential).
+Notes, "what to offer" and the next follow-up date are optional but are what
+make the timeline worth reading in six months.
+
+The health chip is **computed, never set by hand**. The exact rules (the
+day-counts are Settings keys, changeable by admin without code):
+
+| Colour | You are here because… | Default trigger |
+|---|---|---|
+| 🔴 Red | the last outcome was **concern raised** | immediately |
+| 🔴 Red | the client has **never** been touched since paying | 7 days after first payment (`mentor.untouched_red_days`) |
+| 🔴 Red | the client has gone quiet | last touch > 21 days old (`mentor.health_red_days`) |
+| 🔴 Red | a promised follow-up is badly late | > 3 days past it (`mentor.followup_grace_days`) |
+| 🟠 Amber | not yet touched, still inside the first week | — |
+| 🟠 Amber | a touch is getting old | last touch > 10 days (`mentor.health_amber_days`) |
+| 🟠 Amber | last attempt didn't land | outcome was *no answer* / *rescheduled* |
+| 🟠 Amber | a follow-up is due today or just slipped | — |
+| 🟢 Green | touched recently, went fine, nothing overdue | — |
+
+Work the book **red first, then amber, oldest silence first** — the default
+sort already does this. Upsell flags (High/Medium/Low) build the **warm
+pipeline** counsellors see; flag honestly, because a counsellor will call.
+
+| # | Session | Practice task | You pass when |
+|---|---|---|---|
+| 1 | The book, the 3-tap log, health | Log 5 touchpoints incl. one concern and one upsell flag; watch the chips move | You can say *why* each of your clients is its colour |
+
 ## Caller track (three sessions, ~40 min each)
 
 | # | Session | Practice task | You pass when |

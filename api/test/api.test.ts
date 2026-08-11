@@ -2172,3 +2172,127 @@ describe('advisory clients register', () => {
     assert.equal(res.statusCode, 403);
   });
 });
+
+describe('mentors module', () => {
+  const PAID_DEAL = '77777777-0000-0000-0000-000000000002';
+  const UNPAID_DEAL = '77777777-0000-0000-0000-000000000003';
+
+  before(() => {
+    const leadA = makeLeadFor(USERS.callerA1, 'Warm Paying Client');
+    const leadB = makeLeadFor(USERS.callerA1, 'Cold Booked Client');
+    fixtureSql(`
+      insert into crm.deals (id, lead_id, product_id, counsellor_id, team_id, booked_amount)
+      values ('${PAID_DEAL}', '${leadA}', (select id from crm.products limit 1),
+              '${USERS.counsellorA}', crm.team_of('${USERS.callerA1}', current_date), 40000),
+             ('${UNPAID_DEAL}', '${leadB}', (select id from crm.products limit 1),
+              '${USERS.counsellorA}', crm.team_of('${USERS.callerA1}', current_date), 40000);
+      insert into crm.payments (deal_id, amount, mode, recorded_by)
+      values ('${PAID_DEAL}', 40000, 'upi', '${USERS.counsellorA}');
+    `);
+  });
+
+  it('a mentor reads the book: the paid client is in, the unpaid deal is not', async () => {
+    const m = await login(h.app, EMAILS.mentor);
+    const res = await h.app.inject({ method: 'GET', url: '/mentors/book', headers: auth(m) });
+    assert.equal(res.statusCode, 200);
+    const { clients, mentors } = res.json();
+    assert.ok(clients.some((c: { deal_id: string }) => c.deal_id === PAID_DEAL),
+      'money recorded means listed');
+    assert.ok(!clients.some((c: { deal_id: string }) => c.deal_id === UNPAID_DEAL),
+      'booked without payment is not a client');
+    assert.ok(mentors.some((u: { id: string }) => u.id === USERS.mentor),
+      'the mentors directory lists the mentor');
+    const row = clients.find((c: { deal_id: string }) => c.deal_id === PAID_DEAL);
+    assert.equal(row.health, 'amber', 'paid today, never touched: amber until worked');
+  });
+
+  it('a caller cannot open the book at all', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/mentors/book', headers: auth(a1) });
+    assert.equal(res.statusCode, 403);
+  });
+
+  it('three taps log a touchpoint and the health chip moves', async () => {
+    const m = await login(h.app, EMAILS.mentor);
+    const logged = await h.app.inject({
+      method: 'POST', url: `/mentors/${PAID_DEAL}/touchpoints`, headers: auth(m),
+      payload: { channel: 'call', outcome: 'reached_positive', upsell: 'high', upsellNote: 'annual plan' },
+    });
+    assert.equal(logged.statusCode, 201);
+    assert.equal(logged.json().mentor_id, USERS.mentor, 'the log is signed by the logger');
+
+    const res = await h.app.inject({ method: 'GET', url: '/mentors/book', headers: auth(m) });
+    const row = res.json().clients.find((c: { deal_id: string }) => c.deal_id === PAID_DEAL);
+    assert.equal(row.health, 'green', 'touched today and positive: green');
+    assert.equal(row.upsell_potential, 'high');
+
+    const tl = await h.app.inject({
+      method: 'GET', url: `/mentors/${PAID_DEAL}/timeline`, headers: auth(m),
+    });
+    assert.equal(tl.statusCode, 200);
+    assert.equal(tl.json().touchpoints.length, 1);
+    assert.equal(tl.json().touchpoints[0].mentor_name, 'Mentor One');
+  });
+
+  it('a concern raised turns the client red immediately', async () => {
+    const m = await login(h.app, EMAILS.mentor);
+    await h.app.inject({
+      method: 'POST', url: `/mentors/${PAID_DEAL}/touchpoints`, headers: auth(m),
+      payload: { channel: 'whatsapp', outcome: 'reached_concern' },
+    });
+    const res = await h.app.inject({ method: 'GET', url: '/mentors/book', headers: auth(m) });
+    const row = res.json().clients.find((c: { deal_id: string }) => c.deal_id === PAID_DEAL);
+    assert.equal(row.health, 'red');
+  });
+
+  it('touchpoints cannot be logged on an unpaid deal or dated in the future', async () => {
+    const m = await login(h.app, EMAILS.mentor);
+    const unpaid = await h.app.inject({
+      method: 'POST', url: `/mentors/${UNPAID_DEAL}/touchpoints`, headers: auth(m),
+      payload: { channel: 'call', outcome: 'reached_neutral' },
+    });
+    assert.equal(unpaid.statusCode, 404, 'no money, no client, no log');
+
+    const future = await h.app.inject({
+      method: 'POST', url: `/mentors/${PAID_DEAL}/touchpoints`, headers: auth(m),
+      payload: { channel: 'call', outcome: 'reached_neutral', touchedOn: '2030-01-01' },
+    });
+    assert.equal(future.statusCode, 400);
+  });
+
+  it('the warm pipeline is team-fenced: counsellor A sees the upsell, counsellor B does not', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const resA = await h.app.inject({ method: 'GET', url: '/mentors/book?upsell=high', headers: auth(ca) });
+    assert.equal(resA.statusCode, 200);
+    assert.ok(resA.json().clients.some((c: { deal_id: string }) => c.deal_id === PAID_DEAL),
+      'the team counsellor sees the flagged client');
+
+    const cb = await login(h.app, EMAILS.counsellorB);
+    const resB = await h.app.inject({ method: 'GET', url: '/mentors/book', headers: auth(cb) });
+    assert.ok(!resB.json().clients.some((c: { deal_id: string }) => c.deal_id === PAID_DEAL),
+      'RLS keeps the other team out - row filtering, not menu hiding');
+  });
+
+  it('assignment is an admin act, refused for non-mentor targets', async () => {
+    const m = await login(h.app, EMAILS.mentor);
+    const notAdmin = await h.app.inject({
+      method: 'PUT', url: `/mentors/${PAID_DEAL}/assign`, headers: auth(m),
+      payload: { mentorId: USERS.mentor },
+    });
+    assert.equal(notAdmin.statusCode, 403);
+
+    const admin = await login(h.app, EMAILS.admin);
+    const toCaller = await h.app.inject({
+      method: 'PUT', url: `/mentors/${PAID_DEAL}/assign`, headers: auth(admin),
+      payload: { mentorId: USERS.callerA1 },
+    });
+    assert.equal(toCaller.statusCode, 400, 'a caller is not a mentor');
+
+    const ok = await h.app.inject({
+      method: 'PUT', url: `/mentors/${PAID_DEAL}/assign`, headers: auth(admin),
+      payload: { mentorId: USERS.mentor },
+    });
+    assert.equal(ok.statusCode, 200);
+    assert.equal(ok.json().mentor_id, USERS.mentor);
+  });
+});

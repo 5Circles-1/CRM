@@ -1061,6 +1061,200 @@ select crm_test.check(
     where lead_id = (select id from crm.leads where full_name = 'Will Visit Lead')), null);
 
 -- =============================================================================
+-- MENTORS (MEN): the paying-client book, the computed health chip, and the
+-- mentor's row-level fence. One fixture client per health rule, so each rule
+-- in the training module's table has an assertion with its exact day-counts.
+-- =============================================================================
+
+do $$
+declare
+  v_src     uuid := '33333333-0000-0000-0000-000000000001';
+  v_cnsA    uuid := '22222222-0000-0000-0000-000000000005';
+  v_mentor  uuid := '22222222-0000-0000-0000-00000000000d';
+  v_teamA   uuid := '11111111-0000-0000-0000-000000000001';
+  v_prod    uuid := '44444444-0000-0000-0000-000000000001';
+  v_lead    uuid;
+  i         int := 0;
+  v_name    text[];
+  v_deal    uuid;
+  -- name, deal suffix, days since first payment
+  fixtures  text[][] := array[
+    ['Mentor Client Green',     '01', '0'],
+    ['Mentor Client Amber',     '02', '30'],
+    ['Mentor Client Concern',   '03', '30'],
+    ['Mentor Client Silent',    '04', '60'],
+    ['Mentor Client Fresh',     '05', '0'],
+    ['Mentor Client Forgotten', '06', '10'],
+    ['Mentor Client Slipped',   '07', '30'],
+    ['Mentor Client Promise',   '08', '30']
+  ];
+begin
+  foreach v_name slice 1 in array fixtures loop
+    i := i + 1;
+    insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status, closed_at)
+    values (v_src, v_name[1], '+91955520000' || i, null, v_teamA, 'won',
+            now() - make_interval(days => v_name[3]::int))
+    returning id into v_lead;
+
+    v_deal := ('88888888-0000-0000-0000-0000000000' || v_name[2])::uuid;
+    insert into crm.deals (id, lead_id, product_id, counsellor_id, team_id, booked_amount)
+    values (v_deal, v_lead, v_prod, v_cnsA, v_teamA, 25000);
+    insert into crm.payments (deal_id, amount, mode, recorded_by, paid_at)
+    values (v_deal, 25000, 'upi', v_cnsA, now() - make_interval(days => v_name[3]::int));
+  end loop;
+
+  -- One booked-but-unpaid deal: money not received means not a client.
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status, closed_at)
+  values (v_src, 'Booked Not Paid', '+919555200009', null, v_teamA, 'won', now())
+  returning id into v_lead;
+  insert into crm.deals (id, lead_id, product_id, counsellor_id, team_id, booked_amount)
+  values ('88888888-0000-0000-0000-000000000009', v_lead, v_prod, v_cnsA, v_teamA, 25000);
+
+  -- The touchpoints that drive each health rule (superuser insert: fixtures).
+  insert into crm.mentor_touchpoints (deal_id, mentor_id, touched_on, channel, outcome, upsell, upsell_note, next_touch_on)
+  values
+    -- Green: touched today, went fine.
+    ('88888888-0000-0000-0000-000000000001', v_mentor, crm.ist_date(now()), 'call', 'reached_positive', 'none', null, null),
+    -- Amber by age: last touch 12 days old (amber at >10, red at >21).
+    ('88888888-0000-0000-0000-000000000002', v_mentor, crm.ist_date(now()) - 12, 'whatsapp', 'reached_positive', 'high', 'annual renewal', null),
+    -- Red: concern raised, immediately.
+    ('88888888-0000-0000-0000-000000000003', v_mentor, crm.ist_date(now()), 'call', 'reached_concern', 'none', null, null),
+    -- Red by silence: last touch 30 days old.
+    ('88888888-0000-0000-0000-000000000004', v_mentor, crm.ist_date(now()) - 30, 'call', 'reached_positive', 'none', null, null),
+    -- Amber: follow-up promised yesterday, inside the 3-day grace.
+    ('88888888-0000-0000-0000-000000000007', v_mentor, crm.ist_date(now()) - 2, 'call', 'reached_positive', 'none', null, crm.ist_date(now()) - 1),
+    -- Red: follow-up 5 days late, past the grace.
+    ('88888888-0000-0000-0000-000000000008', v_mentor, crm.ist_date(now()) - 6, 'call', 'reached_positive', 'none', null, crm.ist_date(now()) - 5);
+
+  -- Assign the green client to the mentor, the way the admin screen does it.
+  insert into crm.advisory_checkpoints (deal_id, mentor_id)
+  values ('88888888-0000-0000-0000-000000000001', v_mentor);
+end $$;
+
+select crm_test.check(
+  'MEN', 'money recorded puts a client in the book; booked-but-unpaid stays out',
+  (select count(*) = 8 from crm.v_mentor_book where full_name like 'Mentor Client %')
+  and not exists (select 1 from crm.v_mentor_book where full_name = 'Booked Not Paid'),
+  null);
+
+select crm_test.check(
+  'MEN', 'touched today and fine means green',
+  (select health = 'green' from crm.v_mentor_book where full_name = 'Mentor Client Green'), null);
+
+select crm_test.check(
+  'MEN', 'a 12-day-old touch means amber',
+  (select health = 'amber' from crm.v_mentor_book where full_name = 'Mentor Client Amber'), null);
+
+select crm_test.check(
+  'MEN', 'a concern raised today means red, regardless of recency',
+  (select health = 'red' from crm.v_mentor_book where full_name = 'Mentor Client Concern'), null);
+
+select crm_test.check(
+  'MEN', 'thirty days of silence means red',
+  (select health = 'red' from crm.v_mentor_book where full_name = 'Mentor Client Silent'), null);
+
+select crm_test.check(
+  'MEN', 'paid today and never touched starts amber, not red',
+  (select health = 'amber' from crm.v_mentor_book where full_name = 'Mentor Client Fresh'), null);
+
+select crm_test.check(
+  'MEN', 'never touched ten days after paying means red',
+  (select health = 'red' from crm.v_mentor_book where full_name = 'Mentor Client Forgotten'), null);
+
+select crm_test.check(
+  'MEN', 'a follow-up one day late is amber - inside the grace window',
+  (select health = 'amber' from crm.v_mentor_book where full_name = 'Mentor Client Slipped'), null);
+
+select crm_test.check(
+  'MEN', 'a follow-up five days late is red - past the grace window',
+  (select health = 'red' from crm.v_mentor_book where full_name = 'Mentor Client Promise'), null);
+
+select crm_test.check(
+  'MEN', 'the latest upsell flag surfaces on the book row',
+  (select upsell_potential = 'high' and upsell_note = 'annual renewal'
+     from crm.v_mentor_book where full_name = 'Mentor Client Amber'), null);
+
+select crm_test.check(
+  'MEN', 'the assigned mentor shows on the book row',
+  (select mentor_name = 'Mentor One'
+     from crm.v_mentor_book where full_name = 'Mentor Client Green'), null);
+
+-- A mentor with a team membership still never enters lead distribution:
+-- eligibility is role-gated, not membership-gated.
+do $$
+begin
+  insert into crm.team_memberships (user_id, team_id, rotation_order, period)
+  values ('22222222-0000-0000-0000-00000000000d',
+          '11111111-0000-0000-0000-000000000001', 99, daterange(current_date, null, '[)'));
+end $$;
+
+select crm_test.check(
+  'MEN', 'a mentor never appears among eligible callers, membership or not',
+  (select count(*) = 0 from crm.eligible_callers('11111111-0000-0000-0000-000000000001')
+    where user_id = '22222222-0000-0000-0000-00000000000d'), null);
+
+delete from crm.team_memberships
+ where user_id = '22222222-0000-0000-0000-00000000000d';
+
+-- The mentor's row-level fence, tested as the app role exactly like R9.
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-00000000000d', false) as _ \gset
+
+select crm_test.check(
+  'MEN', 'a mentor sees a paying client''s lead',
+  (select count(*) = 1 from crm.leads where full_name = 'Mentor Client Green'), null);
+
+select crm_test.check(
+  'MEN', 'a mentor cannot see a lead without money against it',
+  (select count(*) = 0 from crm.leads
+    where full_name in ('Booked Not Paid', 'Will Visit Lead')), null);
+
+select crm_test.check(
+  'MEN', 'a mentor reads the book through RLS and every row is a paying client',
+  (select count(*) > 0 and count(*) = count(*) filter (where paid_amount > 0)
+     from crm.v_mentor_book), null);
+
+do $$
+begin
+  insert into crm.mentor_touchpoints (deal_id, mentor_id, touched_on, channel, outcome)
+  values ('88888888-0000-0000-0000-000000000005',
+          '22222222-0000-0000-0000-00000000000d', crm.ist_date(now()), 'call', 'reached_neutral');
+  perform crm_test.check('MEN', 'a mentor logs a touchpoint as themselves', true, null);
+exception when insufficient_privilege then
+  perform crm_test.check('MEN', 'a mentor logs a touchpoint as themselves', false,
+                         'insert was refused');
+end $$;
+
+do $$
+begin
+  insert into crm.mentor_touchpoints (deal_id, mentor_id, touched_on, channel, outcome)
+  values ('88888888-0000-0000-0000-000000000005',
+          '22222222-0000-0000-0000-000000000005', crm.ist_date(now()), 'call', 'reached_neutral');
+  perform crm_test.check('MEN', 'a touchpoint cannot be logged in someone else''s name', false,
+                         'the forged insert unexpectedly succeeded');
+exception when insufficient_privilege then
+  perform crm_test.check('MEN', 'a touchpoint cannot be logged in someone else''s name', true, null);
+end $$;
+
+do $$
+begin
+  update crm.mentor_touchpoints set note = 'rewritten history'
+   where deal_id = '88888888-0000-0000-0000-000000000005';
+  perform crm_test.check('MEN', 'the touchpoint log is append-only for the app role', false,
+                         'the update unexpectedly succeeded');
+exception when insufficient_privilege then
+  perform crm_test.check('MEN', 'the touchpoint log is append-only for the app role', true, null);
+end $$;
+
+-- A caller sees none of it: post-sale notes are not floor reading.
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false) as _ \gset
+select crm_test.check(
+  'MEN', 'a caller cannot read mentor touchpoints at all',
+  (select count(*) = 0 from crm.mentor_touchpoints), null);
+
+reset role;
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

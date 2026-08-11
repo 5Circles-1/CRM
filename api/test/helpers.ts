@@ -31,6 +31,7 @@ export const USERS = {
   callerB2: '22222222-0000-0000-0000-000000000004',
   counsellorA: '22222222-0000-0000-0000-000000000005',
   counsellorB: '22222222-0000-0000-0000-000000000006',
+  mentor: '22222222-0000-0000-0000-00000000000d',
 } as const;
 
 export const EMAILS = {
@@ -40,6 +41,8 @@ export const EMAILS = {
   callerA2: 'a2@5circles.test',
   callerB1: 'b1@5circles.test',
   counsellorA: 'ca@5circles.test',
+  counsellorB: 'cb@5circles.test',
+  mentor: 'mentor@5circles.test',
 } as const;
 
 export const SOURCES = {

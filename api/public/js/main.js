@@ -12,6 +12,7 @@ import * as admin from './views/admin.js';
 import * as leads from './views/leads.js';
 import * as people from './views/people.js';
 import * as advisory from './views/advisory.js';
+import * as mentors from './views/mentors.js';
 import * as team from './views/team.js';
 import * as history from './views/history.js';
 import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
@@ -21,27 +22,28 @@ const NAV = [
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
   { hash: '#/collections', label: 'Collections', roles: ['counsellor', 'admin', 'ops'] },
   { hash: '#/advisory', label: 'Advisory clients', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/mentors', label: 'Mentors', roles: ['mentor', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/leads', label: 'Find lead', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/people', label: 'Performance', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/history', label: 'Previous months', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/team', label: 'Team', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/team', label: 'Team', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
   { hash: '#/score', label: 'My Score', roles: ['caller', 'counsellor'] },
-  { hash: '#/attendance', label: 'Attendance', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/attendance', label: 'Attendance', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
   { hash: '#/admin', label: 'Admin', roles: ['admin', 'ops'] },
 ];
 
 const DEFAULT_ROUTE = {
-  caller: '#/day', counsellor: '#/floor', ops: '#/dash', admin: '#/floor', viewer: '#/dash',
+  caller: '#/day', counsellor: '#/floor', mentor: '#/mentors', ops: '#/dash', admin: '#/floor', viewer: '#/dash',
 };
 
 const VIEWS = {
-  day, floor, collections, advisory, dash, leads, people, score, attendance, admin, lead, team, history,
+  day, floor, collections, advisory, mentors, dash, leads, people, score, attendance, admin, lead, team, history,
 };
 
 const TITLES = {
-  day: 'My Pipeline', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', dash: 'Dashboards',
-  leads: 'Find lead', people: 'Performance', score: 'My Score',
+  day: 'My Pipeline', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', mentors: 'Mentors',
+  dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
   team: 'Team', history: 'Previous months',
 };

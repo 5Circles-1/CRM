@@ -68,7 +68,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       .object({
         fullName: z.string().min(1).max(120),
         email: z.string().email(),
-        role: z.enum(['caller', 'counsellor', 'ops', 'admin', 'viewer']),
+        role: z.enum(['caller', 'counsellor', 'mentor', 'ops', 'admin', 'viewer']),
         employeeCode: z.string().max(30).optional(),
         dialingMsisdn: z.string().max(20).optional(),
         teamId: uuid.optional(),
