@@ -198,9 +198,14 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
                 last_disposition, last_call_at, last_duration_seconds,
                 whatsapp_sent_at, walkin_expected_at, walked_in_at
            from crm.v_lead_history
+          -- The phone branch only applies when the query actually contains
+          -- digits. Without that guard regexp_replace returns an empty string
+          -- and the clause becomes "phone_e164 like '%'", so searching a name
+          -- quietly matched every lead the user could see.
           where ($1::text is null
                  or full_name ilike '%' || $1 || '%'
-                 or phone_e164 like '%' || regexp_replace($1, '[^0-9]', '', 'g'))
+                 or (regexp_replace($1, '[^0-9]', '', 'g') <> ''
+                     and phone_e164 like '%' || regexp_replace($1, '[^0-9]', '', 'g')))
             and ($2::text is null or status = $2::crm.lead_status)
             and ($5::text is null or last_disposition = $5::crm.disposition)
             and ($6::text is null or case $6

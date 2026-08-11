@@ -82,6 +82,15 @@ export const JOBS: Job[] = [
     sql: 'select crm.auto_logout_idle(100)',
   },
   {
+    name: 'send_due_reminders',
+    // Every five minutes, all week: the engine decides for itself which slot
+    // is due from the settings clock and its own log, so a restart at 09:33
+    // still delivers the 09:30 brief instead of skipping the day. Not
+    // shiftHoursOnly - the 20:30 end-of-day slot is after the floor closes.
+    everyMs: 5 * 60_000,
+    sql: 'select crm.send_due_reminders()',
+  },
+  {
     name: 'purge_expired_sessions',
     everyMs: 6 * 60 * 60_000,
     sql: 'select crm.purge_expired_sessions()',

@@ -209,6 +209,26 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  /**
+   * The daily accountability brief: what today is costing and the run-rate
+   * the rest of the month now needs.
+   *
+   * The same view the reminder engine reads, so the banner on screen and the
+   * notification in the bell can never quote different numbers. Managers also
+   * get the team roll-up.
+   */
+  app.get('/me/brief', async (req) => {
+    const user = req.requireUser();
+    return req.tx(async (q) => {
+      const mine = await q.one(`select * from crm.v_daily_brief where user_id = $1`, [user.id]);
+      const teams =
+        user.role === 'caller'
+          ? []
+          : await q.many(`select * from crm.v_team_brief order by team_name`);
+      return { brief: mine, teams };
+    });
+  });
+
   /** My notifications (cross-team arrivals and the like), newest first. */
   app.get('/me/notifications', async (req) => {
     const user = req.requireUser();

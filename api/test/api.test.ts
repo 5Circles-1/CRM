@@ -7,6 +7,7 @@ import {
   login,
   makeLeadFor,
   rebuildTestDatabase,
+  SOURCES,
   startHarness,
   superuserUrl,
   TEST_PASSWORD,
@@ -2170,6 +2171,200 @@ describe('advisory clients register', () => {
     const a1 = await login(h.app, EMAILS.callerA1);
     const res = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(a1) });
     assert.equal(res.statusCode, 403);
+  });
+});
+
+describe('daily accountability brief', () => {
+  it('a caller sees dials and SLA, never a revenue target', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/brief', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    const { brief, teams } = res.json();
+    assert.equal(brief.role, 'caller');
+    assert.equal(brief.monthly_target, null, 'a caller carries no revenue target');
+    assert.ok(Number(brief.dial_target) > 0, 'but they do carry a dial target');
+    assert.deepEqual(teams, [], 'a caller gets no team roll-up');
+  });
+
+  it('a counsellor gets the gap, the working days left and the required run-rate', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/me/brief', headers: auth(cs) });
+    const { brief, teams } = res.json();
+    assert.ok(Number(brief.monthly_target) > 0, 'a share of the office number by default');
+    assert.ok(Number(brief.working_days_left) >= 1);
+    assert.ok(Number(brief.required_per_day) >= 0);
+    assert.ok(teams.length > 0, 'managers get the team roll-up');
+  });
+
+  it('the engine delivers each slot once and holds the rest', async () => {
+    fixtureSql(`
+      delete from crm.reminder_log;
+      delete from crm.notifications where kind like 'daily_brief%';
+      update crm.settings
+         set value = to_jsonb(extract(hour from now() at time zone 'Asia/Kolkata')::int * 60
+                            + extract(minute from now() at time zone 'Asia/Kolkata')::int)
+       where key = 'reminder.morning_minutes';
+      update crm.settings set value = '0'::jsonb
+       where key in ('reminder.midday_minutes', 'reminder.evening_minutes');
+      update crm.settings set value = '30'::jsonb where key = 'reminder.catchup_minutes';
+    `);
+    const first = Number(fixtureSql('select crm.send_due_reminders();').trim());
+    const second = Number(fixtureSql('select crm.send_due_reminders();').trim());
+    assert.ok(first > 0, 'the morning brief went out');
+    assert.equal(second, 0, 'a second run is a no-op - the log makes it idempotent');
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/notifications', headers: auth(a1) });
+    const brief = res.json().notifications.find(
+      (n: { kind: string }) => n.kind === 'daily_brief_morning',
+    );
+    assert.ok(brief, 'it lands in the notification centre');
+    assert.match(brief.body, /\d+ leads in hand/, 'the body is numbers, not encouragement');
+  });
+});
+
+describe('events', () => {
+  let eventId = '';
+  let rosterId = '';
+
+  it('an admin creates an event; a caller cannot', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST', url: '/events', headers: auth(admin),
+      payload: {
+        name: 'September Options Seminar', kind: 'in_office', status: 'published',
+        startsAt: '2026-09-05T10:00:00+05:30', venue: 'Head office',
+        capacity: 60, audienceTags: ['options', 'beginners'],
+      },
+    });
+    assert.equal(res.statusCode, 201);
+    eventId = res.json().id;
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const denied = await h.app.inject({
+      method: 'POST', url: '/events', headers: auth(a1),
+      payload: { name: 'Mine', startsAt: '2026-09-05T10:00:00+05:30' },
+    });
+    assert.equal(denied.statusCode, 403);
+  });
+
+  it('the preview count is the number the import actually adds', async () => {
+    fixtureSql(`
+      insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                             status, campaign_name, next_action_at)
+      select '${SOURCES.meta}', 'Event Guest ' || i, '+9195554000' || i,
+             '${USERS.callerA1}', crm.team_of('${USERS.callerA1}', current_date),
+             'working', 'Sep-Seminar', now() + interval '2 hours'
+        from generate_series(1, 4) i;
+    `);
+    const admin = await login(h.app, EMAILS.admin);
+    const filter = { campaign: 'Sep-Seminar', statuses: ['working'] };
+
+    const preview = await h.app.inject({
+      method: 'POST', url: `/events/${eventId}/import/preview`,
+      headers: auth(admin), payload: filter,
+    });
+    assert.equal(preview.statusCode, 200);
+    assert.equal(preview.json().matched, 4);
+
+    const imported = await h.app.inject({
+      method: 'POST', url: `/events/${eventId}/import`, headers: auth(admin), payload: filter,
+    });
+    assert.equal(imported.json().added, 4, 'what the preview promised is what arrived');
+    assert.equal(imported.json().event.invited, 4);
+
+    const again = await h.app.inject({
+      method: 'POST', url: `/events/${eventId}/import`, headers: auth(admin), payload: filter,
+    });
+    assert.equal(again.json().added, 0, 'a repeat import tops up, it does not duplicate');
+  });
+
+  it('the imported leads are untouched in the pipeline', async () => {
+    const stillMine = fixtureSql(`
+      select count(*) from crm.leads
+       where campaign_name = 'Sep-Seminar'
+         and caller_id = '${USERS.callerA1}' and status = 'working';
+    `).trim();
+    assert.equal(stillMine, '4', 'importing copies; it never moves or restages a lead');
+  });
+
+  it('both teams see the whole roster even though the lead book is fenced', async () => {
+    const b1 = await login(h.app, EMAILS.callerB1);
+    const res = await h.app.inject({ method: 'GET', url: `/events/${eventId}`, headers: auth(b1) });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().roster.length, 4, 'an invitation is not a lead');
+    rosterId = res.json().roster[0].id;
+
+    const leads = await h.app.inject({
+      method: 'GET', url: `/leads?q=${encodeURIComponent('Event Guest')}`, headers: auth(b1),
+    });
+    assert.equal(
+      leads.json().leads.filter((l: { full_name: string }) =>
+        l.full_name?.startsWith('Event Guest')).length,
+      0,
+      'the other team still cannot reach the leads themselves',
+    );
+  });
+
+  it('a name search returns matches, not the whole book', async () => {
+    // Regression: regexp_replace strips a text query to '', and the phone
+    // branch then read "like '%'" - every lead the user could see came back.
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'GET', url: `/leads?q=${encodeURIComponent('Event Guest')}`, headers: auth(a1),
+    });
+    const names = res.json().leads.map((l: { full_name: string }) => l.full_name ?? '');
+    assert.ok(names.length > 0, 'the owner does find their own guests');
+    assert.ok(
+      names.every((n: string) => n.startsWith('Event Guest')),
+      `a name search must not fall through to everything: got ${names.slice(0, 5).join(', ')}`,
+    );
+
+    // Phone search matches the END of the number - people type the last few
+    // digits off a missed call, not the +91 prefix.
+    const byPhone = await h.app.inject({
+      method: 'GET', url: '/leads?q=540001', headers: auth(a1),
+    });
+    assert.ok(byPhone.json().leads.length > 0, 'searching digits still finds phone numbers');
+  });
+
+  it('a caller can work the roster, and attendance drives the counters', async () => {
+    const b1 = await login(h.app, EMAILS.callerB1);
+    const marked = await h.app.inject({
+      method: 'PUT', url: `/events/${eventId}/roster/${rosterId}`,
+      headers: auth(b1), payload: { status: 'attended', notes: 'came with a friend' },
+    });
+    assert.equal(marked.statusCode, 200);
+    assert.ok(marked.json().attended_at, 'attendance stamps itself');
+
+    const res = await h.app.inject({ method: 'GET', url: `/events/${eventId}`, headers: auth(b1) });
+    assert.equal(res.json().event.attended, 1);
+    // numeric stays an exact string on the wire, by design - see CLAUDE.md.
+    assert.equal(Number(res.json().event.attendance_pct), 25);
+
+    const open = await h.app.inject({
+      method: 'GET', url: '/events/followups/open', headers: auth(b1),
+    });
+    assert.ok(
+      open.json().some((f: { roster_id: string }) => f.roster_id === rosterId),
+      'the attendee lands on the post-event task list',
+    );
+  });
+
+  it('a walk-up with no lead record can still be added, but not with a junk number', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const ok = await h.app.inject({
+      method: 'POST', url: `/events/${eventId}/roster`, headers: auth(cs),
+      payload: { fullName: 'Walk-up Guest', phone: '9811999888', city: 'Pune' },
+    });
+    assert.equal(ok.statusCode, 201);
+    assert.equal(ok.json().lead_id, null, 'no lead behind them, and that is fine');
+
+    const junk = await h.app.inject({
+      method: 'POST', url: `/events/${eventId}/roster`, headers: auth(cs),
+      payload: { fullName: 'Bad Number', phone: '12345' },
+    });
+    assert.equal(junk.statusCode, 400);
   });
 });
 

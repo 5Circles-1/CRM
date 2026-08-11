@@ -13,6 +13,7 @@ import * as leads from './views/leads.js';
 import * as people from './views/people.js';
 import * as advisory from './views/advisory.js';
 import * as mentors from './views/mentors.js';
+import * as events from './views/events.js';
 import * as team from './views/team.js';
 import * as history from './views/history.js';
 import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
@@ -23,6 +24,7 @@ const NAV = [
   { hash: '#/collections', label: 'Collections', roles: ['counsellor', 'admin', 'ops'] },
   { hash: '#/advisory', label: 'Advisory clients', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/mentors', label: 'Mentors', roles: ['mentor', 'counsellor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/events', label: 'Events', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
   { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/leads', label: 'Find lead', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/people', label: 'Performance', roles: ['caller', 'counsellor', 'admin', 'ops'] },
@@ -38,12 +40,12 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, floor, collections, advisory, mentors, dash, leads, people, score, attendance, admin, lead, team, history,
+  day, floor, collections, advisory, mentors, events, dash, leads, people, score, attendance, admin, lead, team, history,
 };
 
 const TITLES = {
   day: 'My Pipeline', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', mentors: 'Mentors',
-  dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
+  events: 'Events', dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
   team: 'Team', history: 'Previous months',
 };
@@ -106,6 +108,7 @@ function renderShell(app) {
         </div>
         <div id="ticker-strip"></div>
         <div id="freeze-banner"></div>
+        <div id="brief-banner"></div>
         <div class="content" id="outlet"></div>
       </div>
     </div>`));
@@ -147,6 +150,7 @@ function renderShell(app) {
   refreshShift();
   startTicker();
   startFreezeBanner();
+  drawBrief();
   celebrate(me);
 }
 
@@ -219,6 +223,96 @@ function startTicker() {
   if (tickerTimer) clearInterval(tickerTimer);
   tickerTimer = setInterval(drawTicker, 60_000);
   tickerTimer.unref?.();
+}
+
+/* ---- the daily accountability banner (WP E) ---- */
+
+const inrShort = (v) => {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n)) return '₹0';
+  if (Math.abs(n) >= 1e7) return '₹' + (n / 1e7).toFixed(2).replace(/\.?0+$/, '') + 'Cr';
+  if (Math.abs(n) >= 1e5) return '₹' + (n / 1e5).toFixed(2).replace(/\.?0+$/, '') + 'L';
+  return '₹' + Math.round(n).toLocaleString('en-IN');
+};
+
+/**
+ * One line, dismissible for the day: what today is costing and the pace the
+ * month now needs. Same numbers as the reminder in the bell - both read
+ * crm.v_daily_brief, so they cannot drift apart.
+ */
+async function drawBrief() {
+  const host = document.getElementById('brief-banner');
+  if (!host) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const key = `crm-brief-hidden-${me.id}-${today}`;
+  if (localStorage.getItem(key)) { host.innerHTML = ''; return; }
+
+  let b;
+  let teams = [];
+  try {
+    const r = await get('/me/brief');
+    b = r.brief;
+    teams = r.teams ?? [];
+  } catch { host.innerHTML = ''; return; }
+
+  // Admin and ops carry no dial or revenue target of their own, so their
+  // banner is the floor's: the same arithmetic, summed over the teams.
+  if (!b && teams.length) {
+    const sum = (k) => teams.reduce((s, t) => s + Number(t[k] || 0), 0);
+    b = null;
+    host.innerHTML = `
+      <div class="brief">
+        <span class="brief-title">Floor today</span>
+        ${[
+          ['Collected', inrShort(sum('collected_today')), sum('collected_today') > 0],
+          ['Left this month', inrShort(sum('gap_to_target')), sum('gap_to_target') === 0],
+          ['Needed per day', inrShort(sum('required_per_day')), null],
+          ['Dials', sum('dials_today'), null],
+          ['Untouched', sum('untouched_now'), sum('untouched_now') === 0],
+          ['Overdue', sum('overdue_now'), sum('overdue_now') === 0],
+          ['Walk-ins', sum('walkins_today'), null],
+        ].map(([k, v, ok]) => `
+          <span class="brief-cell"><span class="brief-k">${esc(k)}</span>
+          <span class="brief-v ${ok === null ? '' : ok ? 'good' : 'bad'}">${esc(String(v))}</span></span>`).join('')}
+        <button class="brief-x" title="Hide until tomorrow" aria-label="Hide">✕</button>
+      </div>`;
+    host.querySelector('.brief-x').addEventListener('click', () => {
+      localStorage.setItem(key, '1');
+      host.innerHTML = '';
+    });
+    return;
+  }
+  if (!b) { host.innerHTML = ''; return; }
+
+  const cells = b.role === 'caller'
+    ? [
+        ['Dials today', `${b.dials_today} / ${b.dial_target ?? 0}`, Number(b.dials_today) >= Number(b.dial_target ?? 0)],
+        ['Untouched', b.untouched_now, Number(b.untouched_now) === 0],
+        ['Overdue', b.overdue_now, Number(b.overdue_now) === 0],
+        ['Callbacks due', b.callbacks_today, true],
+      ]
+    : [
+        ['Collected today', inrShort(b.collected_today), Number(b.collected_today) > 0],
+        ['Left this month', inrShort(b.gap_to_target), Number(b.gap_to_target) === 0],
+        ['Needed per day', `${inrShort(b.required_per_day)} × ${b.working_days_left}d`, null],
+        ['Pace so far', `${inrShort(b.current_per_day)} / day`, Number(b.pace_pct ?? 0) >= 95],
+        ['Overdue', b.overdue_now, Number(b.overdue_now) === 0],
+      ];
+
+  host.innerHTML = `
+    <div class="brief">
+      <span class="brief-title">Today</span>
+      ${cells.map(([k, v, ok]) => `
+        <span class="brief-cell">
+          <span class="brief-k">${esc(k)}</span>
+          <span class="brief-v ${ok === null ? '' : ok ? 'good' : 'bad'}">${esc(String(v))}</span>
+        </span>`).join('')}
+      <button class="brief-x" title="Hide until tomorrow" aria-label="Hide">✕</button>
+    </div>`;
+  host.querySelector('.brief-x').addEventListener('click', () => {
+    localStorage.setItem(key, '1');
+    host.innerHTML = '';
+  });
 }
 
 /* ---- circuit breaker banner during the lunch freeze (WP C) ---- */

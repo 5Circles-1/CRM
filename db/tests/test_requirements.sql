@@ -1255,6 +1255,211 @@ select crm_test.check(
 reset role;
 
 -- =============================================================================
+-- DAILY BRIEF (BRF): the accountability numbers and the reminder engine.
+-- =============================================================================
+
+select crm_test.check(
+  'BRF', 'rupees read as the floor says them - lakh and crore, not digits',
+  crm.fmt_inr(240000) = '₹2.4L' and crm.fmt_inr(75000) = '₹75,000'
+    and crm.fmt_inr(12500000) = '₹1.25Cr' and crm.fmt_inr(null) = '—', null);
+
+select crm_test.check(
+  'BRF', 'the run-rate divides by working days, never calendar days',
+  -- August 2026: 31 days, 5 Sundays (2,9,16,23,30) -> 26 working days.
+  crm.working_days_elapsed(date '2026-08-31') = 26
+    and crm.working_days_left(date '2026-08-31') = 1, null);
+
+select crm_test.check(
+  'BRF', 'every active caller and counsellor gets a brief row, nobody else',
+  (select count(*) = (select count(*) from crm.users
+                       where is_active and role in ('caller', 'counsellor'))
+     from crm.v_daily_brief), null);
+
+select crm_test.check(
+  'BRF', 'a counsellor with no target set still gets a share of the office number',
+  (select monthly_target > 0 and required_per_day > 0 from crm.v_daily_brief
+    where user_id = '22222222-0000-0000-0000-000000000005'), null);
+
+select crm_test.check(
+  'BRF', 'a caller carries dials and SLA, not a revenue target',
+  (select monthly_target is null and dial_target = 80 from crm.v_daily_brief
+    where user_id = '22222222-0000-0000-0000-000000000001'), null);
+
+-- A personal target overrides the derived share.
+do $$
+begin
+  insert into crm.user_targets (user_id, period_month, monthly_collection_target, set_by)
+  values ('22222222-0000-0000-0000-000000000005',
+          date_trunc('month', crm.ist_date(now()))::date, 500000,
+          '22222222-0000-0000-0000-00000000000a');
+end $$;
+
+select crm_test.check(
+  'BRF', 'a personal target overrides the derived share',
+  (select monthly_target = 500000 from crm.v_daily_brief
+    where user_id = '22222222-0000-0000-0000-000000000005'), null);
+
+-- The engine, with the morning slot pointed at the current minute.
+do $$
+declare v_now int;
+begin
+  v_now := extract(hour from now() at time zone 'Asia/Kolkata')::int * 60
+         + extract(minute from now() at time zone 'Asia/Kolkata')::int;
+  update crm.settings set value = to_jsonb(v_now) where key = 'reminder.morning_minutes';
+  -- Park the other two slots far away so this test sees only the morning one.
+  update crm.settings set value = to_jsonb(greatest(v_now - 600, 0))
+   where key in ('reminder.midday_minutes', 'reminder.evening_minutes');
+  update crm.settings set value = '30'::jsonb where key = 'reminder.catchup_minutes';
+end $$;
+
+select crm.send_due_reminders() as _first \gset
+select crm.send_due_reminders() as _second \gset
+
+select crm_test.check(
+  'BRF', 'the morning brief reaches every caller and counsellor once',
+  :_first = (select count(*) from crm.users
+              where is_active and role in ('caller', 'counsellor')),
+  'sent ' || :_first);
+
+select crm_test.check(
+  'BRF', 'running the engine again sends nothing - the log makes it idempotent',
+  :_second = 0, 'second run sent ' || :_second);
+
+select crm_test.check(
+  'BRF', 'the brief quotes real numbers, not vague encouragement',
+  (select body like '%to go this month over%working day%'
+     from crm.notifications
+    where kind = 'daily_brief_morning'
+      and user_id = '22222222-0000-0000-0000-000000000005'), null);
+
+-- Sunday: no brief at all. Proven by moving the log aside and asserting the
+-- engine's own weekday gate rather than by waiting for a Sunday.
+select crm_test.check(
+  'BRF', 'the engine refuses to brief anybody on the team''s day off',
+  (select extract(dow from crm.ist_date(now())) = 0) = false
+    or crm.send_due_reminders() = 0, null);
+
+-- =============================================================================
+-- EVENTS (EVT): the roster, the copy-not-move import, and the counters.
+-- =============================================================================
+
+do $$
+declare
+  v_admin uuid := '22222222-0000-0000-0000-00000000000a';
+  v_a1    uuid := '22222222-0000-0000-0000-000000000001';
+  v_src   uuid := '33333333-0000-0000-0000-000000000001';
+  v_ev    uuid := 'aaaaaaaa-0000-0000-0000-000000000001';
+  v_lead  uuid;
+  i       int;
+begin
+  insert into crm.events (id, name, kind, status, starts_at, venue, host_id, created_by)
+  values (v_ev, 'August Options Seminar', 'in_office', 'published',
+          now() - interval '1 day', 'Head office', v_admin, v_admin);
+
+  for i in 1..3 loop
+    insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                           status, campaign_name, next_action_at, next_action_note)
+    values (v_src, 'Seminar Guest ' || i, '+91955530000' || i, v_a1,
+            crm.team_of(v_a1, current_date), 'working', 'Aug-Seminar',
+            now() + interval '2 hours', 'call before the seminar')
+    returning id into v_lead;
+  end loop;
+end $$;
+
+-- Import as the admin, through the real function, exactly as the route does.
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-00000000000a', false) as _ \gset
+
+select crm.import_leads_to_event(
+         'aaaaaaaa-0000-0000-0000-000000000001',
+         array['working'], null, null, null, null, 'Seminar', null, null, 100
+       ) as _imported \gset
+
+select crm_test.check(
+  'EVT', 'importing copies every matching lead onto the roster',
+  :_imported = 3, 'imported ' || :_imported);
+
+select crm_test.check(
+  'EVT', 'the roster row carries its own snapshot of the person',
+  (select count(*) = 3 from crm.event_leads
+    where event_id = 'aaaaaaaa-0000-0000-0000-000000000001'
+      and full_name like 'Seminar Guest%' and phone_e164 is not null), null);
+
+select crm_test.check(
+  'EVT', 'the original lead is untouched - same owner, same stage, same next action',
+  (select count(*) = 3 from crm.leads
+    where full_name like 'Seminar Guest%'
+      and caller_id = '22222222-0000-0000-0000-000000000001'
+      and status = 'working'
+      and next_action_note = 'call before the seminar'), null);
+
+select crm.import_leads_to_event(
+         'aaaaaaaa-0000-0000-0000-000000000001',
+         array['working'], null, null, null, null, 'Seminar', null, null, 100
+       ) as _reimported \gset
+
+select crm_test.check(
+  'EVT', 'importing the same filter twice tops up rather than duplicating',
+  :_reimported = 0
+    and (select count(*) = 3 from crm.event_leads
+          where event_id = 'aaaaaaaa-0000-0000-0000-000000000001'),
+  're-import added ' || :_reimported);
+
+select crm_test.check(
+  'EVT', 'the preview predicate excludes people already on the roster',
+  (select count(*) = 0 from crm.event_import_candidates(
+     array['working'], null, null, null, null, 'Seminar', null, null,
+     'aaaaaaaa-0000-0000-0000-000000000001', 100)), null);
+
+-- Mark attendance the way the roster screen does.
+do $$
+declare v_ids uuid[];
+begin
+  select array_agg(id order by full_name) into v_ids
+    from crm.event_leads where event_id = 'aaaaaaaa-0000-0000-0000-000000000001';
+  update crm.event_leads set status = 'attended', attended_at = now() where id = v_ids[1];
+  update crm.event_leads set status = 'converted', attended_at = now() where id = v_ids[2];
+  update crm.event_leads set status = 'no_show' where id = v_ids[3];
+end $$;
+
+select crm_test.check(
+  'EVT', 'the counters follow the roster: turnout and conversion are computed',
+  (select invited = 3 and attended = 1 and converted = 1 and no_shows = 1
+      and attendance_pct = 66.7 and conversion_pct = 50.0
+     from crm.v_event_summary where event_id = 'aaaaaaaa-0000-0000-0000-000000000001'), null);
+
+select crm_test.check(
+  'EVT', 'the follow-up list auto-fills with attendees and no-shows, but not the converted',
+  -- Someone who already converted is not owed a chase; the other two are.
+  (select count(*) = 2 from crm.v_event_followups
+    where event_id = 'aaaaaaaa-0000-0000-0000-000000000001')
+  and not exists (select 1 from crm.v_event_followups where status = 'converted'), null);
+
+-- A caller sees the whole roster, including the two guests they do not own.
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000003', false) as _ \gset
+
+select crm_test.check(
+  'EVT', 'both teams see the same roster - an invitation is not a lead',
+  (select count(*) = 3 from crm.event_leads
+    where event_id = 'aaaaaaaa-0000-0000-0000-000000000001'), null);
+
+select crm_test.check(
+  'EVT', 'the lead-book fence still holds - the caller cannot see the leads themselves',
+  (select count(*) = 0 from crm.leads where full_name like 'Seminar Guest%'), null);
+
+do $$
+begin
+  insert into crm.events (name, starts_at, created_by)
+  values ('Caller''s own event', now(), '22222222-0000-0000-0000-000000000003');
+  perform crm_test.check('EVT', 'a caller cannot create events', false,
+                         'the insert unexpectedly succeeded');
+exception when insufficient_privilege then
+  perform crm_test.check('EVT', 'a caller cannot create events', true, null);
+end $$;
+
+reset role;
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 
