@@ -102,8 +102,11 @@ export async function render(outlet, me, params) {
     tl.appendChild(h('<div class="empty">Nothing yet.</div>'));
   } else {
     tl.appendChild(h(`<ul class="timeline">
-      ${data.timeline.map((e) => `
-        <li><div>${esc(eventLabel(e))}</div><div class="t">${esc(fmtDT(e.occurred_at))}</div></li>`).join('')}
+      ${collapseRepeats(data.timeline).map((e) => `
+        <li><div>${esc(eventLabel(e))}${e.repeats > 1
+            ? ` <span class="badge b-mute">×${e.repeats}</span>` : ''}</div>
+          <div class="t">${esc(fmtDT(e.occurred_at))}${e.repeats > 1
+            ? ` — ${esc(fmtDT(e.last_at))}` : ''}</div></li>`).join('')}
     </ul>`));
   }
   outlet.appendChild(tl);
@@ -192,6 +195,29 @@ function toLocalInput(iso) {
   const d = new Date(iso);
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * Fold a run of identical consecutive events into one row with a count.
+ *
+ * The engine no longer repeats an unchanged decision, but history written
+ * before that fix still exists, and any future repeat should read as one fact
+ * that happened N times rather than N facts. The first and last timestamps are
+ * both kept, so nothing about when it happened is lost.
+ */
+function collapseRepeats(events) {
+  const out = [];
+  for (const e of events) {
+    const prev = out[out.length - 1];
+    if (prev && prev.event_type === e.event_type && eventLabel(prev) === eventLabel(e)) {
+      prev.repeats += 1;
+      // The list is newest-first, so the older timestamp is the run's end.
+      prev.last_at = e.occurred_at;
+      continue;
+    }
+    out.push({ ...e, repeats: 1, last_at: e.occurred_at });
+  }
+  return out;
 }
 
 function eventLabel(e) {

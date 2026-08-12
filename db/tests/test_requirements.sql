@@ -1819,6 +1819,71 @@ select crm_test.check(
   null);
 
 -- =============================================================================
+-- SPAM (SPM): a held lead is recorded once, not once a minute.
+--
+-- The reported bug: one lead's timeline was hundreds of identical "held for
+-- shift start" rows, because the 60-second sweep logged its non-decision
+-- every single tick. The same bug inflated "passed over today" to 9,663.
+-- =============================================================================
+
+do $$
+begin
+  -- Empty the floor so distribution genuinely has nobody to pick.
+  update crm.attendance_sessions set ended_at = now() where ended_at is null;
+
+  insert into crm.leads (source_id, full_name, phone_e164, status,
+                         next_action_at, next_action_note)
+  values ('33333333-0000-0000-0000-000000000001', 'Spam Check', '+919555980001',
+          'new', now() + interval '1 hour', 'First contact');
+end $$;
+
+-- Ten sweeps, exactly as the scheduler would run them over ten minutes.
+do $$
+declare i int;
+begin
+  for i in 1..10 loop
+    perform crm.assign_pending_leads(200);
+  end loop;
+end $$;
+
+select crm_test.check(
+  'SPM', 'ten sweeps of a held lead write one history entry, not ten',
+  (select count(*) = 1 from crm.lead_events e
+     join crm.leads l on l.id = e.lead_id
+    where l.full_name = 'Spam Check' and e.event_type = 'assignment_deferred'),
+  (select count(*)::text || ' deferral events' from crm.lead_events e
+     join crm.leads l on l.id = e.lead_id
+    where l.full_name = 'Spam Check' and e.event_type = 'assignment_deferred'));
+
+select crm_test.check(
+  'SPM', 'and one distribution decision, so pass-over counts stay truthful',
+  (select count(*) = 1 from crm.distribution_events d
+     join crm.leads l on l.id = d.lead_id
+    where l.full_name = 'Spam Check'),
+  (select count(*)::text || ' distribution events' from crm.distribution_events d
+     join crm.leads l on l.id = d.lead_id
+    where l.full_name = 'Spam Check'));
+
+-- The lead must still be handed out the instant somebody is available: the
+-- fix must quieten the bookkeeping without slowing the engine down.
+do $$
+begin
+  insert into crm.attendance_sessions (user_id, started_at)
+  values ('22222222-0000-0000-0000-000000000001', now());
+  perform crm.assign_pending_leads(200);
+end $$;
+
+select crm_test.check(
+  'SPM', 'the held lead is still assigned on the very next sweep',
+  (select caller_id is not null from crm.leads where full_name = 'Spam Check'), null);
+
+select crm_test.check(
+  'SPM', 'and the real assignment IS recorded - only the repetition was dropped',
+  (select count(*) = 1 from crm.lead_events e
+     join crm.leads l on l.id = e.lead_id
+    where l.full_name = 'Spam Check' and e.event_type = 'assigned'), null);
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 
