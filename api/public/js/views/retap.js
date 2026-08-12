@@ -34,8 +34,12 @@ const BANDS = [
 
 export async function render(outlet, me) {
   let band = 'all';
-  let scope = 'mine';
-  const canSeeTeam = ['counsellor', 'admin', 'ops'].includes(me.role);
+  const canSeeTeam = ['counsellor', 'admin', 'ops', 'viewer'].includes(me.role);
+  // An admin owns no leads, so defaulting everyone to "Mine" showed them an
+  // empty page reading "nobody has gone unanswered" — which was false and
+  // looked like a broken feature. Managers open on the view they actually
+  // manage; callers open on their own.
+  let scope = canSeeTeam ? 'team' : 'mine';
 
   const draw = async () => {
     outlet.innerHTML = '<div class="spin"></div>';
@@ -87,9 +91,13 @@ export async function render(outlet, me) {
           ${BANDS.map(([v, l]) => `<button class="chip ${band === v ? 'on' : ''}" data-band="${v}">${l}</button>`).join('')}
         </div>
         ${rows.length === 0 ? `<div class="empty">
-          ${data.leads.length === 0
-            ? 'Nothing here — nobody has gone repeatedly unanswered. This is the good state.'
-            : 'Nothing matches that filter.'}
+          ${data.leads.length > 0
+            ? 'Nothing matches that filter.'
+            : scope === 'mine'
+              ? 'None of <b>your own</b> leads have gone repeatedly unanswered.'
+                + (canSeeTeam ? ' Switch to <b>Whole team</b> to see everyone’s.' : '')
+              : 'Nobody on the team has gone unanswered more than '
+                + data.threshold + ' times. This is the good state.'}
         </div>` : `
         <div style="overflow-x:auto">
         <table class="table"><thead><tr>

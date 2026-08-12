@@ -1898,6 +1898,131 @@ exception when others then
 end $$;
 
 -- =============================================================================
+-- UNREACHED (UNR): the streak counts every failure to get through, not one.
+--
+-- Reported: "there are people I have seen that have gone unanswered" while
+-- the Re-tap tab said zero. na_streak only counted the literal 'not_answered'
+-- disposition, so switched off / busy / incoming unavailable each RESET it.
+-- Five real failures in a row could finish on a streak of one.
+-- =============================================================================
+
+select crm_test.check(
+  'UNR', 'every could-not-reach outcome counts as unreached',
+  crm.is_unreached('not_answered') and crm.is_unreached('busy')
+  and crm.is_unreached('switched_off') and crm.is_unreached('incoming_unavailable'),
+  null);
+
+select crm_test.check(
+  'UNR', 'but answering and hanging up is not "unreached" - they picked up',
+  not crm.is_unreached('disconnected_after_intro')
+  and not crm.is_unreached('connected_interested')
+  and not crm.is_unreached('callback_requested'), null);
+
+do $$
+declare
+  v_lead uuid;
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  d      text;
+  i      int := 0;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, next_action_note)
+  values ('33333333-0000-0000-0000-000000000001', 'Five Ways Missed', '+919555020202',
+          v_a1, crm.team_of(v_a1, current_date), 'working',
+          now() + interval '1 hour', 'First contact')
+  returning id into v_lead;
+
+  -- The sequence the floor actually produces: three different reasons.
+  foreach d in array array['not_answered', 'switched_off', 'not_answered',
+                           'busy', 'incoming_unavailable'] loop
+    i := i + 1;
+    insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds,
+                                   is_verified, started_at)
+    values (v_lead, v_a1, d::crm.disposition, 0, true,
+            now() - make_interval(hours => (10 - i)));
+  end loop;
+end $$;
+
+select crm_test.check(
+  'UNR', 'five failed attempts across three reasons make a streak of five',
+  (select na_streak = 5 from crm.leads where full_name = 'Five Ways Missed'),
+  (select 'streak was ' || na_streak from crm.leads where full_name = 'Five Ways Missed'));
+
+select crm_test.check(
+  'UNR', 'and the lead therefore reaches the re-tap pool, as the floor expects',
+  (select count(*) = 1 from crm.v_no_answer_pool where full_name = 'Five Ways Missed'), null);
+
+do $$
+declare v_lead uuid;
+begin
+  select id into v_lead from crm.leads where full_name = 'Five Ways Missed';
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, is_verified)
+  values (v_lead, '22222222-0000-0000-0000-000000000001', 'connected_interested', 120, true);
+end $$;
+
+select crm_test.check(
+  'UNR', 'actually speaking to them resets the streak to zero',
+  (select na_streak = 0 from crm.leads where full_name = 'Five Ways Missed'), null);
+
+select crm_test.check(
+  'UNR', 'and takes the lead straight back out of the re-tap pool',
+  (select count(*) = 0 from crm.v_no_answer_pool where full_name = 'Five Ways Missed'), null);
+
+-- The backfill: a lead whose attempts predate this migration must be counted
+-- by the new rule too, or the people who prompted the report stay invisible.
+do $$
+declare
+  v_lead uuid;
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         na_streak, next_action_at, next_action_note)
+  values ('33333333-0000-0000-0000-000000000001', 'Old History', '+919555030303',
+          v_a1, crm.team_of(v_a1, current_date), 'working',
+          0, now() + interval '1 hour', 'First contact')
+  returning id into v_lead;
+
+  -- Attempts inserted with the trigger disabled, standing in for rows written
+  -- before the rule was corrected.
+  alter table crm.call_attempts disable trigger call_attempts_apply;
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds,
+                                 is_verified, started_at)
+  values (v_lead, v_a1, 'not_answered', 0, true, now() - interval '5 hours'),
+         (v_lead, v_a1, 'switched_off', 0, true, now() - interval '4 hours'),
+         (v_lead, v_a1, 'busy',         0, true, now() - interval '3 hours'),
+         (v_lead, v_a1, 'not_answered', 0, true, now() - interval '2 hours');
+  alter table crm.call_attempts enable trigger call_attempts_apply;
+end $$;
+
+select crm_test.check(
+  'UNR', 'the streak was NOT counted while the trigger was bypassed',
+  (select na_streak = 0 from crm.leads where full_name = 'Old History'), null);
+
+-- Re-run exactly the backfill the migration performs.
+with ordered as (
+  select lead_id, started_at, crm.is_unreached(disposition) as unreached,
+         row_number() over (partition by lead_id order by started_at desc, id desc) as rn
+    from crm.call_attempts
+),
+first_contact as (
+  select lead_id, min(rn) as rn from ordered where not unreached group by lead_id
+),
+streaks as (
+  select o.lead_id, count(*)::int as streak
+    from ordered o
+    left join first_contact f on f.lead_id = o.lead_id
+   where o.unreached and (f.rn is null or o.rn < f.rn)
+   group by o.lead_id
+)
+update crm.leads l set na_streak = s.streak
+  from streaks s where l.id = s.lead_id and l.na_streak is distinct from s.streak;
+
+select crm_test.check(
+  'UNR', 'the backfill recomputes historic leads from their real call history',
+  (select na_streak = 4 from crm.leads where full_name = 'Old History'),
+  (select 'streak was ' || na_streak from crm.leads where full_name = 'Old History'));
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

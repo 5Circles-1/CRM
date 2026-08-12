@@ -32,9 +32,11 @@ const flagBadge = (l) => {
 };
 
 export async function render(outlet, me) {
-  let scope = 'mine';
   let flag = '';
-  const canSeeAll = ['counsellor', 'admin', 'ops'].includes(me.role);
+  const canSeeAll = ['counsellor', 'admin', 'ops', 'viewer'].includes(me.role);
+  // Managers own no leads of their own, so "Mine" would open on an empty page
+  // and read as "nothing is waiting" when the floor has hundreds.
+  let scope = canSeeAll ? 'all' : 'mine';
 
   const draw = async () => {
     outlet.innerHTML = '<div class="spin"></div>';
@@ -83,7 +85,9 @@ export async function render(outlet, me) {
           ${FLAGS.map(([v, l]) => `<button class="chip ${flag === v ? 'on' : ''}" data-flag="${v}">${l}</button>`).join('')}
         </div>
         ${all.length === 0 ? `<div class="empty">
-          Nothing is waiting for a first call. This is the state to end every day in.
+          ${scope === 'mine' && canSeeAll
+            ? 'None of <b>your own</b> leads are waiting. Switch to <b>Whole floor</b> to see everyone’s.'
+            : 'Nothing is waiting for a first call. This is the state to end every day in.'}
         </div>` : `
         <div style="overflow-x:auto">
         <table class="table"><thead><tr>
