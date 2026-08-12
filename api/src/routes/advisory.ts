@@ -28,6 +28,52 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
+  /**
+   * Add a paying client by hand.
+   *
+   * The automatic path stays the guarantee: money recorded puts a client in
+   * both books, so nobody is forgotten. This is for clients who arrived
+   * outside it - an offline sale, a migrated record, a payment taken before
+   * the CRM existed. It builds the same lead, deal and payment the normal
+   * path builds, so the client behaves identically everywhere.
+   */
+  app.post('/advisory/manual', async (req, reply) => {
+    req.requireRole('admin', 'ops', 'counsellor');
+    const body = z
+      .object({
+        fullName: z.string().min(1).max(120),
+        phone: z.string().min(6).max(20),
+        productId: uuid,
+        amount: z.number().positive().max(100000000),
+        paidAt: z.string().datetime({ offset: true }).optional(),
+        mode: z.enum(['upi', 'card', 'netbanking', 'cash', 'cheque', 'neft', 'other']).default('other'),
+        mentorId: uuid.nullable().optional(),
+        note: z.string().max(300).optional(),
+      })
+      .parse(req.body);
+
+    const row = await req.tx((q) =>
+      q.one<{ deal_id: string }>(
+        `select crm.add_manual_client($1, $2, $3, $4::numeric, $5, $6, $7, $8) as deal_id`,
+        [
+          body.fullName.trim(), body.phone.trim(), body.productId, body.amount,
+          body.paidAt ?? new Date().toISOString(), body.mode,
+          body.mentorId ?? null, body.note?.trim() || null,
+        ],
+      ),
+    );
+    reply.code(201);
+    return row;
+  });
+
+  /** Products, for the manual-add form. */
+  app.get('/advisory/products', async (req) => {
+    req.requireRole('admin', 'ops', 'counsellor', 'mentor', 'viewer');
+    return req.tx((q) =>
+      q.many(`select id, name, list_price_inr from crm.products order by name`),
+    );
+  });
+
   app.put('/advisory/:dealId', async (req) => {
     const user = req.requireRole('admin', 'counsellor');
     const { dealId } = z.object({ dealId: uuid }).parse(req.params);
@@ -35,16 +81,20 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
       .object({
         mitcDone: z.boolean().optional(),
         kycDone: z.boolean().optional(),
+        groupAdded: z.boolean().optional(),
         subscriptionEndsAt: z.string().datetime({ offset: true }).nullable().optional(),
       })
       .parse(req.body);
 
     const row = await req.tx((q) =>
       q.one(
-        `insert into crm.advisory_checkpoints (deal_id, mitc_done_at, mitc_by, kyc_done_at, kyc_by, subscription_ends_at)
+        `insert into crm.advisory_checkpoints
+           (deal_id, mitc_done_at, mitc_by, kyc_done_at, kyc_by,
+            group_added_at, group_added_by, subscription_ends_at)
          values ($1,
                  case when $2 then now() end, case when $2 then $4::uuid end,
                  case when $3 then now() end, case when $3 then $4::uuid end,
+                 case when $6 then now() end, case when $6 then $4::uuid end,
                  $5)
          on conflict (deal_id) do update set
            mitc_done_at = case when $2 is null then crm.advisory_checkpoints.mitc_done_at
@@ -55,11 +105,15 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
                                when $3 then coalesce(crm.advisory_checkpoints.kyc_done_at, now()) end,
            kyc_by       = case when $3 is null then crm.advisory_checkpoints.kyc_by
                                when $3 then coalesce(crm.advisory_checkpoints.kyc_by, $4::uuid) end,
+           group_added_at = case when $6 is null then crm.advisory_checkpoints.group_added_at
+                                 when $6 then coalesce(crm.advisory_checkpoints.group_added_at, now()) end,
+           group_added_by = case when $6 is null then crm.advisory_checkpoints.group_added_by
+                                 when $6 then coalesce(crm.advisory_checkpoints.group_added_by, $4::uuid) end,
            subscription_ends_at = coalesce($5, crm.advisory_checkpoints.subscription_ends_at),
            updated_at = now()
          returning *`,
         [dealId, body.mitcDone ?? null, body.kycDone ?? null, user.id,
-         body.subscriptionEndsAt ?? null],
+         body.subscriptionEndsAt ?? null, body.groupAdded ?? null],
       ),
     );
     if (!row) throw notFound('no paying client with that deal id');

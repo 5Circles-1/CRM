@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { logLeadAccess } from '../http/context.ts';
-import { notFound } from '../http/errors.ts';
+import { badRequest, notFound } from '../http/errors.ts';
 
 const uuid = z.string().uuid();
 
@@ -559,6 +559,68 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
         critical: alerts.filter((a) => (a as { severity: string }).severity === 'critical').length,
         alerts,
       };
+    });
+  });
+
+  /**
+   * Clear an alert by dealing with it, not by hiding it.
+   *
+   * An SLA breach or an overdue follow-up is a lead sitting past its promised
+   * time - the only honest ways to make it go away are to move the promise or
+   * to close the lead. So "snooze" reschedules the next action on the working
+   * clock and says so, rather than silencing a warning while the lead rots.
+   * Notification-type alerts have nothing to reschedule and are simply read.
+   */
+  app.post('/me/alerts/act', async (req) => {
+    const user = req.requireUser();
+    const body = z
+      .object({
+        leadId: uuid.optional(),
+        notificationId: uuid.optional(),
+        action: z.enum(['snooze', 'read']),
+        minutes: z.number().int().min(5).max(10080).optional(),
+        note: z.string().max(200).optional(),
+      })
+      .parse(req.body);
+
+    return req.tx(async (q) => {
+      if (body.notificationId) {
+        await q.query(
+          `update crm.notifications set read_at = now()
+            where id = $1 and user_id = $2 and read_at is null`,
+          [body.notificationId, user.id],
+        );
+        return { ok: true, kind: 'notification' };
+      }
+
+      if (!body.leadId) throw badRequest('an alert needs a lead or a notification to act on');
+
+      if (body.action === 'read') {
+        // Acknowledging a lead alert without moving the promise would hide a
+        // real breach, so this path is deliberately not offered.
+        throw badRequest('a lead alert is cleared by working it or rescheduling it');
+      }
+
+      const row = await q.one(
+        `update crm.leads
+            set next_action_at = crm.add_working_minutes(now(), $2::int),
+                next_action_note = coalesce($3, next_action_note),
+                updated_at = now()
+          where id = $1
+          returning id, next_action_at, next_action_note`,
+        [body.leadId, body.minutes ?? 60, body.note?.trim() || null],
+      );
+      if (!row) throw notFound('lead not found');
+
+      // Rescheduling a promise is a decision about a customer. It belongs in
+      // the lead's own history, where the next person to open it will see it.
+      await q.query(
+        `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
+         values ($1, 'reminder_set', $2, $3)`,
+        [body.leadId, user.id,
+         JSON.stringify({ snoozed_minutes: body.minutes ?? 60, note: body.note ?? null })],
+      );
+      return { ok: true, kind: 'lead', ...row };
     });
   });
 

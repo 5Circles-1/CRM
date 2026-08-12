@@ -209,8 +209,18 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
           order by is_active desc, team_name nulls last, rotation_order`,
       );
       const pending = await q.one(`select * from crm.v_lead_flow_summary`);
-      return { callers, ...(pending ?? {}) };
+      // Per-team breakdown with the blocking reason. The floor-wide total on
+      // its own was actively misleading: it read "waiting for a caller" while
+      // two callers were working - on the other team.
+      const waiting = await q.many(`select * from crm.v_lead_flow_waiting`);
+      return { callers, waiting, ...(pending ?? {}) };
     });
+  });
+
+  /** Run the held-lead sweep now, rather than waiting for the next minute. */
+  app.post('/dashboards/lead-flow/assign-now', async (req) => {
+    req.requireRole('admin', 'ops');
+    return req.tx((q) => q.one(`select crm.assign_pending_leads_now(500) as assigned`));
   });
 
   /**

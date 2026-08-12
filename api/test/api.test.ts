@@ -2174,6 +2174,186 @@ describe('advisory clients register', () => {
   });
 });
 
+describe('alerts you can actually clear', () => {
+  it('snoozing moves the promise on the working clock and records it on the lead', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Snoozable');
+    fixtureSql(`
+      update crm.leads set next_action_at = now() - interval '3 hours',
+                           next_action_note = 'overdue on purpose'
+       where id = '${leadId}';
+    `);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/me/alerts/act', headers: auth(a1),
+      payload: { leadId, action: 'snooze', minutes: 120, note: 'client asked for later' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.ok(new Date(res.json().next_action_at) > new Date(), 'the promise moved forward');
+
+    const events = fixtureSql(`
+      select count(*) from crm.lead_events
+       where lead_id = '${leadId}' and event_type = 'reminder_set';
+    `).trim();
+    assert.equal(events, '1', 'moving a promise is written into the lead history');
+  });
+
+  it('a lead alert cannot simply be marked read - that would hide a real breach', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Not Dismissable');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/me/alerts/act', headers: auth(a1),
+      payload: { leadId, action: 'read' },
+    });
+    assert.equal(res.statusCode, 400);
+  });
+
+  it('a notification, which has no promise behind it, is simply read', async () => {
+    fixtureSql(`
+      insert into crm.notifications (user_id, kind, title, body)
+      values ('${USERS.callerA1}', 'new_lead', 'Test notice', 'body');
+    `);
+    const id = fixtureSql(`
+      select id from crm.notifications
+       where user_id = '${USERS.callerA1}' and title = 'Test notice' limit 1;
+    `).trim().split('\n')[0]!.trim();
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/me/alerts/act', headers: auth(a1),
+      payload: { notificationId: id, action: 'read' },
+    });
+    assert.equal(res.statusCode, 200);
+    const unread = fixtureSql(`
+      select count(*) from crm.notifications where id = '${id}' and read_at is null;
+    `).trim();
+    assert.equal(unread, '0');
+  });
+});
+
+describe('lead flow explains itself', () => {
+  it('waiting leads are reported per team with the blocking reason', async () => {
+    const teamB = fixtureSql(`select id from crm.teams where name = 'Team B';`).trim();
+    fixtureSql(`
+      update crm.attendance_sessions s set ended_at = now()
+       where s.ended_at is null
+         and s.user_id in (select user_id from crm.team_memberships
+                            where team_id = '${teamB}' and period @> current_date);
+      insert into crm.leads (source_id, full_name, phone_e164, team_id, status,
+                             next_action_at, next_action_note)
+      select '${SOURCES.meta}', 'Held B ' || i, '+9195557000' || i, '${teamB}', 'new',
+             now() + interval '1 hour', 'First contact'
+        from generate_series(1, 3) i;
+    `);
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'GET', url: '/dashboards/lead-flow', headers: auth(cs),
+    });
+    assert.equal(res.statusCode, 200);
+    const row = res.json().waiting.find((w: { team_name: string }) => w.team_name === 'Team B');
+    assert.ok(row, 'the blocked team appears in its own right');
+    assert.equal(row.reason, 'nobody_on_shift');
+    assert.equal(Number(row.on_floor), 0);
+    assert.ok(Number(row.callers) > 0, 'the team has callers - they are just not here');
+  });
+
+  it('only an admin can force the sweep', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const denied = await h.app.inject({
+      method: 'POST', url: '/dashboards/lead-flow/assign-now', headers: auth(cs), payload: {},
+    });
+    assert.equal(denied.statusCode, 403);
+
+    const admin = await login(h.app, EMAILS.admin);
+    const ok = await h.app.inject({
+      method: 'POST', url: '/dashboards/lead-flow/assign-now', headers: auth(admin), payload: {},
+    });
+    assert.equal(ok.statusCode, 200);
+    assert.ok(Number.isInteger(Number(ok.json().assigned)));
+  });
+});
+
+describe('clients added by hand', () => {
+  it('a counsellor can enter an offline client, and they appear in both books', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const products = await h.app.inject({
+      method: 'GET', url: '/advisory/products', headers: auth(cs),
+    });
+    const productId = products.json()[0].id;
+
+    const res = await h.app.inject({
+      method: 'POST', url: '/advisory/manual', headers: auth(cs),
+      payload: {
+        fullName: 'Desk Payer', phone: '9855577001', productId,
+        amount: 30000, mode: 'cash', note: 'paid at the desk',
+      },
+    });
+    assert.equal(res.statusCode, 201);
+    const dealId = res.json().deal_id;
+
+    const register = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(cs) });
+    const row = register.json().find((r: { deal_id: string }) => r.deal_id === dealId);
+    assert.ok(row, 'in the advisory register');
+    assert.equal(row.is_manual, true);
+    assert.equal(Number(row.checkpoints_done), 0, 'all three checkpoints start open');
+
+    const book = await h.app.inject({ method: 'GET', url: '/mentors/book', headers: auth(cs) });
+    assert.ok(
+      book.json().clients.some((c: { deal_id: string }) => c.deal_id === dealId),
+      'and in the mentor book, because they have genuinely paid',
+    );
+  });
+
+  it('the group checkpoint ticks one-way and records who did it', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const register = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(cs) });
+    const target = register.json().find((r: { full_name: string }) => r.full_name === 'Desk Payer');
+
+    const res = await h.app.inject({
+      method: 'PUT', url: `/advisory/${target.deal_id}`, headers: auth(cs),
+      payload: { groupAdded: true },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.json().group_added_at);
+    assert.equal(res.json().group_added_by, USERS.counsellorA);
+
+    const after = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(cs) });
+    const row = after.json().find((r: { full_name: string }) => r.full_name === 'Desk Payer');
+    assert.equal(Number(row.checkpoints_done), 1);
+  });
+
+  it('a caller cannot invent a paying client', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/advisory/manual', headers: auth(a1),
+      payload: {
+        fullName: 'Nope', phone: '9855577002',
+        productId: '44444444-0000-0000-0000-000000000001', amount: 1000,
+      },
+    });
+    assert.equal(res.statusCode, 403);
+  });
+
+  it('an unusable phone number is refused before anything is created', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    // Long enough to pass the schema, junk enough to fail normalisation - so
+    // this exercises the database's own refusal, not the request validator.
+    const res = await h.app.inject({
+      method: 'POST', url: '/advisory/manual', headers: auth(cs),
+      payload: {
+        fullName: 'Bad Number', phone: '0000000',
+        productId: '44444444-0000-0000-0000-000000000001', amount: 1000,
+      },
+    });
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message ?? res.body, /dialable/);
+
+    const created = fixtureSql(
+      `select count(*) from crm.leads where full_name = 'Bad Number';`,
+    ).trim();
+    assert.equal(created, '0', 'nothing is created when the number is rejected');
+  });
+});
+
 describe('training academy', () => {
   it('lists every module, marks my track, and counts what I still owe', async () => {
     const a1 = await login(h.app, EMAILS.callerA1);

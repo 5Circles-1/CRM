@@ -678,3 +678,21 @@ button.chip:hover { border-color: #c8d4ea; }
 :root[data-theme="dark"] .login, :root[data-theme="dark"] .login-wrap .login { background: var(--panel); color: var(--ink); }
 :root[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #26334f; }
 :root[data-theme="dark"] ::-webkit-scrollbar-track { background: #0e1626; }
+
+/* Light surfaces that had no dark counterpart and read as white bands across
+   a dark page: the "needs attention" radar row, hover states, mini bars and
+   the unread-notification tint. Each keeps its meaning, in dark values. */
+:root[data-theme="dark"] .radar-hot td { background: #2a1c17; }
+:root[data-theme="dark"] .table tr.click:hover td { background: #182642; }
+:root[data-theme="dark"] .btn:hover { background: #1e2d4d; }
+:root[data-theme="dark"] .alert-bell:hover,
+:root[data-theme="dark"] .alert-row:hover { background: #182642; }
+:root[data-theme="dark"] .thermo .bar,
+:root[data-theme="dark"] .bar-mini { background: #10192e; }
+:root[data-theme="dark"] .notif.unread { background: #142238; }
+:root[data-theme="dark"] .avatar-fallback { border-color: var(--line); }
+
+/* The bell's way out to the full Alerts page. */
+.alert-all {
+  justify-content: center; color: var(--brand); border-top: 1px solid var(--line);
+}

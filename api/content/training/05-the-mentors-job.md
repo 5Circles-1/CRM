@@ -7,9 +7,18 @@ summary: Touchpoints in three taps, the health-chip rulebook, and spotting upsel
 
 ## Who is in your book
 
-Everyone who has **paid**. They appear on the **Mentors** tab automatically the
-moment money is recorded against their deal — nobody adds them by hand, and
-nobody can forget to.
+Everyone who has **paid**, whatever product or plan they bought. They appear on
+the **Mentors** tab automatically the moment money is recorded against their
+deal — nobody adds them by hand, and nobody can forget to.
+
+For a client who paid outside the CRM, **Add a client** (admins, ops and
+counsellors) enters them properly: it creates the same lead, deal and payment a
+normal sale would, so they show up in your book and in the advisory register
+together, marked *manual*.
+
+A **paperwork open** chip on a client means their group / KYC / MITC checklist
+is unfinished on the Advisory clients tab. It is not your job to tick it, but
+it is worth knowing before you call them.
 
 You see paying clients and nothing else. The live sales pipeline is not visible
 to you, by design.

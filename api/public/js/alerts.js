@@ -117,6 +117,10 @@ function renderPanel(data) {
               <span class="alert-when">${esc(lateLabel(a))}</span>
             </a>`).join('')}
       </div>
+      ${data.count > 0 ? `
+        <a class="alert-row alert-all" href="#/reminders">
+          <b>Work through all ${data.count} →</b>
+        </a>` : ''}
     </div>`);
 
   document.body.appendChild(panel);

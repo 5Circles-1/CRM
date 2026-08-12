@@ -1460,6 +1460,161 @@ end $$;
 reset role;
 
 -- =============================================================================
+-- FLOW (FLW): why leads are waiting, told per team.
+--
+-- The reported bug: the floor said "83 leads waiting for an eligible caller"
+-- while two callers were plainly working. Both facts were true - the waiting
+-- leads were on the OTHER team, which had nobody on shift. A floor-wide total
+-- could never say that.
+-- =============================================================================
+
+do $$
+declare
+  v_src   uuid := '33333333-0000-0000-0000-000000000001';
+  v_teamB uuid := '11111111-0000-0000-0000-000000000002';
+begin
+  -- Team A is on shift from the R1 fixtures. Make sure Team B is not.
+  update crm.attendance_sessions s
+     set ended_at = now()
+   where s.ended_at is null
+     and s.user_id in (select tm.user_id from crm.team_memberships tm
+                        where tm.team_id = v_teamB and tm.period @> current_date);
+
+  insert into crm.leads (source_id, full_name, phone_e164, team_id, status,
+                         next_action_at, next_action_note)
+  select v_src, 'Stranded B ' || i, '+91955560000' || i, v_teamB, 'new',
+         now() + interval '1 hour', 'First contact'
+    from generate_series(1, 4) i;
+end $$;
+
+select crm_test.check(
+  'FLW', 'waiting leads are grouped by team, not lumped into one floor total',
+  (select waiting >= 4 from crm.v_lead_flow_waiting
+    where team_id = '11111111-0000-0000-0000-000000000002'), null);
+
+select crm_test.check(
+  'FLW', 'the reason names the team''s own blocker, not the floor''s',
+  (select reason = 'nobody_on_shift' from crm.v_lead_flow_waiting
+    where team_id = '11111111-0000-0000-0000-000000000002'),
+  (select 'reason was ' || reason from crm.v_lead_flow_waiting
+    where team_id = '11111111-0000-0000-0000-000000000002'));
+
+select crm_test.check(
+  'FLW', 'a team with nobody on shift reports zero on the floor but its callers counted',
+  (select on_floor = 0 and callers > 0 from crm.v_lead_flow_waiting
+    where team_id = '11111111-0000-0000-0000-000000000002'), null);
+
+-- Put one Team B caller on the floor: the blocker must clear and the sweep
+-- must then be able to hand the leads out.
+do $$
+begin
+  -- now(), not a backdated time: the sessions closed above ended at now(),
+  -- and the no-overlap constraint uses a half-open range.
+  insert into crm.attendance_sessions (user_id, started_at)
+  values ('22222222-0000-0000-0000-000000000003', now());
+end $$;
+
+select crm_test.check(
+  'FLW', 'one caller starting a shift changes the reason, without any other change',
+  (select reason = 'engine_should_be_assigning' from crm.v_lead_flow_waiting
+    where team_id = '11111111-0000-0000-0000-000000000002'),
+  (select 'reason was ' || reason from crm.v_lead_flow_waiting
+    where team_id = '11111111-0000-0000-0000-000000000002'));
+
+select crm.assign_pending_leads(50) as _swept \gset
+
+select crm_test.check(
+  'FLW', 'and the held leads then actually hand out',
+  (select count(*) = 0 from crm.leads
+    where full_name like 'Stranded B %' and caller_id is null),
+  'still unassigned: ' || (select count(*)::text from crm.leads
+    where full_name like 'Stranded B %' and caller_id is null));
+
+-- =============================================================================
+-- CLIENTS (CLI): the third advisory checkpoint and adding a client by hand.
+-- =============================================================================
+
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false) as _ \gset
+
+select crm.add_manual_client(
+         'Offline Buyer', '9855510101',
+         '44444444-0000-0000-0000-000000000002',
+         60000, now(), 'cash', null, 'paid at the desk before go-live'
+       ) as _manual_deal \gset
+
+select crm_test.check(
+  'CLI', 'a hand-entered client lands in the advisory register like any other',
+  (select paid_amount = 60000 and is_manual
+     from crm.v_advisory_clients where deal_id = :'_manual_deal'), null);
+
+select crm_test.check(
+  'CLI', 'and in the mentor book, because they have genuinely paid',
+  (select count(*) = 1 from crm.v_mentor_book where deal_id = :'_manual_deal'), null);
+
+select crm_test.check(
+  'CLI', 'the client starts with all three checkpoints open',
+  (select checkpoints_done = 0 from crm.v_advisory_clients
+    where deal_id = :'_manual_deal'), null);
+
+do $$
+begin
+  insert into crm.advisory_checkpoints (deal_id, group_added_at, group_added_by)
+  values ((select deal_id from crm.v_advisory_clients where full_name = 'Offline Buyer'),
+          now(), '22222222-0000-0000-0000-000000000005')
+  on conflict (deal_id) do update
+    set group_added_at = now(), group_added_by = excluded.group_added_by;
+end $$;
+
+select crm_test.check(
+  'CLI', 'ticking the group checkpoint counts toward the three',
+  (select checkpoints_done = 1 and group_added_at is not null
+     from crm.v_advisory_clients where deal_id = :'_manual_deal'), null);
+
+-- Entering the same phone again must not silently create a second person, and
+-- must not leak a raw constraint error either.
+do $$
+begin
+  perform crm.add_manual_client('Offline Buyer Again', '9855510101',
+            '44444444-0000-0000-0000-000000000001', 15000);
+  perform crm_test.check('CLI', 'a repeat entry on the same phone is refused, in plain words',
+                         false, 'a duplicate client was created');
+exception when unique_violation then
+  perform crm_test.check('CLI', 'a repeat entry on the same phone is refused, in plain words',
+                         sqlerrm like '%already has an open deal%', sqlerrm);
+end $$;
+
+select crm_test.check(
+  'CLI', 'and the original client is untouched by the refused attempt',
+  (select count(*) = 1 from crm.v_advisory_clients where full_name = 'Offline Buyer'), null);
+
+reset role;
+
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false) as _ \gset
+
+do $$
+begin
+  perform crm.add_manual_client('Sneaky', '9855510202',
+            '44444444-0000-0000-0000-000000000001', 1000);
+  perform crm_test.check('CLI', 'a caller cannot invent a paying client', false,
+                         'the call unexpectedly succeeded');
+exception when insufficient_privilege then
+  perform crm_test.check('CLI', 'a caller cannot invent a paying client', true, null);
+end $$;
+
+do $$
+begin
+  perform crm.assign_pending_leads_now(10);
+  perform crm_test.check('FLW', 'a caller cannot force distribution', false,
+                         'the call unexpectedly succeeded');
+exception when insufficient_privilege then
+  perform crm_test.check('FLW', 'a caller cannot force distribution', true, null);
+end $$;
+
+reset role;
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

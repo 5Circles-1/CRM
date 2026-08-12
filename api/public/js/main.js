@@ -15,6 +15,7 @@ import * as advisory from './views/advisory.js';
 import * as mentors from './views/mentors.js';
 import * as events from './views/events.js';
 import * as training from './views/training.js';
+import * as reminders from './views/reminders.js';
 import { startTour } from './views/training.js';
 import * as team from './views/team.js';
 import * as history from './views/history.js';
@@ -22,6 +23,7 @@ import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 
 const NAV = [
   { hash: '#/day', label: 'My Pipeline', roles: ['caller', 'counsellor'] },
+  { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
   { hash: '#/collections', label: 'Collections', roles: ['counsellor', 'admin', 'ops'] },
   { hash: '#/advisory', label: 'Advisory clients', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
@@ -43,7 +45,7 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, floor, collections, advisory, mentors, events, training,
+  day, reminders, floor, collections, advisory, mentors, events, training,
   dash, leads, people, score, attendance, admin, lead, team, history,
 };
 
@@ -53,7 +55,7 @@ const VIEWS = {
  * at rather than a search away.
  */
 const HELP_FOR = {
-  day: 'the-callers-job', floor: 'the-counsellors-job',
+  day: 'the-callers-job', reminders: 'the-callers-job', floor: 'the-counsellors-job',
   collections: 'the-counsellors-job', advisory: 'the-counsellors-job',
   mentors: 'the-mentors-job', events: 'how-the-crm-works',
   dash: 'how-the-crm-works', leads: 'the-callers-job',
@@ -64,7 +66,7 @@ const HELP_FOR = {
 };
 
 const TITLES = {
-  day: 'My Pipeline', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', mentors: 'Mentors',
+  day: 'My Pipeline', reminders: 'Alerts', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', mentors: 'Mentors',
   events: 'Events', training: 'Training',
   dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',

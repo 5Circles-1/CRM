@@ -1,5 +1,6 @@
 import { get, post, put } from '../api.js';
 import { esc, fmtDate, fmtINR, h, openModal, toast } from '../util.js';
+import { addClientModal } from './advisory.js';
 
 /**
  * Mentors: every paying client, kept warm on purpose.
@@ -121,8 +122,12 @@ export async function render(outlet, me) {
       <div class="panel">
         <div class="row spread wrap">
           <h2 class="mt0">Client book <small>${clients.length} paying ${clients.length === 1 ? 'client' : 'clients'}</small></h2>
-          <div class="chips" style="margin:0">
-            ${STATUS_TABS.map(([v, l]) => `<button class="chip ${v === f.status ? 'on' : ''}" data-status="${v}">${l}</button>`).join('')}
+          <div class="row" style="gap:8px">
+            <div class="chips" style="margin:0">
+              ${STATUS_TABS.map(([v, l]) => `<button class="chip ${v === f.status ? 'on' : ''}" data-status="${v}">${l}</button>`).join('')}
+            </div>
+            ${['admin', 'ops', 'counsellor'].includes(me.role)
+              ? '<button class="btn primary" id="add-client">Add a client</button>' : ''}
           </div>
         </div>
         <div class="row wrap" style="gap:8px;margin:8px 0 14px">
@@ -142,8 +147,11 @@ export async function render(outlet, me) {
         ${clients.map((c) => `
           <tr data-deal="${esc(c.deal_id)}" style="cursor:pointer">
             <td><b>${esc(c.full_name ?? 'Unnamed')}</b>
+                ${c.is_manual ? '<span class="badge b-mute" title="Entered by hand">manual</span>' : ''}
                 <span class="hint mono">${esc(c.phone_e164)}</span></td>
-            <td>${esc(c.product)}${c.client_status !== 'active' ? ` <span class="badge ${c.client_status === 'expired' ? 'b-warn' : 'b-bad'}">${esc(c.client_status)}</span>` : ''}</td>
+            <td>${esc(c.product)}${c.client_status !== 'active' ? ` <span class="badge ${c.client_status === 'expired' ? 'b-warn' : 'b-bad'}">${esc(c.client_status)}</span>` : ''}
+                ${Number(c.mitc_done_at !== null) + Number(c.kyc_done_at !== null) + Number(c.group_added_at !== null) < 3
+                  ? '<span class="badge b-warn" title="Group, KYC or MITC still open — see Advisory clients">paperwork open</span>' : ''}</td>
             <td class="num">${fmtINR(c.paid_amount)}</td>
             <td>${esc(c.mentor_name ?? '—')}</td>
             <td>${c.last_touch_on
@@ -165,6 +173,7 @@ export async function render(outlet, me) {
       </div>`));
 
     // --- wiring ---------------------------------------------------------
+    outlet.querySelector('#add-client')?.addEventListener('click', () => addClientModal(draw));
     outlet.querySelectorAll('[data-status]').forEach((b) =>
       b.addEventListener('click', () => { f.status = b.dataset.status; draw(); }));
     outlet.querySelectorAll('[data-health]').forEach((b) =>

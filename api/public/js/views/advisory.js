@@ -1,41 +1,81 @@
-import { get, put } from '../api.js';
-import { esc, fmtDate, fmtINR, h, toast } from '../util.js';
+import { get, post, put } from '../api.js';
+import { esc, fmtDate, fmtINR, h, openModal, toast } from '../util.js';
 
 /**
- * Advisory clients: paid money, so they left the sales pipeline - what remains
- * HERE is only the register and the two compliance checkpoints (MITC, KYC)
- * that must be complete before paid advisory is delivered. Sorted so anyone
- * missing a checkpoint floats to the top: money collected with MITC unticked
- * is the one state this screen exists to make impossible to miss.
+ * Advisory clients: everyone who has paid, and the three things that must be
+ * done for each of them before paid advisory is delivered —
+ *
+ *   1. Added to the client group
+ *   2. KYC done
+ *   3. MITC signed
+ *
+ * A register and a checklist, deliberately not service delivery: research,
+ * consent artefacts and the long-term client record stay in the advisory
+ * pipeline. What lives here is the one question nobody should ever have to
+ * ask — "we took their money; is their paperwork finished?"
  */
 const TABS = [['', 'All'], ['active', 'Active'], ['expired', 'Expired'], ['refunded', 'Refunded']];
 
+const CHECKS = [
+  ['groupAdded', 'group_added_at', 'Group'],
+  ['kycDone', 'kyc_done_at', 'KYC'],
+  ['mitcDone', 'mitc_done_at', 'MITC'],
+];
+
 export async function render(outlet, me) {
   let status = '';
-  const canEdit = me.role === 'admin' || me.role === 'counsellor';
+  let pendingOnly = false;
+  const canEdit = me.role === 'admin' || me.role === 'counsellor' || me.role === 'ops';
 
   const draw = async () => {
     outlet.innerHTML = '<div class="spin"></div>';
-    const rows = await get(`/advisory${status ? `?status=${status}` : ''}`);
+    const all = await get(`/advisory${status ? `?status=${status}` : ''}`);
+    const rows = pendingOnly ? all.filter((r) => Number(r.checkpoints_done) < 3) : all;
     outlet.innerHTML = '';
 
+    const outstanding = all.filter((r) => Number(r.checkpoints_done) < 3).length;
+
     outlet.appendChild(h(`
+      <div>
+      <div class="grid cols-4" style="margin-bottom:16px">
+        <div class="stat"><div class="k">Paying clients</div><div class="v">${all.length}</div>
+          <div class="s">money actually received</div></div>
+        <div class="stat ${outstanding ? 'tone-bad' : 'tone-good'}">
+          <div class="k">Paperwork open</div><div class="v">${outstanding}</div>
+          <div class="s">group, KYC or MITC missing</div></div>
+        <div class="stat"><div class="k">Active</div>
+          <div class="v">${all.filter((r) => r.client_status === 'active').length}</div>
+          <div class="s">subscription running</div></div>
+        <div class="stat"><div class="k">Expired</div>
+          <div class="v">${all.filter((r) => r.client_status === 'expired').length}</div>
+          <div class="s">due a renewal conversation</div></div>
+      </div>
+
       <div class="panel">
-        <div class="row spread">
+        <div class="row spread wrap">
           <h2 class="mt0">Advisory clients <small>everyone who has paid — ${rows.length}</small></h2>
-          <div class="chips" style="margin:0">
-            ${TABS.map(([v, l]) => `<button class="chip ${v === status ? 'on' : ''}" data-status="${v}">${l}</button>`).join('')}
+          <div class="row" style="gap:8px">
+            <div class="chips" style="margin:0">
+              ${TABS.map(([v, l]) => `<button class="chip ${v === status ? 'on' : ''}" data-status="${v}">${l}</button>`).join('')}
+              <button class="chip ${pendingOnly ? 'on' : ''}" data-pending="1">Paperwork open</button>
+            </div>
+            ${canEdit ? '<button class="btn primary" id="add-client">Add a client</button>' : ''}
           </div>
         </div>
-        ${rows.length === 0 ? '<div class="empty">No paying clients in this list yet.</div>' : `
+        ${rows.length === 0 ? '<div class="empty">Nobody in this list yet. A client appears here the moment a payment is recorded against their deal.</div>' : `
         <div style="overflow-x:auto">
         <table class="table"><thead><tr>
           <th>Client</th><th>Product</th><th class="num">Paid</th><th>Last payment</th>
-          <th>Counsellor</th><th>Status</th><th>MITC</th><th>KYC</th><th>Subscription ends</th>
+          <th>Counsellor</th><th>Status</th>
+          <th title="Added to the client group">Group</th>
+          <th title="KYC completed">KYC</th>
+          <th title="MITC signed">MITC</th>
+          <th>Subscription ends</th>
         </tr></thead><tbody>
         ${rows.map((r) => `
-          <tr${!r.mitc_done_at || !r.kyc_done_at ? ' style="background:var(--warn-bg)"' : ''}>
+          <tr${Number(r.checkpoints_done) < 3 ? ' class="radar-hot"' : ''}>
             <td><a href="#/lead/${esc(r.lead_id)}"><b>${esc(r.full_name ?? 'Unnamed')}</b></a>
+                ${r.is_manual ? '<span class="badge b-mute" title="Entered by hand, not through a recorded sale">manual</span>' : ''}
                 <span class="hint mono">${esc(r.phone_e164)}</span></td>
             <td>${esc(r.product)}</td>
             <td class="num">${fmtINR(r.paid_amount)}</td>
@@ -44,12 +84,12 @@ export async function render(outlet, me) {
             <td>${r.client_status === 'active' ? '<span class="badge b-ok">active</span>'
                 : r.client_status === 'expired' ? '<span class="badge b-warn">expired</span>'
                 : '<span class="badge b-bad">refunded</span>'}</td>
-            <td><label class="ck"><input type="checkbox" data-deal="${esc(r.deal_id)}" data-k="mitcDone"
-                  ${r.mitc_done_at ? 'checked disabled' : ''} ${canEdit ? '' : 'disabled'}>
-                  ${r.mitc_done_at ? esc(fmtDate(r.mitc_done_at)) : 'pending'}</label></td>
-            <td><label class="ck"><input type="checkbox" data-deal="${esc(r.deal_id)}" data-k="kycDone"
-                  ${r.kyc_done_at ? 'checked disabled' : ''} ${canEdit ? '' : 'disabled'}>
-                  ${r.kyc_done_at ? esc(fmtDate(r.kyc_done_at)) : 'pending'}</label></td>
+            ${CHECKS.map(([key, col]) => `
+              <td><label class="ck" style="white-space:nowrap">
+                <input type="checkbox" data-deal="${esc(r.deal_id)}" data-k="${key}"
+                  ${r[col] ? 'checked disabled' : ''} ${canEdit ? '' : 'disabled'}>
+                <span class="hint">${r[col] ? esc(fmtDate(r[col])) : 'pending'}</span>
+              </label></td>`).join('')}
             <td>${canEdit
                 ? `<input type="date" data-deal="${esc(r.deal_id)}" data-k="subEnd"
                      value="${r.subscription_ends_at ? esc(String(r.subscription_ends_at).slice(0, 10)) : ''}"
@@ -58,21 +98,27 @@ export async function render(outlet, me) {
           </tr>`).join('')}
         </tbody></table></div>
         <div class="hint" style="margin-top:8px">
-          Amber rows are missing a checkpoint — money is in and MITC or KYC is not done.
-          Ticks are one-way and record who ticked them and when; service delivery itself
-          stays in the advisory pipeline, not in this CRM.
+          Highlighted rows are missing a checkpoint — money is in and the group, KYC or
+          MITC is not done. Ticks are one-way and record who ticked them and when;
+          service delivery itself stays in the advisory pipeline, not in this CRM.
         </div>`}
+      </div>
       </div>`));
 
     outlet.querySelectorAll('[data-status]').forEach((b) =>
       b.addEventListener('click', () => { status = b.dataset.status; draw(); }));
+    outlet.querySelector('[data-pending]')?.addEventListener('click', () => {
+      pendingOnly = !pendingOnly; draw();
+    });
+    outlet.querySelector('#add-client')?.addEventListener('click', () => addClientModal(draw));
 
     outlet.querySelectorAll('input[type=checkbox][data-deal]').forEach((cb) =>
       cb.addEventListener('change', async () => {
         if (!cb.checked) return;
+        const label = CHECKS.find(([k]) => k === cb.dataset.k)?.[2] ?? 'Checkpoint';
         try {
-          await put(`/advisory/${cb.dataset.deal}`, { [cb.dataset.k === 'mitcDone' ? 'mitcDone' : 'kycDone']: true });
-          toast(`${cb.dataset.k === 'mitcDone' ? 'MITC' : 'KYC'} recorded with your name and the time.`);
+          await put(`/advisory/${cb.dataset.deal}`, { [cb.dataset.k]: true });
+          toast(`${label} recorded with your name and the time.`);
           draw();
         } catch (err) { cb.checked = false; toast(err.message, 'err'); }
       }));
@@ -90,4 +136,81 @@ export async function render(outlet, me) {
   };
 
   await draw();
+}
+
+/**
+ * Add a client who arrived outside the normal flow.
+ *
+ * This builds a real lead, deal and payment — the same objects a recorded sale
+ * creates — so the client behaves identically everywhere and counts in the
+ * same totals. It is marked "manual" so reporting stays honest about how they
+ * arrived, not to give them a separate life.
+ */
+export async function addClientModal(onDone) {
+  const [products, mentorList] = await Promise.all([
+    get('/advisory/products'),
+    get('/mentors/book').then((b) => b.mentors).catch(() => []),
+  ]);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const bodyEl = h(`
+    <div>
+      <div class="hint" style="margin-bottom:10px">
+        For a client who paid outside the CRM — an offline sale, a migrated record,
+        a payment taken before this system. Everyone who pays <b>through</b> the CRM
+        appears automatically; you never need this for them.
+      </div>
+      <label class="f">Full name <input name="name" required></label>
+      <div class="frow">
+        <label class="f">Phone <input name="phone" placeholder="98xxxxxxxx" required></label>
+        <label class="f">Paid on <input type="date" name="paid" value="${today}" max="${today}"></label>
+      </div>
+      <label class="f">Product / plan they bought
+        <select name="product">
+          ${products.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}
+        </select>
+      </label>
+      <div class="frow">
+        <label class="f">Amount paid (₹) <input type="number" name="amount" min="1" step="1" required></label>
+        <label class="f">Mode
+          <select name="mode">
+            ${['upi', 'cash', 'neft', 'card', 'netbanking', 'cheque', 'other']
+              .map((m) => `<option value="${m}">${m}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <label class="f">Assign a mentor <span class="hint">optional — can be set later on the Mentors tab</span>
+        <select name="mentor">
+          <option value="">— none yet —</option>
+          ${mentorList.map((m) => `<option value="${esc(m.id)}">${esc(m.full_name)}</option>`).join('')}
+        </select>
+      </label>
+      <label class="f">Note <input name="note" maxlength="300" placeholder="why this was entered by hand"></label>
+    </div>`);
+
+  const footer = h('<div><button class="btn primary">Add client</button></div>');
+  const { close } = openModal('Add a paying client', bodyEl, footer);
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    const v = (n) => bodyEl.querySelector(`[name=${n}]`).value.trim();
+    if (!v('name') || !v('phone') || !v('amount')) {
+      toast('Name, phone and amount are all required — a client is someone who has paid.', 'err');
+      return;
+    }
+    try {
+      await post('/advisory/manual', {
+        fullName: v('name'),
+        phone: v('phone'),
+        productId: v('product'),
+        amount: Number(v('amount')),
+        paidAt: v('paid') ? new Date(`${v('paid')}T12:00:00+05:30`).toISOString() : undefined,
+        mode: v('mode'),
+        mentorId: v('mentor') || null,
+        note: v('note') || undefined,
+      });
+      toast('Client added — they are now in the advisory register and the mentor book.');
+      close();
+      onDone();
+    } catch (err) { toast(err.message, 'err'); }
+  });
 }

@@ -25,6 +25,30 @@ const TROPHIES = [
  * The counsellor's home: who is on the floor, what is leaking, what needs
  * transferring (requirement 8), and their own negotiations.
  */
+/**
+ * Why a group of leads is sitting unassigned, in words that name the fix.
+ *
+ * The old banner said "waiting for an eligible caller" while two callers were
+ * visibly working — true, but useless, because the waiting leads belonged to a
+ * different team. Each reason below points at something someone can go and do.
+ */
+const WAIT_WHY = (w) => ({
+  nobody_on_shift:
+    `nobody on this team has started a shift (${w.callers} caller${w.callers === 1 ? '' : 's'} on the team). `
+    + 'They hand out the moment one of them presses Start shift.',
+  all_on_floor_restricted:
+    `everyone on the floor from this team is RESTRICTED, so no fresh leads may go to them. `
+    + 'Un-restrict someone in Admin, or get a STANDARD caller on the floor.',
+  team_has_no_callers:
+    'this team has no active callers at all. Add someone to it in Admin → Users.',
+  no_team:
+    'these leads belong to no team, so distribution cannot see them. '
+    + 'Pin the lead source to a team in Admin → Ingestion.',
+  engine_should_be_assigning:
+    `${w.eligible_now} eligible caller${w.eligible_now === 1 ? ' is' : 's are'} on the floor, `
+    + 'so these should be moving within a minute. If the number is not falling, press Hand out now.',
+}[w.reason] ?? 'held at team level.');
+
 export async function render(outlet, me) {
   const [floor, immediate, leakage, candidates, targets, qualified, negotiation, today,
          overallToday, avatars, leadFlow, followups] = await Promise.all([
@@ -245,9 +269,17 @@ export async function render(outlet, me) {
       <div class="panel" data-testid="lead-flow">
         <h2>Lead flow <small>who the distribution engine can reach right now</small></h2>
         ${Number(leadFlow.unassigned) > 0 ? `
-          <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-            <b>${Number(leadFlow.unassigned)} lead${Number(leadFlow.unassigned) === 1 ? '' : 's'} waiting with no caller.</b>
-            They are held at team level and hand out automatically as soon as an eligible caller is on the floor.
+          <div class="banner warn">
+            <div><b>${Number(leadFlow.unassigned)} lead${Number(leadFlow.unassigned) === 1 ? '' : 's'} waiting with no caller.</b></div>
+            <div style="font-weight:500;margin-top:6px">
+              ${(leadFlow.waiting ?? []).map((w) => `
+                <div style="margin-top:4px">
+                  <b>${esc(w.team_name)}:</b> ${Number(w.waiting)} waiting —
+                  ${esc(WAIT_WHY(w))}
+                </div>`).join('') || 'Held at team level; they hand out automatically.'}
+            </div>
+            ${me.role === 'admin' || me.role === 'ops'
+              ? '<button class="btn small" id="assign-now" style="margin-top:8px">Hand out now</button>' : ''}
           </div>` : ''}
         <table class="table"><thead><tr>
           <th>Caller</th><th>Team</th><th>Status</th><th class="num">Today</th>
@@ -270,6 +302,18 @@ export async function render(outlet, me) {
             ${stuck.map((c) => `<div><b>${esc(c.full_name)}</b>: ${esc(FLOW_WHY[c.flow_status] ?? '')}</div>`).join('')}
           </div>`}
       </div>`));
+
+    outlet.querySelector('#assign-now')?.addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      try {
+        const r = await post('/dashboards/lead-flow/assign-now', {});
+        toast(Number(r.assigned) > 0
+          ? `${r.assigned} lead${Number(r.assigned) === 1 ? '' : 's'} handed out.`
+          : 'Nothing could be handed out — the reason above still applies.');
+        render(outlet, me);
+      } catch (err) { toast(err.message, 'err'); btn.disabled = false; }
+    });
   }
 
   // --- immediate queue ---

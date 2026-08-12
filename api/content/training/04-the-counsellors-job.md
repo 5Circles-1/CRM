@@ -50,12 +50,18 @@ chases the instalments.** Collections is your tab, permanently.
 
 ## Advisory clients
 
-Once someone has paid, they appear on **Advisory clients** with two compliance
-checkpoints: **MITC done** and **KYC signed**. Amber rows are the dangerous
-ones — money collected and a checkpoint still open.
+Once someone has paid, they appear on **Advisory clients** with three
+compliance checkpoints: **added to the client group**, **KYC done** and **MITC
+signed**. Highlighted rows are the dangerous ones — money collected and a
+checkpoint still open. The **Paperwork open** filter shows only those.
 
 Ticks are one-way and record who ticked them and when. Service delivery itself
 is not done here; it belongs to the advisory pipeline.
+
+If a client paid outside the CRM — an offline sale, a migrated record — use
+**Add a client**. It creates a real lead, deal and payment so they behave like
+everyone else, and marks them *manual*. Anyone who pays through the CRM is
+added automatically and never needs it.
 
 ## The ten-minute rule, read as a signal
 
@@ -113,7 +119,7 @@ pace.
   },
   {
     "q": "Money is in and MITC is not ticked. Where does that show?",
-    "options": ["Nowhere", "An amber row on Advisory clients"],
+    "options": ["Nowhere", "A highlighted row on Advisory clients"],
     "answer": 1,
     "why": "That single state is what the screen exists to make impossible to miss."
   }
