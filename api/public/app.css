@@ -346,6 +346,9 @@ pre.json {
   font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em;
   padding: 3px 7px; border-radius: 6px; text-align: center;
   background: #eef1f5; color: var(--muted);
+  /* An unlabelled kind falls back to its raw key, which can be long enough to
+     run over the row beside it. Keep it inside its own box whatever it says. */
+  overflow-wrap: anywhere; hyphens: auto;
 }
 .alert-row.critical .alert-kind { background: var(--bad-bg); color: var(--bad); }
 .alert-row.warning  .alert-kind { background: var(--warn-bg); color: var(--warn); }

@@ -91,6 +91,15 @@ export const JOBS: Job[] = [
     sql: 'select crm.send_due_reminders()',
   },
   {
+    name: 'send_retap_reminders',
+    // Hourly is plenty: the function itself enforces the every-N-days cadence
+    // per person from the last notification it actually sent, so running it
+    // often costs nothing and a missed hour never skips somebody's turn.
+    everyMs: 60 * 60_000,
+    sql: 'select crm.send_retap_reminders()',
+    shiftHoursOnly: true,
+  },
+  {
     name: 'purge_expired_sessions',
     everyMs: 6 * 60 * 60_000,
     sql: 'select crm.purge_expired_sessions()',

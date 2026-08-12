@@ -52,7 +52,15 @@ const LABEL = {
   callback_due: 'Callback due now',
   callback_soon: 'Callback shortly',
   action_overdue: 'Follow-up overdue',
+  follow_up_due: 'Follow-up due',
+  custom_reminder: 'Your reminder',
+  new_lead: 'New lead',
   reassigned_in: 'New lead for you',
+  cross_team_in: 'From the other team',
+  retap_due: 'Re-tap',
+  daily_brief_morning: 'Morning brief',
+  daily_brief_midday: 'Pace check',
+  daily_brief_evening: 'End of day',
 };
 
 function lateLabel(a) {
@@ -110,9 +118,11 @@ function renderPanel(data) {
         ${data.alerts.length === 0
           ? '<div class="empty">Nothing needs you right now.</div>'
           : data.alerts.map((a) => `
-            <a class="alert-row ${esc(a.severity)}" href="#/lead/${esc(a.lead_id)}">
+            <a class="alert-row ${esc(a.severity)}" href="${
+              a.kind === 'retap_due' ? '#/retap'
+                : a.lead_id ? `#/lead/${esc(a.lead_id)}` : '#/reminders'}">
               <span class="alert-kind">${esc(LABEL[a.kind] ?? a.kind)}</span>
-              <span class="alert-lead">${esc(a.lead_name ?? 'Lead')}
+              <span class="alert-lead">${esc(a.lead_name ?? a.title ?? 'Notification')}
                 <span class="mono hint">${esc(a.phone_e164 ?? '')}</span></span>
               <span class="alert-when">${esc(lateLabel(a))}</span>
             </a>`).join('')}

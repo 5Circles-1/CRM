@@ -90,6 +90,32 @@ CRM is not connected to WhatsApp and cannot detect it. Marking it lets you
 build the "spoke to, not yet messaged" list later, which is one of the most
 productive re-tap lists there is.
 
+## When someone stops answering
+
+After **{{setting:alert.na_quiet_after_attempts}} no-answers in a row**, a lead
+**goes quiet**. It stops alerting you, stops appearing in the bell, and moves
+to the **Re-tap** tab.
+
+This is on purpose. A handful of people who never pick up can generate a
+hundred red alerts between them, and a bell full of those is a bell you stop
+reading — including for the callbacks that genuinely matter.
+
+Nothing is lost. The lead keeps its next action, still appears in My Pipeline
+and Find lead, still counts in every leakage figure, and is still yours. Only
+the interrupting stops.
+
+**Every {{setting:retap.reminder_days}} days you get one notification** — not
+one per lead — telling you how many are waiting and how long the oldest has
+been silent. Open the **Re-tap** tab and work them as a batch, longest silence
+first. A WhatsApp often restarts one of these when a call will not.
+
+One thing does *not* go quiet: **a callback the customer asked for**. That
+still interrupts however many times they have missed your calls, because it is
+a promise rather than chasing.
+
+If a lead genuinely will never answer, close it with the honest outcome instead
+of leaving it in the pool forever.
+
 ## Re-tapping — finding people you already spoke to
 
 **Find lead** is your second pipeline. Combine filters:

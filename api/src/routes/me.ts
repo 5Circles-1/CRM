@@ -142,6 +142,35 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  /**
+   * The no-answer pool: still open, still yours, but gone quiet.
+   *
+   * These leads raise no individual alerts - that is the whole point - so this
+   * is the only place they surface as a group. Sorted oldest-silence first,
+   * which is the order they are worth calling in.
+   */
+  app.get('/me/no-answer-pool', async (req) => {
+    const user = req.requireUser();
+    const { scope } = z
+      .object({ scope: z.enum(['mine', 'team']).default('mine') })
+      .parse(req.query);
+
+    return req.tx(async (q) => {
+      const rows = await q.many<{ lead_id: string }>(
+        `select * from crm.v_no_answer_pool
+          where ($1::text = 'team' or user_id = $2)
+          order by days_since_touch desc nulls last, na_streak desc
+          limit 500`,
+        [scope, user.id],
+      );
+      await logLeadAccess(q, user.id, rows.map((r) => r.lead_id), 'list', req.ip);
+      const threshold = await q.one<{ n: number }>(
+        `select crm.setting_int('alert.na_quiet_after_attempts', 3) as n`,
+      );
+      return { count: rows.length, threshold: threshold?.n ?? 3, leads: rows };
+    });
+  });
+
   /** Leads about to move to the other team unless worked - the warning tab. */
   app.get('/me/cross-team-watch', async (req) => {
     const user = req.requireUser();

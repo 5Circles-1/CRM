@@ -2174,6 +2174,95 @@ describe('advisory clients register', () => {
   });
 });
 
+describe('repeated no-answers go quiet', () => {
+  it('past the threshold a lead leaves the alert stream and joins the re-tap pool', async () => {
+    const noisy = makeLeadFor(USERS.callerA1, 'Three Strikes');
+    const quiet = makeLeadFor(USERS.callerA1, 'Six Strikes');
+    fixtureSql(`
+      update crm.leads set na_streak = 3, attempt_count = 3,
+             first_touched_at = now() - interval '2 days',
+             last_contacted_at = now() - interval '2 days',
+             next_action_at = now() - interval '1 day'
+       where id = '${noisy}';
+      update crm.leads set na_streak = 6, attempt_count = 6,
+             first_touched_at = now() - interval '11 days',
+             last_contacted_at = now() - interval '11 days',
+             next_action_at = now() - interval '6 days'
+       where id = '${quiet}';
+    `);
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const kindsFor = (id: string) => alerts.json().alerts
+      .filter((x: { lead_id: string }) => x.lead_id === id)
+      .map((x: { kind: string }) => x.kind);
+
+    assert.ok(kindsFor(noisy).length > 0, 'three no-answers still alerts');
+    assert.deepEqual(kindsFor(quiet), [], 'six no-answers raises nothing at all');
+
+    const pool = await h.app.inject({
+      method: 'GET', url: '/me/no-answer-pool', headers: auth(a1),
+    });
+    assert.equal(pool.statusCode, 200);
+    assert.equal(pool.json().threshold, 3);
+    const ids = pool.json().leads.map((l: { lead_id: string }) => l.lead_id);
+    assert.ok(ids.includes(quiet), 'the quiet lead is in the pool');
+    assert.ok(!ids.includes(noisy), 'the noisy one is not - it is still being worked');
+
+    const row = pool.json().leads.find((l: { lead_id: string }) => l.lead_id === quiet);
+    assert.ok(Number(row.days_since_touch) >= 11, 'and it carries how long it has been silent');
+  });
+
+  it('the lead stays open, owned and countable - only the interrupting stops', async () => {
+    const state = fixtureSql(`
+      select status || '|' || (caller_id is not null) || '|' || (next_action_at is not null)
+        from crm.leads where full_name like 'Six Strikes%';
+    `).trim();
+    assert.match(state, /^(new|working|callback)\|true\|true$/, `unexpected state: ${state}`);
+  });
+
+  it('one re-tap nudge per person, and not again until the window passes', async () => {
+    fixtureSql(`delete from crm.notifications where kind = 'retap_due';`);
+    const first = Number(fixtureSql('select crm.send_retap_reminders();').trim());
+    const second = Number(fixtureSql('select crm.send_retap_reminders();').trim());
+    assert.ok(first >= 1, 'the owner of the quiet leads is nudged once');
+    assert.equal(second, 0, 'and not again straight away');
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/notifications', headers: auth(a1) });
+    const nudge = res.json().notifications.find(
+      (n: { kind: string }) => n.kind === 'retap_due',
+    );
+    assert.ok(nudge, 'it reaches the notification centre');
+    assert.match(nudge.title, /re-tapped/);
+
+    // Age it past the window and the next one is due.
+    fixtureSql(`
+      update crm.notifications set created_at = now() - interval '6 days'
+       where kind = 'retap_due';
+    `);
+    const third = Number(fixtureSql('select crm.send_retap_reminders();').trim());
+    assert.ok(third >= 1, 'after five days the reminder comes round again');
+  });
+
+  it('a counsellor can see the whole team pool, a caller only their own', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const team = await h.app.inject({
+      method: 'GET', url: '/me/no-answer-pool?scope=team', headers: auth(cs),
+    });
+    assert.equal(team.statusCode, 200);
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const mine = await h.app.inject({
+      method: 'GET', url: '/me/no-answer-pool?scope=team', headers: auth(a1),
+    });
+    // Even asking for team scope, RLS keeps a caller to their own leads.
+    for (const l of mine.json().leads) {
+      assert.equal(l.user_id, USERS.callerA1, 'a caller sees only their own quiet leads');
+    }
+  });
+});
+
 describe('alerts you can actually clear', () => {
   it('snoozing moves the promise on the working clock and records it on the lead', async () => {
     const leadId = makeLeadFor(USERS.callerA1, 'Snoozable');

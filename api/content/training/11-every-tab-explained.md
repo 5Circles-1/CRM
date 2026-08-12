@@ -29,6 +29,19 @@ morning — and the new time is written into the lead's own history.
 **The mistake:** treating rescheduling as clearing. Moving a promise is a
 decision about a customer, and the lead records who moved it.
 
+## Re-tap
+
+**Who sees it:** callers, counsellors, admins, ops.
+**What it is:** leads that have gone unanswered more than
+{{setting:alert.na_quiet_after_attempts}} times in a row. They raise **no**
+alerts — that is the whole point — and live here until worked as a batch.
+**What to do:** work top down, longest silence first. Filter by "Silent 7
+days+" or "No WhatsApp sent". You get one reminder every
+{{setting:retap.reminder_days}} days that they are waiting, never one per lead.
+**The mistake:** thinking a quiet lead is a dead lead. It is still open, still
+yours, still counted — it just stopped shouting. Close it properly if it truly
+will never answer.
+
 ## Floor
 
 **Who sees it:** counsellors and admins.
@@ -192,6 +205,12 @@ changing a target is an ops action rather than a deployment.
     "options": ["For every new client", "Only for someone who paid outside the CRM"],
     "answer": 1,
     "why": "Anyone who pays through the CRM appears in both books automatically."
+  },
+  {
+    "q": "A lead has not answered six times. Where is it?",
+    "options": ["Deleted", "In the Re-tap tab, raising no alerts but still open and yours", "Closed automatically"],
+    "answer": 1,
+    "why": "Quiet is about the bell, not the pipeline."
   },
   {
     "q": "You cannot get to 20 overdue follow-ups today.",

@@ -1615,6 +1615,119 @@ end $$;
 reset role;
 
 -- =============================================================================
+-- QUIET (QUI): repeated no-answers stop shouting and become a batch job.
+--
+-- The floor's complaint: a hundred red alerts, most of them the same handful
+-- of people who did not pick up. That trains everybody to ignore the bell,
+-- including for the callbacks that actually matter.
+-- =============================================================================
+
+do $$
+declare
+  v_src uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1  uuid := '22222222-0000-0000-0000-000000000001';
+begin
+  -- Three no-answers: still inside the threshold, still alerts.
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         first_touched_at, attempt_count, na_streak, last_contacted_at,
+                         next_action_at, next_action_note)
+  values (v_src, 'Still Noisy', '+919555910001', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() - interval '2 days', 3, 3, now() - interval '2 days',
+          now() - interval '1 day', 'Retry after not answered');
+
+  -- Four: past the threshold, goes quiet.
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         first_touched_at, attempt_count, na_streak, last_contacted_at,
+                         next_action_at, next_action_note)
+  values (v_src, 'Gone Quiet', '+919555910002', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() - interval '9 days', 6, 6, now() - interval '9 days',
+          now() - interval '5 days', 'Retry after not answered');
+
+  -- A callback the customer asked for, on a lead that never answers. This one
+  -- must STILL interrupt: it is a promise, not chasing.
+  insert into crm.callbacks (lead_id, assigned_to, scheduled_at, status, created_by)
+  values ((select id from crm.leads where full_name = 'Gone Quiet'),
+          v_a1, now() - interval '10 minutes', 'pending', v_a1);
+end $$;
+
+select crm_test.check(
+  'QUI', 'three no-answers still raises its overdue alert',
+  (select count(*) > 0 from crm.v_my_alerts
+    where lead_name = 'Still Noisy' and kind in ('action_overdue', 'follow_up_due')), null);
+
+select crm_test.check(
+  'QUI', 'past the threshold the lead stops raising overdue alerts entirely',
+  (select count(*) = 0 from crm.v_my_alerts
+    where lead_name = 'Gone Quiet' and kind in ('action_overdue', 'follow_up_due')),
+  (select string_agg(kind, ',') from crm.v_my_alerts where lead_name = 'Gone Quiet'));
+
+select crm_test.check(
+  'QUI', 'but a callback the customer asked for still interrupts, however quiet the lead',
+  (select count(*) = 1 from crm.v_my_alerts
+    where lead_name = 'Gone Quiet' and kind = 'callback_due'), null);
+
+select crm_test.check(
+  'QUI', 'the quiet lead appears in the re-tap pool instead',
+  (select na_streak = 6 and days_since_touch >= 9 from crm.v_no_answer_pool
+    where full_name = 'Gone Quiet'), null);
+
+select crm_test.check(
+  'QUI', 'and the noisy one does not - it is still being worked normally',
+  (select count(*) = 0 from crm.v_no_answer_pool where full_name = 'Still Noisy'), null);
+
+select crm_test.check(
+  'QUI', 'going quiet does not park or hide the lead - it is still open and still owned',
+  -- Still an OPEN status (this one is 'callback', because the fixture booked
+  -- one), still assigned, still carrying a next action. Quiet is about the
+  -- bell, not about the pipeline.
+  (select status in ('new', 'working', 'callback')
+      and pool is distinct from 'retap'
+      and caller_id = '22222222-0000-0000-0000-000000000001'
+      and next_action_at is not null
+     from crm.leads where full_name = 'Gone Quiet'), null);
+
+-- The five-day nudge: one per person, not one per lead.
+delete from crm.notifications where kind = 'retap_due';
+
+select crm.send_retap_reminders() as _r1 \gset
+select crm.send_retap_reminders() as _r2 \gset
+
+select crm_test.check(
+  'QUI', 'one notification per owner, not one per lead',
+  :_r1 = 1, 'first run sent ' || :_r1);
+
+select crm_test.check(
+  'QUI', 'running it again inside the window sends nothing',
+  :_r2 = 0, 'second run sent ' || :_r2);
+
+select crm_test.check(
+  'QUI', 'the nudge says how many are waiting and how long the oldest has been silent',
+  (select title like '%waiting to be re-tapped%' and body like '%day%'
+     from crm.notifications where kind = 'retap_due' limit 1), null);
+
+-- Move the notification back beyond the window: the next one is then due.
+do $$
+declare v_days int := crm.setting_int('retap.reminder_days', 5);
+begin
+  update crm.notifications
+     set created_at = now() - make_interval(days => v_days + 1)
+   where kind = 'retap_due';
+end $$;
+
+select crm.send_retap_reminders() as _r3 \gset
+
+select crm_test.check(
+  'QUI', 'once the window has passed, the next reminder goes out',
+  :_r3 = 1, 'third run sent ' || :_r3);
+
+select crm_test.check(
+  'QUI', 'the re-tap notification is not in the popup list - it must never interrupt',
+  not ((select value from crm.settings where key = 'alerts.popup_kinds')
+         @> '["retap_due"]'::jsonb), null);
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 
