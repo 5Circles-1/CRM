@@ -25,9 +25,9 @@ import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 
 const NAV = [
   { hash: '#/day', label: 'My Pipeline', roles: ['caller', 'counsellor'] },
-  { hash: '#/fresh', label: 'Fresh leads', roles: ['caller', 'counsellor', 'admin', 'ops'] },
+  { hash: '#/fresh', label: 'Fresh leads', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
-  { hash: '#/retap', label: 'Re-tap', roles: ['caller', 'counsellor', 'admin', 'ops'] },
+  { hash: '#/retap', label: 'Re-tap', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
   { hash: '#/collections', label: 'Collections', roles: ['counsellor', 'admin', 'ops'] },
   { hash: '#/advisory', label: 'Advisory clients', roles: ['counsellor', 'admin', 'ops', 'viewer'] },

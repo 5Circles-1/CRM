@@ -1,53 +1,383 @@
 {
   "_comment": "The single source of truth for what every part of the UI does. Rendered as the searchable glossary in Training AND used as tooltip text across the app, so the manual and the tooltip can never disagree. Keys are stable; add, do not rename.",
   "entries": [
-    { "key": "tab.day", "area": "Tabs", "label": "My Pipeline", "does": "Your work for today, already in the order it should be done.", "when": "Start here every morning and work top to bottom." },
-    { "key": "tab.floor", "area": "Tabs", "label": "Floor", "does": "The live floor: leaderboard, who is on shift, and what is leaking.", "when": "Twice a day if you run a team." },
-    { "key": "tab.collections", "area": "Tabs", "label": "Collections", "does": "Money owed, instalments, promises to pay and who to chase.", "when": "Daily if you have closed any deal." },
-    { "key": "tab.advisory", "area": "Tabs", "label": "Advisory clients", "does": "Everyone who has paid, with the MITC and KYC compliance checkpoints.", "when": "After every payment, to clear the checkpoints." },
-    { "key": "tab.mentors", "area": "Tabs", "label": "Mentors", "does": "Paying clients kept warm: touchpoints, health chips and upsell interest.", "when": "Daily if you are a mentor; when hunting warm upsell if you are a counsellor." },
-    { "key": "tab.events", "area": "Tabs", "label": "Events", "does": "Seminars and webinars with the roster of who was invited and who came.", "when": "Before an event to build the roster, after it to work the follow-ups." },
-    { "key": "tab.dash", "area": "Tabs", "label": "Dashboards", "does": "Charts: conversion, collections over time, the funnel and pipeline leakage.", "when": "Weekly, or when a number needs explaining." },
-    { "key": "tab.leads", "area": "Tabs", "label": "Find lead", "does": "Search and filter every lead you are allowed to see.", "when": "Any time you need a list — this is the re-tap tool." },
-    { "key": "tab.people", "area": "Tabs", "label": "Performance", "does": "Per-person dials, connects, talk time, walk-ins and conversion.", "when": "Weekly one-to-ones, and before any coaching conversation." },
-    { "key": "tab.history", "area": "Tabs", "label": "Previous months", "does": "Older uploaded records, parked out of the live queue but still tappable.", "when": "Running a re-tap campaign on old data." },
-    { "key": "tab.team", "area": "Tabs", "label": "Team", "does": "Team chat. Everyone can post, to their team or the whole floor.", "when": "Anything the floor needs to know now." },
-    { "key": "tab.score", "area": "Tabs", "label": "My Score", "does": "Your score and what each component measures.", "when": "For self-reflection — it is not a ranking board." },
-    { "key": "tab.attendance", "area": "Tabs", "label": "Attendance", "does": "Your hours, day by day, against the 9-hour expectation.", "when": "Checking your own week." },
-    { "key": "tab.training", "area": "Tabs", "label": "Training", "does": "Every rule and every screen explained, with a quiz and an acknowledgement.", "when": "Your first week, and whenever a module changes." },
-    { "key": "tab.admin", "area": "Tabs", "label": "Admin", "does": "Users, lead sources, settings, security alerts and quarantine.", "when": "Admins and ops only." },
-
-    { "key": "btn.start_shift", "area": "Buttons", "label": "Start shift", "does": "Opens your attendance session for today.", "when": "The moment you sit down. No shift, no fresh leads, no hours." },
-    { "key": "btn.log_call", "area": "Buttons", "label": "Log call", "does": "Records an attempt: outcome, talk time in MM:SS, and the next action.", "when": "As you finish each call, never in a batch." },
-    { "key": "btn.book_walkin", "area": "Buttons", "label": "Book walk-in", "does": "Schedules a visit and puts it on the counsellor's pipeline immediately.", "when": "The moment someone commits to coming in." },
-    { "key": "btn.transfer", "area": "Buttons", "label": "Transfer", "does": "Moves a lead to another caller, with a reason, recorded in the audit log.", "when": "Counsellors and admins only, when the owner genuinely cannot progress it." },
-    { "key": "btn.whatsapp_sent", "area": "Buttons", "label": "WhatsApp sent", "does": "Marks that you sent a message. Manual — the CRM cannot detect it.", "when": "Straight after sending, so your re-tap lists work later." },
-    { "key": "btn.import_leads", "area": "Buttons", "label": "Import leads", "does": "Copies filtered leads onto an event roster. Originals are never modified.", "when": "Building an event roster. Preview first — the count is exact." },
-    { "key": "btn.theme", "area": "Buttons", "label": "◐ Theme", "does": "Switches between the light and dark themes. Remembered on this browser.", "when": "Whenever the room's lighting changes." },
-    { "key": "btn.password", "area": "Buttons", "label": "Password", "does": "Changes your own password while signed in.", "when": "Any time. Ask an admin instead if you are locked out." },
-
-    { "key": "filter.overdue", "area": "Filters", "label": "Overdue", "does": "Leads whose next action time has passed, in working hours.", "when": "First thing every morning." },
-    { "key": "filter.untouched", "area": "Filters", "label": "Untouched", "does": "Assigned leads nobody has dialled yet.", "when": "Before the ten-minute rule moves them off your list." },
-    { "key": "filter.callbacks_today", "area": "Filters", "label": "Callbacks today", "does": "Callbacks scheduled for today that are still pending.", "when": "Several times a day. A missed callback is the most expensive miss." },
-    { "key": "filter.followup_round", "area": "Filters", "label": "Follow-up round (FU1–FU5)", "does": "Filters by how many attempts a lead has had.", "when": "Running a structured re-tap: 'everyone due their 3rd follow-up'." },
-    { "key": "filter.no_whatsapp", "area": "Filters", "label": "No WhatsApp sent", "does": "Leads you spoke to but never messaged.", "when": "One of the most productive re-tap lists there is." },
-    { "key": "filter.last_disposition", "area": "Filters", "label": "Last outcome", "does": "Filters by the most recent call outcome.", "when": "Building a 'not answered' or 'will call back' sweep." },
-
-    { "key": "badge.immediate", "area": "Badges", "label": "Immediate", "does": "A high-intent lead who asked to be contacted now.", "when": "Call before anything else on your list." },
-    { "key": "badge.health_green", "area": "Badges", "label": "Green (client health)", "does": "Touched recently, went fine, nothing overdue.", "when": "No action needed." },
-    { "key": "badge.health_amber", "area": "Badges", "label": "Amber (client health)", "does": "A touch is due, or the last attempt did not land.", "when": "Work after the reds." },
-    { "key": "badge.health_red", "area": "Badges", "label": "Red (client health)", "does": "A concern was raised, the client has gone quiet, or a follow-up is badly overdue.", "when": "Call today. Work these first." },
-    { "key": "badge.tier_ace", "area": "Badges", "label": "ACE", "does": "Best relative walk-in conversion; holds the guaranteed share of fresh leads.", "when": "Recomputed regularly — it is earned, not permanent." },
-    { "key": "badge.tier_restricted", "area": "Badges", "label": "RESTRICTED", "does": "Receives no fresh leads. Still receives transfers, re-taps and imports.", "when": "Exit by converting walk-ins from any source — they count the same." },
-    { "key": "badge.verified", "area": "Badges", "label": "Verified", "does": "The logged call matches an entry in the phone's own call log.", "when": "These are the numbers nobody can argue with." },
-    { "key": "badge.unverified", "area": "Badges", "label": "Unverified", "does": "A logged call with no matching device entry.", "when": "One or two is noise. A pattern is a conversation." },
-
-    { "key": "panel.ticker", "area": "Panels", "label": "Ticker strip", "does": "Today's collected, fresh leads, walk-ins, conversions and headcount, against yesterday.", "when": "Glance at it; it refreshes itself every minute." },
-    { "key": "panel.brief", "area": "Panels", "label": "Today banner", "does": "Your own numbers: dials against target, untouched, overdue. Managers see the floor.", "when": "Dismiss it once you have read it — it returns tomorrow." },
-    { "key": "panel.freeze", "area": "Panels", "label": "Lunch freeze banner", "does": "Counts down the 14:00–14:30 window when the clock and all engines pause.", "when": "Nothing breaches while it is showing." },
-    { "key": "panel.lead_flow", "area": "Panels", "label": "Lead flow", "does": "Why each caller is or is not receiving leads, including who was passed over and why.", "when": "Whenever someone asks 'why am I not getting leads?'." },
-    { "key": "panel.leakage", "area": "Panels", "label": "Pipeline leakage", "does": "Everything sitting where it should not be, by type and severity.", "when": "Work it to zero before you leave. Empty means the pipeline is clean." },
-    { "key": "panel.thermometer", "area": "Panels", "label": "Collection thermometer", "does": "Collected month-to-date against the office breakeven, with the pace check.", "when": "Weekly, and any time the month feels off." },
-    { "key": "panel.warm_pipeline", "area": "Panels", "label": "Warm pipeline", "does": "Paying clients a mentor has flagged as upsell candidates.", "when": "Counsellors: this is a pre-qualified call list." }
+    {
+      "key": "tab.day",
+      "area": "Tabs",
+      "label": "My Pipeline",
+      "does": "Your work for today, already in the order it should be done.",
+      "when": "Start here every morning and work top to bottom."
+    },
+    {
+      "key": "tab.floor",
+      "area": "Tabs",
+      "label": "Floor",
+      "does": "The live floor: leaderboard, who is on shift, and what is leaking.",
+      "when": "Twice a day if you run a team."
+    },
+    {
+      "key": "tab.collections",
+      "area": "Tabs",
+      "label": "Collections",
+      "does": "Money owed, instalments, promises to pay and who to chase.",
+      "when": "Daily if you have closed any deal."
+    },
+    {
+      "key": "tab.advisory",
+      "area": "Tabs",
+      "label": "Advisory clients",
+      "does": "Everyone who has paid, with the MITC and KYC compliance checkpoints.",
+      "when": "After every payment, to clear the checkpoints."
+    },
+    {
+      "key": "tab.mentors",
+      "area": "Tabs",
+      "label": "Mentors",
+      "does": "Paying clients kept warm: touchpoints, health chips and upsell interest.",
+      "when": "Daily if you are a mentor; when hunting warm upsell if you are a counsellor."
+    },
+    {
+      "key": "tab.events",
+      "area": "Tabs",
+      "label": "Events",
+      "does": "Seminars and webinars with the roster of who was invited and who came.",
+      "when": "Before an event to build the roster, after it to work the follow-ups."
+    },
+    {
+      "key": "tab.dash",
+      "area": "Tabs",
+      "label": "Dashboards",
+      "does": "Charts: conversion, collections over time, the funnel and pipeline leakage.",
+      "when": "Weekly, or when a number needs explaining."
+    },
+    {
+      "key": "tab.leads",
+      "area": "Tabs",
+      "label": "Find lead",
+      "does": "Search and filter every lead you are allowed to see.",
+      "when": "Any time you need a list — this is the re-tap tool."
+    },
+    {
+      "key": "tab.people",
+      "area": "Tabs",
+      "label": "Performance",
+      "does": "Per-person dials, connects, talk time, walk-ins and conversion.",
+      "when": "Weekly one-to-ones, and before any coaching conversation."
+    },
+    {
+      "key": "tab.history",
+      "area": "Tabs",
+      "label": "Previous months",
+      "does": "Older uploaded records, parked out of the live queue but still tappable.",
+      "when": "Running a re-tap campaign on old data."
+    },
+    {
+      "key": "tab.team",
+      "area": "Tabs",
+      "label": "Team",
+      "does": "Team chat. Everyone can post, to their team or the whole floor.",
+      "when": "Anything the floor needs to know now."
+    },
+    {
+      "key": "tab.score",
+      "area": "Tabs",
+      "label": "My Score",
+      "does": "Your score and what each component measures.",
+      "when": "For self-reflection — it is not a ranking board."
+    },
+    {
+      "key": "tab.attendance",
+      "area": "Tabs",
+      "label": "Attendance",
+      "does": "Your hours, day by day, against the 9-hour expectation.",
+      "when": "Checking your own week."
+    },
+    {
+      "key": "tab.training",
+      "area": "Tabs",
+      "label": "Training",
+      "does": "Every rule and every screen explained, with a quiz and an acknowledgement.",
+      "when": "Your first week, and whenever a module changes."
+    },
+    {
+      "key": "tab.admin",
+      "area": "Tabs",
+      "label": "Admin",
+      "does": "Users, lead sources, settings, security alerts and quarantine.",
+      "when": "Admins and ops only."
+    },
+    {
+      "key": "btn.start_shift",
+      "area": "Buttons",
+      "label": "Start shift",
+      "does": "Opens your attendance session for today.",
+      "when": "The moment you sit down. No shift, no fresh leads, no hours."
+    },
+    {
+      "key": "btn.log_call",
+      "area": "Buttons",
+      "label": "Log call",
+      "does": "Records an attempt: outcome, talk time in MM:SS, and the next action.",
+      "when": "As you finish each call, never in a batch."
+    },
+    {
+      "key": "btn.book_walkin",
+      "area": "Buttons",
+      "label": "Book walk-in",
+      "does": "Schedules a visit and puts it on the counsellor's pipeline immediately.",
+      "when": "The moment someone commits to coming in."
+    },
+    {
+      "key": "btn.transfer",
+      "area": "Buttons",
+      "label": "Transfer",
+      "does": "Moves a lead to another caller, with a reason, recorded in the audit log.",
+      "when": "Counsellors and admins only, when the owner genuinely cannot progress it."
+    },
+    {
+      "key": "btn.whatsapp_sent",
+      "area": "Buttons",
+      "label": "WhatsApp sent",
+      "does": "Marks that you sent a message. Manual — the CRM cannot detect it.",
+      "when": "Straight after sending, so your re-tap lists work later."
+    },
+    {
+      "key": "btn.import_leads",
+      "area": "Buttons",
+      "label": "Import leads",
+      "does": "Copies filtered leads onto an event roster. Originals are never modified.",
+      "when": "Building an event roster. Preview first — the count is exact."
+    },
+    {
+      "key": "btn.theme",
+      "area": "Buttons",
+      "label": "◐ Theme",
+      "does": "Switches between the light and dark themes. Remembered on this browser.",
+      "when": "Whenever the room's lighting changes."
+    },
+    {
+      "key": "btn.password",
+      "area": "Buttons",
+      "label": "Password",
+      "does": "Changes your own password while signed in.",
+      "when": "Any time. Ask an admin instead if you are locked out."
+    },
+    {
+      "key": "filter.overdue",
+      "area": "Filters",
+      "label": "Overdue",
+      "does": "Leads whose next action time has passed, in working hours.",
+      "when": "First thing every morning."
+    },
+    {
+      "key": "filter.untouched",
+      "area": "Filters",
+      "label": "Untouched",
+      "does": "Assigned leads nobody has dialled yet.",
+      "when": "Before the ten-minute rule moves them off your list."
+    },
+    {
+      "key": "filter.callbacks_today",
+      "area": "Filters",
+      "label": "Callbacks today",
+      "does": "Callbacks scheduled for today that are still pending.",
+      "when": "Several times a day. A missed callback is the most expensive miss."
+    },
+    {
+      "key": "filter.followup_round",
+      "area": "Filters",
+      "label": "Follow-up round (FU1–FU5)",
+      "does": "Filters by how many attempts a lead has had.",
+      "when": "Running a structured re-tap: 'everyone due their 3rd follow-up'."
+    },
+    {
+      "key": "filter.no_whatsapp",
+      "area": "Filters",
+      "label": "No WhatsApp sent",
+      "does": "Leads you spoke to but never messaged.",
+      "when": "One of the most productive re-tap lists there is."
+    },
+    {
+      "key": "filter.last_disposition",
+      "area": "Filters",
+      "label": "Last outcome",
+      "does": "Filters by the most recent call outcome.",
+      "when": "Building a 'not answered' or 'will call back' sweep."
+    },
+    {
+      "key": "badge.immediate",
+      "area": "Badges",
+      "label": "Immediate",
+      "does": "A high-intent lead who asked to be contacted now.",
+      "when": "Call before anything else on your list."
+    },
+    {
+      "key": "badge.health_green",
+      "area": "Badges",
+      "label": "Green (client health)",
+      "does": "Touched recently, went fine, nothing overdue.",
+      "when": "No action needed."
+    },
+    {
+      "key": "badge.health_amber",
+      "area": "Badges",
+      "label": "Amber (client health)",
+      "does": "A touch is due, or the last attempt did not land.",
+      "when": "Work after the reds."
+    },
+    {
+      "key": "badge.health_red",
+      "area": "Badges",
+      "label": "Red (client health)",
+      "does": "A concern was raised, the client has gone quiet, or a follow-up is badly overdue.",
+      "when": "Call today. Work these first."
+    },
+    {
+      "key": "badge.tier_ace",
+      "area": "Badges",
+      "label": "ACE",
+      "does": "Best relative walk-in conversion; holds the guaranteed share of fresh leads.",
+      "when": "Recomputed regularly — it is earned, not permanent."
+    },
+    {
+      "key": "badge.tier_restricted",
+      "area": "Badges",
+      "label": "RESTRICTED",
+      "does": "Receives no fresh leads. Still receives transfers, re-taps and imports.",
+      "when": "Exit by converting walk-ins from any source — they count the same."
+    },
+    {
+      "key": "badge.verified",
+      "area": "Badges",
+      "label": "Verified",
+      "does": "The logged call matches an entry in the phone's own call log.",
+      "when": "These are the numbers nobody can argue with."
+    },
+    {
+      "key": "badge.unverified",
+      "area": "Badges",
+      "label": "Unverified",
+      "does": "A logged call with no matching device entry.",
+      "when": "One or two is noise. A pattern is a conversation."
+    },
+    {
+      "key": "panel.ticker",
+      "area": "Panels",
+      "label": "Ticker strip",
+      "does": "Today's collected, fresh leads, walk-ins, conversions and headcount, against yesterday.",
+      "when": "Glance at it; it refreshes itself every minute."
+    },
+    {
+      "key": "panel.brief",
+      "area": "Panels",
+      "label": "Today banner",
+      "does": "Your own numbers: dials against target, untouched, overdue. Managers see the floor.",
+      "when": "Dismiss it once you have read it — it returns tomorrow."
+    },
+    {
+      "key": "panel.freeze",
+      "area": "Panels",
+      "label": "Lunch freeze banner",
+      "does": "Counts down the 14:00–14:30 window when the clock and all engines pause.",
+      "when": "Nothing breaches while it is showing."
+    },
+    {
+      "key": "panel.lead_flow",
+      "area": "Panels",
+      "label": "Lead flow",
+      "does": "Why each caller is or is not receiving leads, including who was passed over and why.",
+      "when": "Whenever someone asks 'why am I not getting leads?'."
+    },
+    {
+      "key": "panel.leakage",
+      "area": "Panels",
+      "label": "Pipeline leakage",
+      "does": "Everything sitting where it should not be, by type and severity.",
+      "when": "Work it to zero before you leave. Empty means the pipeline is clean."
+    },
+    {
+      "key": "panel.thermometer",
+      "area": "Panels",
+      "label": "Collection thermometer",
+      "does": "Collected month-to-date against the office breakeven, with the pace check.",
+      "when": "Weekly, and any time the month feels off."
+    },
+    {
+      "key": "panel.warm_pipeline",
+      "area": "Panels",
+      "label": "Warm pipeline",
+      "does": "Paying clients a mentor has flagged as upsell candidates.",
+      "when": "Counsellors: this is a pre-qualified call list."
+    },
+    {
+      "key": "tab.fresh",
+      "area": "Tabs",
+      "label": "Fresh leads",
+      "does": "Every lead nobody has ever contacted, flagged if past its first-touch deadline.",
+      "when": "First thing every morning. Work it to empty."
+    },
+    {
+      "key": "tab.reminders",
+      "area": "Tabs",
+      "label": "Alerts",
+      "does": "Everything waiting on you, grouped by what is wrong, with reschedule actions.",
+      "when": "Start of day, after lunch, and before you leave."
+    },
+    {
+      "key": "tab.retap",
+      "area": "Tabs",
+      "label": "Re-tap",
+      "does": "Leads that went unanswered repeatedly. They raise no alerts and are worked as a batch.",
+      "when": "When the five-day re-tap reminder arrives, or any quiet hour."
+    },
+    {
+      "key": "badge.quiet",
+      "area": "Badges",
+      "label": "Quiet lead",
+      "does": "Unanswered past the threshold, so it no longer interrupts. Still open, owned and counted.",
+      "when": "Work it from the Re-tap tab, longest silence first."
+    },
+    {
+      "key": "badge.flagged_fresh",
+      "area": "Badges",
+      "label": "Late / Badly late (fresh)",
+      "does": "A never-contacted lead past its first-touch deadline.",
+      "when": "Call before anything else on the Fresh leads tab."
+    },
+    {
+      "key": "badge.paperwork",
+      "area": "Badges",
+      "label": "Paperwork open",
+      "does": "A paying client whose group / KYC / MITC checklist is unfinished.",
+      "when": "Clear it on Advisory clients; worth knowing before you call them."
+    },
+    {
+      "key": "btn.add_client",
+      "area": "Buttons",
+      "label": "Add a client",
+      "does": "Enters a paying client who paid outside the CRM, creating a real lead, deal and payment.",
+      "when": "Offline sales and migrated records only — CRM payments appear automatically."
+    },
+    {
+      "key": "btn.hand_out_now",
+      "area": "Buttons",
+      "label": "Hand out now",
+      "does": "Runs the held-lead sweep immediately instead of waiting for the next minute.",
+      "when": "Admins, right after fixing whatever was blocking distribution."
+    },
+    {
+      "key": "btn.snooze",
+      "area": "Buttons",
+      "label": "Snooze / reschedule",
+      "does": "Moves a lead's next action on the working clock and records the decision in its history.",
+      "when": "Only when you genuinely cannot get to it today."
+    },
+    {
+      "key": "panel.lead_flow_waiting",
+      "area": "Panels",
+      "label": "Waiting leads by team",
+      "does": "Unassigned leads grouped by team with the exact rule blocking each group.",
+      "when": "Whenever the Floor says leads are waiting — it names the fix."
+    }
   ]
 }

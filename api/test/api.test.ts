@@ -2190,6 +2190,86 @@ describe('advisory clients register', () => {
   });
 });
 
+describe('every role gets the new screens, not just admin', () => {
+  // The whole point of this suite: these features were built for the floor,
+  // and a caller or a mentor seeing an empty page or a 403 would mean they
+  // silently only worked for whoever built them. Each row is
+  // [role, endpoint, expected status]. 403 appears only where the refusal is
+  // the intended behaviour, and each of those is spelled out.
+  const MATRIX: Array<[keyof typeof EMAILS, string, number, string]> = [
+    // The daily brief: everybody who has numbers of their own.
+    ['callerA1', '/me/brief', 200, 'a caller sees their own dials and SLA'],
+    ['counsellorA', '/me/brief', 200, 'a counsellor sees the money arithmetic'],
+    ['mentor', '/me/brief', 200, 'a mentor gets the shell of it, with no targets'],
+    ['admin', '/me/brief', 200, 'an admin gets the floor roll-up'],
+    ['ops', '/me/brief', 200, 'ops likewise'],
+
+    // Fresh leads.
+    ['callerA1', '/me/fresh', 200, 'a caller sees their own never-contacted leads'],
+    ['counsellorA', '/me/fresh?scope=all', 200, 'a counsellor sees the whole floor'],
+    ['admin', '/me/fresh?scope=all', 200, 'an admin sees the whole floor'],
+    ['ops', '/me/fresh?scope=all', 200, 'ops sees the whole floor'],
+    ['founder', '/me/fresh?scope=all', 200, 'and the founder, for oversight'],
+
+    // The quiet no-answer pool.
+    ['callerA1', '/me/no-answer-pool', 200, 'a caller works their own re-tap batch'],
+    ['counsellorA', '/me/no-answer-pool?scope=team', 200, 'a counsellor sees the team pool'],
+    ['admin', '/me/no-answer-pool?scope=team', 200, 'an admin sees it too'],
+    ['founder', '/me/no-answer-pool?scope=team', 200, 'and the founder'],
+
+    // The alerts list behind the bell.
+    ['callerA1', '/me/alerts', 200, 'the bell works for callers'],
+    ['counsellorA', '/me/alerts', 200, 'and counsellors'],
+    ['mentor', '/me/alerts', 200, 'and mentors'],
+    ['admin', '/me/alerts', 200, 'and admins'],
+
+    // The ticker strip above every screen.
+    ['callerA1', '/dashboards/ticker', 200, 'the ticker is not admin-only'],
+    ['mentor', '/dashboards/ticker', 200, 'mentors see it as well'],
+
+    // Training: the entire floor, no exceptions.
+    ['callerA1', '/training', 200, 'callers get the academy'],
+    ['mentor', '/training', 200, 'mentors get the academy'],
+    ['ops', '/training', 200, 'ops gets the academy'],
+    ['admin', '/training/registry', 200, 'and the glossary'],
+    ['callerA1', '/training/registry', 200, 'callers get the glossary too'],
+
+    // Mentors and Advisory.
+    ['mentor', '/mentors/book', 200, 'a mentor reads their own book'],
+    ['counsellorA', '/mentors/book', 200, 'a counsellor reads it for the warm pipeline'],
+    ['callerA1', '/mentors/book', 403, 'a caller has no business in the client book'],
+    ['counsellorA', '/advisory', 200, 'a counsellor works the compliance checklist'],
+    ['callerA1', '/advisory', 403, 'a caller does not'],
+
+    // Events: everyone, because the roster is shared on purpose.
+    ['callerA1', '/events', 200, 'callers see events'],
+    ['mentor', '/events', 200, 'mentors see events'],
+    ['counsellorA', '/events/followups/open', 200, 'and the post-event task list'],
+
+    // Lead flow, including the per-team waiting breakdown.
+    ['counsellorA', '/dashboards/lead-flow', 200, 'a counsellor can diagnose waiting leads'],
+    ['admin', '/dashboards/lead-flow', 200, 'so can an admin'],
+    ['callerA1', '/dashboards/lead-flow', 403, 'a caller does not manage distribution'],
+  ];
+
+  for (const [role, url, expected, why] of MATRIX) {
+    it(`${role} → ${url} → ${expected} (${why})`, async () => {
+      const token = await login(h.app, EMAILS[role]);
+      const res = await h.app.inject({ method: 'GET', url, headers: auth(token) });
+      assert.equal(res.statusCode, expected, `${role} on ${url}: ${res.body.slice(0, 160)}`);
+    });
+  }
+
+  it('a mentor gets a brief with no revenue target rather than a broken page', async () => {
+    const m = await login(h.app, EMAILS.mentor);
+    const res = await h.app.inject({ method: 'GET', url: '/me/brief', headers: auth(m) });
+    assert.equal(res.statusCode, 200);
+    // v_daily_brief covers callers and counsellors; a mentor legitimately has
+    // no row. The endpoint must still answer cleanly.
+    assert.ok('brief' in res.json(), 'the shape is always the same');
+  });
+});
+
 describe('fresh leads have their own list', () => {
   it('lists never-contacted leads with a flag, and keeps late ones on the list', async () => {
     const inTime = makeLeadFor(USERS.callerA1, 'Fresh Timely');

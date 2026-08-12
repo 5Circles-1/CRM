@@ -42,6 +42,7 @@ export const EMAILS = {
   callerB1: 'b1@5circles.test',
   counsellorA: 'ca@5circles.test',
   counsellorB: 'cb@5circles.test',
+  founder: 'founder@5circles.test',
   mentor: 'mentor@5circles.test',
 } as const;
 
