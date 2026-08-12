@@ -1883,6 +1883,20 @@ select crm_test.check(
      join crm.leads l on l.id = e.lead_id
     where l.full_name = 'Spam Check' and e.event_type = 'assigned'), null);
 
+-- Why the fix stops new rows rather than deleting old ones. A migration tried
+-- to tidy the duplicates away and production refused it, correctly. This runs
+-- as the SCHEMA OWNER - the most privileged thing that touches the database -
+-- and the history still cannot be rewritten.
+do $$
+begin
+  delete from crm.lead_events where event_type = 'assignment_deferred';
+  perform crm_test.check('SPM', 'lead history cannot be deleted, even by the owner',
+                         false, 'the delete unexpectedly succeeded');
+exception when others then
+  perform crm_test.check('SPM', 'lead history cannot be deleted, even by the owner',
+                         sqlerrm like '%append-only%', sqlerrm);
+end $$;
+
 -- =============================================================================
 -- Results
 -- =============================================================================

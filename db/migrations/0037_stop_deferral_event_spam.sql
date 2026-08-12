@@ -107,34 +107,29 @@ comment on function crm.assign_lead(uuid) is
    otherwise write hundreds of identical rows per lead per day.';
 
 -- ---------------------------------------------------------------------------
--- Clear out what the old behaviour already wrote.
+-- What this migration deliberately does NOT do: delete the rows already
+-- written.
 --
--- These are machine-generated duplicates of a single fact - "this lead was
--- held because nobody was on the floor" - not business events. Keeping the
--- first and the last of each run preserves the whole truth (when the hold
--- started, when it was last confirmed) and discards only the repetition.
+-- The first attempt did, and production refused it:
 --
--- This is a migration, not the application: crm_app still has no DELETE
--- privilege on anything, and no lead, call, payment or touchpoint is touched.
+--     ERROR: crm.lead_events is append-only (attempted DELETE)
+--
+-- That trigger is right and the migration was wrong. lead_events is the
+-- record of what happened to a lead; a history that can be tidied up is not a
+-- history, and the guarantee is worth more than a clean-looking timeline. The
+-- rows stay.
+--
+-- The two things that actually mattered are both handled without touching a
+-- single existing row:
+--
+--   * No new duplicates are written, from this migration onwards.
+--   * The lead timeline folds a run of identical consecutive events into one
+--     line with a count and a from-to range, so the history reads correctly
+--     whatever is already in it.
+--
+-- "Passed over today" self-corrects: it counts only today's decisions, so it
+-- is honest again from the next working day.
+--
+-- The volume is not a performance problem - lead_events is indexed on
+-- (lead_id, occurred_at desc), which is exactly how the timeline reads it.
 -- ---------------------------------------------------------------------------
-with ranked as (
-  select id, lead_id,
-         row_number() over (partition by lead_id order by occurred_at)      as first_rn,
-         row_number() over (partition by lead_id order by occurred_at desc) as last_rn
-    from crm.lead_events
-   where event_type = 'assignment_deferred'
-)
-delete from crm.lead_events e
- using ranked r
- where e.id = r.id and r.first_rn > 1 and r.last_rn > 1;
-
-with ranked as (
-  select id, lead_id,
-         row_number() over (partition by lead_id order by decided_at)      as first_rn,
-         row_number() over (partition by lead_id order by decided_at desc) as last_rn
-    from crm.distribution_events
-   where caller_id is null
-)
-delete from crm.distribution_events d
- using ranked r
- where d.id = r.id and r.first_rn > 1 and r.last_rn > 1;
