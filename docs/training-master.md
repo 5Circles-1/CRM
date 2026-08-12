@@ -1,5 +1,11 @@
 # 5 Circles CRM — Complete Training Guide
 
+> **The canonical training now lives inside the CRM**, under the **Training**
+> tab: role-aware modules, a searchable UI glossary, a per-module check and a
+> recorded acknowledgement, with the live configuration substituted into the
+> text. Source: `api/content/training/`. This file remains for classroom and
+> offline use — if the two ever disagree, the in-app module is correct.
+
 *One document for the whole floor: callers, counsellors, and admins. Written to
 be read once end-to-end (about 20 minutes), then used as a reference. A short
 role-specific version of each section exists in the repo (`training-caller.md`,

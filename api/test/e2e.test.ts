@@ -248,3 +248,44 @@ it('caller: the re-tap filters narrow the lead list', async () => {
   }
   await signOut();
 });
+
+it('caller: reads a training module, answers the check, and acknowledges it', async () => {
+  await signIn(EMAILS.callerA1);
+  // A first-login tour may be showing; it must never block the app.
+  await page.evaluate(() => (document.querySelector('#tour-skip') as HTMLElement | null)?.click());
+
+  await page.goto(`${base}/ui/#/training`);
+  await page.waitForSelector('.tmod', { timeout: 20000 });
+
+  const cards = await page.locator('.tmod').count();
+  assert.ok(cards >= 10, `expected the full academy, saw ${cards} modules`);
+
+  // The distribution module is the one that must quote live configuration.
+  await page.goto(`${base}/ui/#/training/how-leads-are-distributed`);
+  await page.waitForSelector('.md', { timeout: 20000 });
+
+  const body = await page.locator('.md').innerText();
+  assert.ok(!body.includes('{{setting:'), 'an un-substituted placeholder reached the page');
+  assert.match(body, /66\.7%/, 'the live ACE share should be rendered into the text');
+
+  // Answering the check marks itself, right or wrong.
+  await page.click('.qq[data-q="0"] .chip[data-o="1"]');
+  await page.waitForTimeout(150);
+  const why = await page.locator('.qq[data-q="0"] .qwhy').innerText();
+  assert.match(why, /correct/i, `expected the correct answer to be marked: "${why}"`);
+
+  // Acknowledgement is gated on the checkbox.
+  assert.ok(await page.locator('#t-ack').isDisabled(), 'acknowledge must start disabled');
+  await page.check('#t-understood');
+  assert.ok(!(await page.locator('#t-ack').isDisabled()), 'ticking should enable it');
+  await page.click('#t-ack');
+
+  await page.waitForSelector('.tmod', { timeout: 20000 });
+  const read = await page
+    .locator('.tmod:has-text("How leads are distributed") .badge')
+    .allInnerTexts();
+  assert.ok(read.some((t) => /read/i.test(t)), `expected a read badge, saw ${read.join('|')}`);
+
+  await page.screenshot({ path: path.join(SHOTS, '7-training.png'), fullPage: true });
+  await signOut();
+});

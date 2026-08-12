@@ -16,6 +16,7 @@ import { adminRoutes } from './routes/admin.ts';
 import { advisoryRoutes } from './routes/advisory.ts';
 import { mentorRoutes } from './routes/mentors.ts';
 import { eventRoutes } from './routes/events.ts';
+import { trainingRoutes } from './routes/training.ts';
 import { ingestRoutes } from './routes/ingest.ts';
 import { deviceLogRoutes } from './routes/deviceLogs.ts';
 import { dealRoutes } from './routes/deals.ts';
@@ -67,6 +68,7 @@ export async function buildServer(config: Config, db?: Database): Promise<Fastif
     await advisoryRoutes(scope);
     await mentorRoutes(scope);
     await eventRoutes(scope);
+    await trainingRoutes(scope);
     await ingestRoutes(scope);
     await deviceLogRoutes(scope);
     await dealRoutes(scope);

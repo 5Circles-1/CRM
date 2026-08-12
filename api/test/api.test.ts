@@ -2174,6 +2174,157 @@ describe('advisory clients register', () => {
   });
 });
 
+describe('training academy', () => {
+  it('lists every module, marks my track, and counts what I still owe', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/training', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    const { modules, outstanding } = res.json();
+
+    assert.ok(modules.length >= 10, 'all ten modules are present');
+    assert.ok(
+      modules.some((m: { slug: string }) => m.slug === 'the-rulebook'),
+      'the rulebook is one of them',
+    );
+    // A caller's track is the shared modules plus the caller one - never the
+    // mentor or admin ones, though they can still read those.
+    const callerTrack = modules.filter((m: { isMyTrack: boolean }) => m.isMyTrack);
+    assert.ok(callerTrack.some((m: { slug: string }) => m.slug === 'the-callers-job'));
+    assert.ok(!callerTrack.some((m: { slug: string }) => m.slug === 'the-admins-job'));
+    assert.equal(outstanding, callerTrack.length, 'nothing acknowledged yet');
+  });
+
+  it('substitutes the live configuration, so training cannot quote a stale rule', async () => {
+    fixtureSql(`update crm.settings set value = '7'::jsonb
+                 where key = 'sla.untouched_reassign_minutes';`);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'GET', url: '/training/how-leads-are-distributed', headers: auth(a1),
+    });
+    assert.equal(res.statusCode, 200);
+    const { body } = res.json();
+    assert.ok(!body.includes('{{setting:'), 'no placeholder survives to the page');
+    assert.match(body, /7\s+working minutes/, 'it quotes the value that is actually configured');
+
+    fixtureSql(`update crm.settings set value = '10'::jsonb
+                 where key = 'sla.untouched_reassign_minutes';`);
+    const after = await h.app.inject({
+      method: 'GET', url: '/training/how-leads-are-distributed', headers: auth(a1),
+    });
+    assert.match(after.json().body, /10\s+working minutes/, 'change the setting, the page follows');
+  });
+
+  it('acknowledgement is signed against the exact text read', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const mod = await h.app.inject({
+      method: 'GET', url: '/training/the-rulebook', headers: auth(a1),
+    });
+    const version = mod.json().version;
+    assert.ok(version, 'a module carries a content version');
+
+    const ack = await h.app.inject({
+      method: 'POST', url: '/training/the-rulebook/ack',
+      headers: auth(a1), payload: { quizScore: 75 },
+    });
+    assert.equal(ack.statusCode, 200);
+    assert.equal(ack.json().version, version, 'the ack records the version read');
+    assert.equal(ack.json().quiz_score, 75);
+
+    const list = await h.app.inject({ method: 'GET', url: '/training', headers: auth(a1) });
+    const row = list.json().modules.find((m: { slug: string }) => m.slug === 'the-rulebook');
+    assert.ok(row.ackedAt);
+    assert.equal(row.stale, false, 'freshly read is not stale');
+  });
+
+  it('editing a module makes existing acknowledgements stale', async () => {
+    // Simulate an edit by storing an ack against a version that is not the
+    // current file hash - exactly what happens when the wording changes.
+    fixtureSql(`
+      update crm.training_acks set version = 'an-older-wording'
+       where user_id = '${USERS.callerA1}' and module_slug = 'the-rulebook';
+    `);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const list = await h.app.inject({ method: 'GET', url: '/training', headers: auth(a1) });
+    const row = list.json().modules.find((m: { slug: string }) => m.slug === 'the-rulebook');
+    assert.equal(row.stale, true, 'the floor is asked to read it again');
+    assert.ok(row.ackedAt, 'but the earlier signature is not erased');
+  });
+
+  it('nobody can sign in somebody else’s name', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({
+      method: 'POST', url: '/training/the-rulebook/ack', headers: auth(a1), payload: {},
+    });
+    const rows = fixtureSql(`
+      select count(*) from crm.training_acks
+       where module_slug = 'the-rulebook' and user_id <> '${USERS.callerA1}';
+    `).trim();
+    assert.equal(rows, '0', 'the ack landed against the signed-in user only');
+  });
+
+  it('search finds a rule wherever it is written', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'GET', url: '/training/search?q=callback', headers: auth(a1),
+    });
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.json().results.length > 0, 'callbacks are covered somewhere');
+    assert.ok(res.json().results[0].hits.length > 0, 'with a quotable excerpt');
+  });
+
+  it('the glossary is one file, and it is what the tooltips read', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'GET', url: '/training/registry', headers: auth(a1),
+    });
+    const { entries } = res.json();
+    assert.ok(entries.length > 30, 'every tab, button, filter and badge');
+    for (const e of entries) {
+      assert.ok(e.key && e.label && e.does && e.when, `registry entry ${e.key} is complete`);
+    }
+    assert.ok(entries.some((e: { key: string }) => e.key === 'tab.day'));
+  });
+
+  it('a counsellor sees the compliance matrix; a caller does not', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'GET', url: '/training/compliance', headers: auth(cs),
+    });
+    assert.equal(res.statusCode, 200);
+    const { people, modules } = res.json();
+    assert.ok(modules.length >= 10);
+    const a1row = people.find((p: { userId: string }) => p.userId === USERS.callerA1);
+    assert.ok(a1row, 'the caller appears in the matrix');
+    assert.ok(a1row.required > 0, 'with a required count for their role');
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const denied = await h.app.inject({
+      method: 'GET', url: '/training/compliance', headers: auth(a1),
+    });
+    assert.equal(denied.statusCode, 403);
+  });
+
+  it('a caller can mark their own tour done without being able to edit their user row', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/training/tour/complete', headers: auth(a1), payload: {},
+    });
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.json().tour_completed_at);
+
+    const role = fixtureSql(`select role from crm.users where id = '${USERS.callerA1}';`).trim();
+    assert.equal(role, 'caller', 'and their role is untouched');
+  });
+
+  it('an unknown module is a 404, not a blank page', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'GET', url: '/training/no-such-module', headers: auth(a1),
+    });
+    assert.equal(res.statusCode, 404);
+  });
+});
+
 describe('daily accountability brief', () => {
   it('a caller sees dials and SLA, never a revenue target', async () => {
     const a1 = await login(h.app, EMAILS.callerA1);

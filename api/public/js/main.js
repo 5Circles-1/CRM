@@ -14,6 +14,8 @@ import * as people from './views/people.js';
 import * as advisory from './views/advisory.js';
 import * as mentors from './views/mentors.js';
 import * as events from './views/events.js';
+import * as training from './views/training.js';
+import { startTour } from './views/training.js';
 import * as team from './views/team.js';
 import * as history from './views/history.js';
 import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
@@ -32,6 +34,7 @@ const NAV = [
   { hash: '#/team', label: 'Team', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
   { hash: '#/score', label: 'My Score', roles: ['caller', 'counsellor'] },
   { hash: '#/attendance', label: 'Attendance', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/training', label: 'Training', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
   { hash: '#/admin', label: 'Admin', roles: ['admin', 'ops'] },
 ];
 
@@ -40,12 +43,30 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, floor, collections, advisory, mentors, events, dash, leads, people, score, attendance, admin, lead, team, history,
+  day, floor, collections, advisory, mentors, events, training,
+  dash, leads, people, score, attendance, admin, lead, team, history,
+};
+
+/**
+ * Which training module explains each screen. The "?" beside the page title
+ * deep-links here, so help is always one click from the thing you are looking
+ * at rather than a search away.
+ */
+const HELP_FOR = {
+  day: 'the-callers-job', floor: 'the-counsellors-job',
+  collections: 'the-counsellors-job', advisory: 'the-counsellors-job',
+  mentors: 'the-mentors-job', events: 'how-the-crm-works',
+  dash: 'how-the-crm-works', leads: 'the-callers-job',
+  people: 'the-counsellors-job', score: 'the-callers-job',
+  attendance: 'how-the-crm-works', admin: 'the-admins-job',
+  lead: 'the-callers-job', team: 'how-the-crm-works',
+  history: 'the-counsellors-job', training: null,
 };
 
 const TITLES = {
   day: 'My Pipeline', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', mentors: 'Mentors',
-  events: 'Events', dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
+  events: 'Events', training: 'Training',
+  dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
   team: 'Team', history: 'Previous months',
 };
@@ -144,6 +165,7 @@ function renderShell(app) {
   });
 
   wireLogoFallback(app);
+  applyRegistryTooltips();
   wireBell();
   startAlerts();
   startLiveRefresh();
@@ -152,6 +174,44 @@ function renderShell(app) {
   startFreezeBanner();
   drawBrief();
   celebrate(me);
+  offerTour();
+}
+
+/**
+ * A new starter is walked round the screen once. The flag lives on the user
+ * row rather than in localStorage, so logging in from a second machine does
+ * not restart the tour. It is replayable from Training at any time.
+ */
+/**
+ * Tooltips come from the same registry file the Training glossary renders, so
+ * the tooltip and the manual cannot drift apart - there is only one sentence,
+ * and both read it. Nav items are matched by their #/hash.
+ */
+async function applyRegistryTooltips() {
+  try {
+    const { entries } = await get('/training/registry');
+    const byKey = new Map(entries.map((e) => [e.key, e]));
+    document.querySelectorAll('.sidebar a.nav').forEach((a) => {
+      const e = byKey.get(`tab.${(a.dataset.nav ?? '').slice(2)}`);
+      if (e) a.title = `${e.does}\n\nWhen: ${e.when}`;
+    });
+    for (const [id, key] of [
+      ['shift-widget', 'btn.start_shift'], ['theme-btn', 'btn.theme'],
+      ['pwd-btn', 'btn.password'], ['ticker-strip', 'panel.ticker'],
+      ['brief-banner', 'panel.brief'],
+    ]) {
+      const el = document.getElementById(id);
+      const e = byKey.get(key);
+      if (el && e) el.title = `${e.does}\n\nWhen: ${e.when}`;
+    }
+  } catch { /* tooltips are a nicety; never break the shell over them */ }
+}
+
+async function offerTour() {
+  try {
+    const t = await get('/training');
+    if (!t.tourCompleted) setTimeout(() => startTour(me), 900);
+  } catch { /* the tour is never worth failing a page load over */ }
 }
 
 /**
@@ -422,7 +482,15 @@ async function route(soft = false) {
   document.querySelectorAll('.sidebar a.nav').forEach((a) => {
     a.classList.toggle('active', a.dataset.nav === `#/${name}`);
   });
-  document.getElementById('page-title').textContent = TITLES[name] ?? '5 Circles CRM';
+  const titleEl = document.getElementById('page-title');
+  titleEl.textContent = TITLES[name] ?? '5 Circles CRM';
+  // The contextual "?": one click from any screen to the module explaining it.
+  const helpSlug = HELP_FOR[name];
+  if (helpSlug) {
+    const dot = h(`<button class="help-dot" title="What is this screen for?" aria-label="Help">?</button>`);
+    dot.addEventListener('click', () => { location.hash = `#/training/${helpSlug}`; });
+    titleEl.appendChild(dot);
+  }
   document.getElementById('live-badge')?.classList.toggle('show', LIVE_VIEWS.has(name));
 
   if (!view) {
