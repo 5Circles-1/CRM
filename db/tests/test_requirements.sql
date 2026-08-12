@@ -1728,6 +1728,97 @@ select crm_test.check(
          @> '["retap_due"]'::jsonb), null);
 
 -- =============================================================================
+-- FRESH (FRS): never-contacted leads keep their own list, and get flagged
+-- rather than quietly re-categorised.
+-- =============================================================================
+
+do $$
+declare
+  v_src uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1  uuid := '22222222-0000-0000-0000-000000000001';
+  v_tm  uuid;
+begin
+  v_tm := crm.team_of(v_a1, current_date);
+
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         assigned_at, first_touch_due_at, next_action_at, next_action_note)
+  values
+    (v_src, 'Fresh In Time', '+919555940001', v_a1, v_tm, 'working',
+     now() - interval '5 minutes', now() + interval '25 minutes',
+     now() + interval '25 minutes', 'First contact'),
+    (v_src, 'Fresh Late', '+919555940002', v_a1, v_tm, 'working',
+     now() - interval '4 hours', now() - interval '3 hours',
+     now() - interval '3 hours', 'First contact'),
+    (v_src, 'Fresh Ancient', '+919555940003', v_a1, v_tm, 'working',
+     now() - interval '25 days', now() - interval '24 days',
+     now() - interval '24 days', 'First contact');
+
+  -- Held at team level with no caller at all: the case that appears in
+  -- nobody's personal pipeline and was therefore easiest to lose.
+  insert into crm.leads (source_id, full_name, phone_e164, team_id, status,
+                         first_touch_due_at, next_action_at, next_action_note)
+  values (v_src, 'Fresh Ownerless', '+919555940004', v_tm, 'new',
+          now() - interval '2 hours', now() - interval '2 hours', 'First contact');
+end $$;
+
+select crm_test.check(
+  'FRS', 'a fresh lead inside its window is not flagged',
+  (select flag = 'waiting' from crm.v_fresh_leads where full_name = 'Fresh In Time'), null);
+
+select crm_test.check(
+  'FRS', 'a fresh lead past its deadline is flagged, not hidden',
+  (select flag = 'flagged' and minutes_late > 0
+     from crm.v_fresh_leads where full_name = 'Fresh Late'), null);
+
+select crm_test.check(
+  'FRS', 'a fresh lead long past its deadline escalates to badly late',
+  (select flag = 'breached' from crm.v_fresh_leads where full_name = 'Fresh Ancient'), null);
+
+select crm_test.check(
+  'FRS', 'a fresh lead with no caller still appears - it belongs to nobody''s pipeline',
+  (select user_id is null and flag <> 'waiting'
+     from crm.v_fresh_leads where full_name = 'Fresh Ownerless'), null);
+
+select crm_test.check(
+  'FRS', 'the pipeline keeps late fresh leads in the fresh bucket, not among worked ones',
+  (select bucket = 'fresh' from crm.v_my_pipeline where full_name = 'Fresh Late'),
+  (select 'bucket was ' || bucket from crm.v_my_pipeline where full_name = 'Fresh Late'));
+
+-- The moment somebody actually calls, the lead leaves this list for good.
+do $$
+declare v_lead uuid;
+begin
+  select id into v_lead from crm.leads where full_name = 'Fresh Late';
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, is_verified)
+  values (v_lead, '22222222-0000-0000-0000-000000000001', 'not_answered', 0, true);
+end $$;
+
+select crm_test.check(
+  'FRS', 'one real attempt takes a lead off the fresh list permanently',
+  (select count(*) = 0 from crm.v_fresh_leads where full_name = 'Fresh Late'), null);
+
+select crm_test.check(
+  'FRS', 'the floor summary counts the flagged ones per team',
+  (select sum(flagged + breached) > 0 from crm.v_fresh_summary), null);
+
+-- =============================================================================
+-- POPUPS (POP): only appointments interrupt.
+-- =============================================================================
+
+select crm_test.check(
+  'POP', 'only customer appointments are configured to interrupt',
+  (select value = '["callback_due","callback_soon"]'::jsonb
+     from crm.settings where key = 'alerts.popup_kinds'),
+  (select value::text from crm.settings where key = 'alerts.popup_kinds'));
+
+select crm_test.check(
+  'POP', 'the noisy kinds no longer interrupt, but are still raised as alerts',
+  not ((select value from crm.settings where key = 'alerts.popup_kinds')
+        @> '["action_overdue"]'::jsonb)
+  and exists (select 1 from crm.v_my_alerts where kind = 'action_overdue'),
+  null);
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

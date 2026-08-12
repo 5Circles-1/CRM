@@ -17,6 +17,21 @@ immediate leads, then overdue, then due today, then the rest.
 **The mistake:** re-sorting it looking for "easy" leads. The order is the
 priority; working out of order is how a promise gets missed.
 
+## Fresh leads
+
+**Who sees it:** callers, counsellors, admins, ops.
+**What it is:** every lead **nobody has ever spoken to**. It is the one list
+that answers "did something arrive and just sit there?" — and it covers leads
+held with no caller at all, which appear in nobody's personal pipeline.
+**What to do:** work it to empty. Rows are flagged **in time**, **late** or
+**badly late** against the first-touch deadline. A late fresh lead is never
+demoted or hidden — it stays on this list, flagged, until somebody actually
+speaks to the person. One real attempt removes it for good.
+**Counsellors and admins** can switch to *Whole floor* to see leads with no
+caller — if any appear there, check **Floor → Lead flow** for the reason.
+**The mistake:** assuming your own pipeline covers it. It does not show leads
+nobody owns yet.
+
 ## Alerts
 
 **Who sees it:** everyone except viewers.
@@ -26,6 +41,10 @@ is the glance; this is the list you sit down with.
 **What to do:** tap a name to open the lead and work it. If you genuinely
 cannot get to something today, reschedule it — 1 hour, 3 hours, or tomorrow
 morning — and the new time is written into the lead's own history.
+**Only two things interrupt you with a popup:** a callback that is due, and one
+a few minutes before it is due. Both are appointments the customer chose a time
+for. Everything else waits quietly in the bell and on this page — nothing is
+suppressed, it just does not interrupt.
 **The mistake:** treating rescheduling as clearing. Moving a promise is a
 decision about a customer, and the lead records who moved it.
 

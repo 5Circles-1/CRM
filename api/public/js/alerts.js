@@ -104,6 +104,25 @@ function popup(alert) {
   if (alert.severity !== 'critical') setTimeout(() => card.remove(), 12_000);
 }
 
+/**
+ * The shape of what is waiting, in one line.
+ *
+ * A hundred rows in a dropdown is not information; the counts are. The list
+ * below shows only the most urgent handful, and the footer goes to the Alerts
+ * tab where the whole thing is workable. Nothing is dropped — the badge and
+ * the Alerts page always carry the full count.
+ */
+function summaryStrip(data) {
+  if (data.count === 0) return '';
+  const counts = new Map();
+  for (const a of data.alerts) counts.set(a.kind, (counts.get(a.kind) ?? 0) + 1);
+  const parts = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([kind, n]) => `<span class="alert-sum-item">${esc(LABEL[kind] ?? kind)}
+      <b>${n}</b></span>`);
+  return `<div class="alert-sum">${parts.join('')}</div>`;
+}
+
 function renderPanel(data) {
   const existing = document.getElementById('alert-panel');
   if (existing) existing.remove();
@@ -114,10 +133,11 @@ function renderPanel(data) {
         <b>Alerts</b>
         <span class="hint">${data.count} open${data.critical ? ` · ${data.critical} critical` : ''}</span>
       </div>
+      ${summaryStrip(data)}
       <div class="alert-panel-list">
         ${data.alerts.length === 0
           ? '<div class="empty">Nothing needs you right now.</div>'
-          : data.alerts.map((a) => `
+          : data.alerts.slice(0, 12).map((a) => `
             <a class="alert-row ${esc(a.severity)}" href="${
               a.kind === 'retap_due' ? '#/retap'
                 : a.lead_id ? `#/lead/${esc(a.lead_id)}` : '#/reminders'}">
@@ -129,7 +149,7 @@ function renderPanel(data) {
       </div>
       ${data.count > 0 ? `
         <a class="alert-row alert-all" href="#/reminders">
-          <b>Work through all ${data.count} →</b>
+          <b>${data.count > 12 ? `Work through all ${data.count}` : 'Open the Alerts tab'} →</b>
         </a>` : ''}
     </div>`);
 

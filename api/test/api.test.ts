@@ -1623,13 +1623,29 @@ describe('alerts are separable by kind', () => {
     assert.ok(kinds.includes('new_lead'), `expected new_lead, got ${kinds.join(',')}`);
   });
 
-  it('offers every kind as a popup, so none can be silenced by accident', async () => {
+  it('only customer appointments interrupt, but nothing is silenced from the bell', async () => {
+    // This rule changed deliberately. Eight kinds used to interrupt, which on
+    // a busy floor is a popup every few minutes and trains people to dismiss
+    // without reading - so a real callback gets clicked away. Now only the two
+    // appointment kinds pop. Everything else still reaches the bell and the
+    // Alerts tab in full, which is the distinction that matters: being nagged
+    // about a lead and losing a lead are different failures.
     const a1 = await login(h.app, EMAILS.callerA1);
     const cfg = await h.app.inject({ method: 'GET', url: '/meta/ui-settings', headers: auth(a1) });
-    const kinds = cfg.json()['alerts.popup_kinds'];
-    for (const k of ['callback_due', 'follow_up_due', 'action_overdue', 'new_lead']) {
-      assert.ok(kinds.includes(k), `${k} must be able to pop up`);
+    const popups = cfg.json()['alerts.popup_kinds'];
+
+    assert.deepEqual([...popups].sort(), ['callback_due', 'callback_soon']);
+    for (const k of ['follow_up_due', 'action_overdue', 'new_lead', 'retap_due']) {
+      assert.ok(!popups.includes(k), `${k} must not interrupt`);
     }
+
+    // ...and the quiet kinds are still delivered, just without a popup.
+    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const kinds = new Set(alerts.json().alerts.map((a: { kind: string }) => a.kind));
+    assert.ok(
+      [...kinds].some((k) => !popups.includes(k)),
+      'non-popup kinds must still be raised as alerts, not suppressed',
+    );
   });
 });
 
@@ -2171,6 +2187,92 @@ describe('advisory clients register', () => {
     const a1 = await login(h.app, EMAILS.callerA1);
     const res = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(a1) });
     assert.equal(res.statusCode, 403);
+  });
+});
+
+describe('fresh leads have their own list', () => {
+  it('lists never-contacted leads with a flag, and keeps late ones on the list', async () => {
+    const inTime = makeLeadFor(USERS.callerA1, 'Fresh Timely');
+    const late = makeLeadFor(USERS.callerA1, 'Fresh Overdue');
+    fixtureSql(`
+      update crm.leads set assigned_at = now() - interval '5 minutes',
+             first_touch_due_at = now() + interval '25 minutes',
+             first_touched_at = null, attempt_count = 0
+       where id = '${inTime}';
+      update crm.leads set assigned_at = now() - interval '4 hours',
+             first_touch_due_at = now() - interval '3 hours',
+             first_touched_at = null, attempt_count = 0
+       where id = '${late}';
+    `);
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/fresh', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    const byId = new Map(res.json().leads.map((l: { lead_id: string }) => [l.lead_id, l]));
+
+    assert.equal((byId.get(inTime) as { flag: string }).flag, 'waiting');
+    assert.equal((byId.get(late) as { flag: string }).flag, 'flagged',
+      'a late fresh lead is flagged, never dropped from the list');
+    assert.ok(Number((byId.get(late) as { minutes_late: number }).minutes_late) > 0);
+  });
+
+  it('the flag filter narrows without hiding anything permanently', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const flagged = await h.app.inject({
+      method: 'GET', url: '/me/fresh?flag=flagged', headers: auth(a1),
+    });
+    for (const l of flagged.json().leads) {
+      assert.equal(l.flag, 'flagged');
+    }
+    const all = await h.app.inject({ method: 'GET', url: '/me/fresh', headers: auth(a1) });
+    assert.ok(all.json().count >= flagged.json().count);
+  });
+
+  it('a counsellor can see the whole floor, including leads with no caller', async () => {
+    const teamA = fixtureSql(`select id from crm.teams where name = 'Team A';`).trim();
+    fixtureSql(`
+      insert into crm.leads (source_id, full_name, phone_e164, team_id, status,
+                             first_touch_due_at, next_action_at, next_action_note)
+      values ('${SOURCES.meta}', 'Fresh No Owner', '+919555950001', '${teamA}', 'new',
+              now() - interval '2 hours', now() - interval '2 hours', 'First contact');
+    `);
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'GET', url: '/me/fresh?scope=all', headers: auth(cs),
+    });
+    const row = res.json().leads.find(
+      (l: { full_name: string }) => l.full_name === 'Fresh No Owner',
+    );
+    assert.ok(row, 'a lead nobody owns still appears somewhere');
+    assert.equal(row.user_id, null);
+    assert.ok(res.json().teams.length > 0, 'with a per-team summary');
+  });
+
+  it('one real attempt removes a lead from the fresh list for good', async () => {
+    const lead = makeLeadFor(USERS.callerA1, 'Fresh Then Called');
+    fixtureSql(`
+      update crm.leads set first_touched_at = null, attempt_count = 0,
+             first_touch_due_at = now() - interval '1 hour'
+       where id = '${lead}';
+    `);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const before = await h.app.inject({ method: 'GET', url: '/me/fresh', headers: auth(a1) });
+    assert.ok(before.json().leads.some((l: { lead_id: string }) => l.lead_id === lead));
+
+    await h.app.inject({
+      method: 'POST', url: `/leads/${lead}/calls`, headers: auth(a1),
+      payload: {
+        disposition: 'not_answered', durationSeconds: 0,
+        nextActionAt: new Date(Date.now() + 3600_000).toISOString(),
+        nextActionNote: 'try again',
+      },
+    });
+
+    const after = await h.app.inject({ method: 'GET', url: '/me/fresh', headers: auth(a1) });
+    assert.ok(
+      !after.json().leads.some((l: { lead_id: string }) => l.lead_id === lead),
+      'contacted means it leaves the fresh list',
+    );
   });
 });
 

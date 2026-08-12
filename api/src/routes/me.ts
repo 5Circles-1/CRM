@@ -143,6 +143,39 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * Fresh leads: nobody has ever contacted these.
+   *
+   * Its own list rather than a slice of the pipeline, because the question
+   * "did anything arrive and just sit there?" has to be answerable in one
+   * glance, including for leads held with no caller at all - which appear in
+   * nobody's personal pipeline.
+   */
+  app.get('/me/fresh', async (req) => {
+    const user = req.requireUser();
+    const { scope, flag } = z
+      .object({
+        scope: z.enum(['mine', 'all']).default('mine'),
+        flag: z.enum(['waiting', 'flagged', 'breached']).optional(),
+      })
+      .parse(req.query);
+
+    return req.tx(async (q) => {
+      const rows = await q.many<{ lead_id: string }>(
+        `select * from crm.v_fresh_leads
+          where ($1::text = 'all' or user_id = $2)
+            and ($3::text is null or flag = $3)
+          order by case flag when 'breached' then 0 when 'flagged' then 1 else 2 end,
+                   minutes_late desc nulls last, age_minutes desc
+          limit 500`,
+        [scope, user.id, flag ?? null],
+      );
+      await logLeadAccess(q, user.id, rows.map((r) => r.lead_id), 'list', req.ip);
+      const teams = await q.many(`select * from crm.v_fresh_summary order by team_name`);
+      return { count: rows.length, leads: rows, teams };
+    });
+  });
+
+  /**
    * The no-answer pool: still open, still yours, but gone quiet.
    *
    * These leads raise no individual alerts - that is the whole point - so this

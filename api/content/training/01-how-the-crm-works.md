@@ -42,6 +42,9 @@ Not everyone sees all of these — you see the ones your role uses.
 | Tab | What it is for |
 |---|---|
 | **My Pipeline** | Your work for today, in the order it should be done. Callers and counsellors. |
+| **Fresh leads** | Everyone nobody has ever called, flagged if past their first-touch deadline. |
+| **Alerts** | Everything waiting on you, grouped. Only callbacks interrupt with a popup. |
+| **Re-tap** | Leads that went unanswered repeatedly. Quiet by design, worked as a batch. |
 | **Floor** | The live floor: leaderboard, who is on shift, what is leaking. Counsellors and admins. |
 | **Collections** | Money owed, instalments, promises to pay, who to chase. |
 | **Advisory clients** | Everyone who has paid, with the MITC and KYC checkpoints. |

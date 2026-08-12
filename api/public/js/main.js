@@ -17,6 +17,7 @@ import * as events from './views/events.js';
 import * as training from './views/training.js';
 import * as reminders from './views/reminders.js';
 import * as retap from './views/retap.js';
+import * as fresh from './views/fresh.js';
 import { startTour } from './views/training.js';
 import * as team from './views/team.js';
 import * as history from './views/history.js';
@@ -24,6 +25,7 @@ import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 
 const NAV = [
   { hash: '#/day', label: 'My Pipeline', roles: ['caller', 'counsellor'] },
+  { hash: '#/fresh', label: 'Fresh leads', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
   { hash: '#/retap', label: 'Re-tap', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
@@ -47,7 +49,7 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, reminders, retap, floor, collections, advisory, mentors, events, training,
+  day, fresh, reminders, retap, floor, collections, advisory, mentors, events, training,
   dash, leads, people, score, attendance, admin, lead, team, history,
 };
 
@@ -57,7 +59,8 @@ const VIEWS = {
  * at rather than a search away.
  */
 const HELP_FOR = {
-  day: 'the-callers-job', reminders: 'the-callers-job', retap: 'the-callers-job',
+  day: 'the-callers-job', fresh: 'the-callers-job',
+  reminders: 'the-callers-job', retap: 'the-callers-job',
   floor: 'the-counsellors-job',
   collections: 'the-counsellors-job', advisory: 'the-counsellors-job',
   mentors: 'the-mentors-job', events: 'how-the-crm-works',
@@ -69,7 +72,7 @@ const HELP_FOR = {
 };
 
 const TITLES = {
-  day: 'My Pipeline', reminders: 'Alerts', retap: 'Re-tap', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', mentors: 'Mentors',
+  day: 'My Pipeline', fresh: 'Fresh leads', reminders: 'Alerts', retap: 'Re-tap', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', mentors: 'Mentors',
   events: 'Events', training: 'Training',
   dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
