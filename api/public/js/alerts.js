@@ -149,9 +149,10 @@ async function poll(firstRun) {
   badge.classList.toggle('hide', latest.count === 0);
   bell.classList.toggle('critical', latest.critical > 0);
 
-  // The tab itself carries the count, so work waiting is visible from another
-  // tab or a minimised window - the situations a popup cannot reach.
-  document.title = latest.count > 0 ? `(${latest.count}) 5 Circles CRM` : '5 Circles CRM';
+  // The tab keeps the plain product name. The bell already carries the count
+  // on screen, and a title that reads "(100) 5 Circles CRM" in the tab strip
+  // is noise rather than information.
+  document.title = '5 Circles CRM';
 
   const live = document.getElementById('alert-panel');
   if (live) { live.remove(); renderPanel(latest); }
