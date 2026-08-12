@@ -2445,6 +2445,43 @@ describe('repeated no-answers go quiet', () => {
   });
 });
 
+describe('alerts say whose lead each one is', () => {
+  it('a counsellor sees the owner on every team alert, not just a lead name', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Owner Shown');
+    fixtureSql(`
+      update crm.leads set next_action_at = now() - interval '2 hours',
+             first_touched_at = now() - interval '1 day', attempt_count = 1
+       where id = '${leadId}';
+    `);
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(cs) });
+    assert.equal(res.statusCode, 200);
+
+    const row = res.json().alerts.find((a: { lead_id: string }) => a.lead_id === leadId);
+    assert.ok(row, 'the team lead appears in the counsellor list');
+    assert.equal(row.owner_id, USERS.callerA1);
+    assert.equal(row.owner_name, 'Caller A1',
+      'a manager must be able to tell whose lead it is without opening it');
+  });
+
+  it('a first-contact breach is described in plain words, not as a policy name', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Never Called Yet');
+    fixtureSql(`
+      update crm.leads set first_touched_at = null, attempt_count = 0,
+             first_touch_due_at = now() - interval '3 hours'
+       where id = '${leadId}';
+    `);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const row = res.json().alerts.find(
+      (a: { lead_id: string; kind: string }) => a.lead_id === leadId && a.kind === 'sla_breach',
+    );
+    assert.ok(row, 'the breach is raised');
+    assert.match(row.title, /first contact overdue/i,
+      'the row itself says what happened in words a caller can act on');
+  });
+});
+
 describe('alerts you can actually clear', () => {
   it('snoozing moves the promise on the working clock and records it on the lead', async () => {
     const leadId = makeLeadFor(USERS.callerA1, 'Snoozable');

@@ -204,7 +204,9 @@ hidden by the menu.
 ## S
 
 **SLA** — the promised time limit for an action. First contact has one;
-follow-ups have one.
+follow-ups have one. You will rarely see the abbreviation on screen: the
+Alerts tab says **"Never called — overdue"** and **"Follow-ups overdue"**
+instead, because those say what to do about it.
 
 **Setter** — the caller who set up a deal; shares credit with the closer.
 

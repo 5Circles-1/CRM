@@ -14,9 +14,15 @@ import { agoLabel, esc, h, toast } from '../util.js';
  * working clock and writes that decision into the lead's history.
  */
 
-/** Kinds as the database actually emits them — see crm.v_my_alerts. */
+/**
+ * Kinds as the database emits them, with names the floor actually uses.
+ *
+ * "SLA breached" was jargon — it named a policy, not the thing you should do.
+ * Every label here says what is true about the person and implies the action:
+ * somebody has never been called, or a promise has passed.
+ */
 const GROUPS = [
-  ['sla_breach', 'SLA breached', 'First contact is past its promised time.'],
+  ['sla_breach', 'Never called — overdue', 'Nobody has phoned this person yet and the promised time has passed. Call them.'],
   ['callback_due', 'Callbacks due now', 'They named this time themselves. The most expensive miss on the floor.'],
   ['callback_soon', 'Callbacks shortly', 'Coming up — be ready, do not start something long.'],
   ['action_overdue', 'Follow-ups overdue', 'You promised a next step and the time has passed.'],
@@ -25,6 +31,10 @@ const GROUPS = [
   ['reassigned_in', 'Just landed with you', 'Moved to you — first contact still owed.'],
   ['cross_team_in', 'From the other team', 'Escalated across teams and now yours.'],
   ['new_lead', 'New leads', 'Fresh, never contacted.'],
+  ['retap_due', 'Ready to re-tap', 'Gone quiet after repeated no-answers. Worked as a batch from the Re-tap tab.'],
+  ['daily_brief_morning', 'Morning brief', 'Your numbers for the day ahead.'],
+  ['daily_brief_midday', 'Pace check', 'Where you stand against what the month needs.'],
+  ['daily_brief_evening', 'End of day', 'What closed, and what carries into tomorrow.'],
 ];
 
 const SNOOZE = [
@@ -44,11 +54,23 @@ function minutesToTomorrowMorning() {
 
 export async function render(outlet, me) {
   let openGroup = null;
+  let ownerFilter = '';
 
   const draw = async () => {
     outlet.innerHTML = '<div class="spin"></div>';
     const data = await get('/me/alerts');
     outlet.innerHTML = '';
+
+    // This list is RLS-scoped, not personal: a counsellor sees their team's
+    // alerts and an admin the whole floor's. So show whose lead each one is,
+    // and let a manager narrow to one person.
+    const owners = [...new Map(
+      data.alerts.filter((a) => a.owner_id)
+        .map((a) => [a.owner_id, a.owner_name ?? 'Unnamed']),
+    ).entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+    const showOwners = owners.length > 1;
+    if (ownerFilter && !owners.some(([id]) => id === ownerFilter)) ownerFilter = '';
+    if (ownerFilter) data.alerts = data.alerts.filter((a) => a.owner_id === ownerFilter);
 
     const byKind = new Map();
     for (const a of data.alerts) {
@@ -78,7 +100,14 @@ export async function render(outlet, me) {
             <button class="chip ${openGroup === kind ? 'on' : ''}" data-group="${esc(kind)}">
               ${esc(label)} · ${byKind.get(kind).length}
             </button>`).join('')}
-        </div>`}
+        </div>
+        ${showOwners ? `
+          <div class="hint" style="margin-top:10px">Whose leads:</div>
+          <div class="chips" style="margin-top:4px">
+            <button class="chip ${ownerFilter === '' ? 'on' : ''}" data-owner="">Everyone</button>
+            ${owners.map(([id, name]) => `
+              <button class="chip ${ownerFilter === id ? 'on' : ''}" data-owner="${esc(id)}">${esc(name)}</button>`).join('')}
+          </div>` : ''}`}
       </div>`));
 
     if (data.count === 0) {
@@ -105,7 +134,8 @@ export async function render(outlet, me) {
         </div>
         <div style="overflow-x:auto;margin-top:10px">
         <table class="table"><thead><tr>
-          <th>Who</th><th class="num">Late by</th><th style="width:280px">Do something</th>
+          <th>Who</th>${showOwners ? '<th>Whose lead</th>' : ''}
+          <th class="num">Late by</th><th style="width:280px">Do something</th>
         </tr></thead><tbody>
         ${rows.map((a) => `
           <tr>
@@ -116,6 +146,9 @@ export async function render(outlet, me) {
               <span class="hint mono">${esc(a.phone_e164 ?? '')}</span>
               ${a.title && a.lead_id ? `<div class="hint">${esc(a.title)}</div>` : ''}
             </td>
+            ${showOwners ? `<td>${a.owner_name
+              ? esc(a.owner_name)
+              : '<span class="badge b-warn">no caller</span>'}</td>` : ''}
             <td class="num">${Number(a.minutes_late) > 0
               ? `<span class="badge ${a.severity === 'critical' ? 'b-bad' : 'b-warn'}">${esc(agoLabel(a.minutes_late))}</span>`
               : '<span class="hint">due now</span>'}</td>
@@ -137,6 +170,9 @@ export async function render(outlet, me) {
 
     outlet.querySelectorAll('[data-group]').forEach((b) =>
       b.addEventListener('click', () => { openGroup = b.dataset.group; draw(); }));
+
+    outlet.querySelectorAll('[data-owner]').forEach((b) =>
+      b.addEventListener('click', () => { ownerFilter = b.dataset.owner; draw(); }));
 
     outlet.querySelectorAll('[data-open]').forEach((b) =>
       b.addEventListener('click', () => { location.hash = `#/lead/${b.dataset.open}`; }));

@@ -48,7 +48,9 @@ let timer = null;
 const KEY = (a) => `${a.kind}:${a.lead_id}:${a.callback_id ?? ''}`;
 
 const LABEL = {
-  sla_breach: 'SLA breached',
+  // Plain English, not policy names: the label should say what is true about
+  // the person, so the next action is obvious without translating jargon.
+  sla_breach: 'Never called',
   callback_due: 'Callback due now',
   callback_soon: 'Callback shortly',
   action_overdue: 'Follow-up overdue',
@@ -143,7 +145,8 @@ function renderPanel(data) {
                 : a.lead_id ? `#/lead/${esc(a.lead_id)}` : '#/reminders'}">
               <span class="alert-kind">${esc(LABEL[a.kind] ?? a.kind)}</span>
               <span class="alert-lead">${esc(a.lead_name ?? a.title ?? 'Notification')}
-                <span class="mono hint">${esc(a.phone_e164 ?? '')}</span></span>
+                <span class="mono hint">${esc(a.phone_e164 ?? '')}${
+                  a.owner_name ? ` · ${esc(a.owner_name)}` : ''}</span></span>
               <span class="alert-when">${esc(lateLabel(a))}</span>
             </a>`).join('')}
       </div>
