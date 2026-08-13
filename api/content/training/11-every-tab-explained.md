@@ -82,6 +82,10 @@ working and the other has nobody on shift.
 **What it is:** money owed — instalments, promises to pay, who to chase.
 **What to do:** record a promise to pay as a structured promise, not a note.
 That is what turns chasing into forecasting.
+**Punching in a payment:** the **Punch in a payment** button takes a name or
+the last digits of a number, an amount and a mode — the CRM spreads it oldest
+instalment first and refuses an amount larger than what is outstanding, so a
+mistyped zero cannot corrupt the collections numbers.
 **The mistake:** thinking collections ends at handover. **The counsellor who
 closed the deal chases the instalments**, permanently.
 
@@ -150,6 +154,12 @@ the re-tap tool, and it is the second pipeline.
 **What to do:** combine filters. "Not answered + overdue". "Follow-up round 3".
 "No WhatsApp sent". Searching digits matches the **end** of a phone number, so
 type the last few digits off a missed call.
+**Adding a lead by hand:** the **Add lead** button (counsellors, admins, ops)
+is for someone who did not come through the sheet — a phone-in, a walk-past, a
+referral. Leave "Give it to" on **fair distribution** unless the person asked
+for someone by name: manual entry goes through the same engine as every sheet
+lead and is not a way to jump the queue. The same number twice is refused,
+naming who already has the lead.
 **The mistake:** not using it. Most recoverable money on this floor is in
 people who were already spoken to once.
 

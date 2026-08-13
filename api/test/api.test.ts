@@ -2445,6 +2445,116 @@ describe('repeated no-answers go quiet', () => {
   });
 });
 
+describe('manual leads and the payment punch-in', () => {
+  it('a counsellor adds a lead by hand and it lands on the fresh list', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(cs),
+      payload: { fullName: 'Desk Enquiry', phone: '9822001001', city: 'Pune',
+                 note: 'walked past the office' },
+    });
+    assert.equal(res.statusCode, 201);
+    const lead = res.json();
+    assert.ok(lead.next_action_at, 'a manual lead is a complete lead from birth');
+    assert.ok(lead.first_touch_due_at, 'with a first-touch clock running');
+
+    const fresh = await h.app.inject({
+      method: 'GET', url: '/me/fresh?scope=all', headers: auth(cs),
+    });
+    assert.ok(
+      fresh.json().leads.some((l: { lead_id: string }) => l.lead_id === lead.id),
+      'never contacted, so it appears on Fresh leads at once',
+    );
+  });
+
+  it('assigning to a named caller puts it straight in their pipeline', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(cs),
+      payload: { fullName: 'Asked For A1', phone: '9822001002', assignTo: USERS.callerA1 },
+    });
+    assert.equal(res.statusCode, 201);
+    assert.equal(res.json().caller_id, USERS.callerA1);
+    assert.equal(res.json().status, 'working');
+  });
+
+  it('a duplicate number is refused naming where the lead already is', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(cs),
+      payload: { fullName: 'Desk Enquiry Again', phone: '9822001001' },
+    });
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message, /already in the book/);
+  });
+
+  it('a caller cannot add leads, from the UI or anywhere else', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(a1),
+      payload: { fullName: 'Self Serve', phone: '9822001003' },
+    });
+    assert.equal(res.statusCode, 403);
+  });
+
+  it('the punch-in searches open deals and spreads the amount across instalments', async () => {
+    const lead = makeLeadFor(USERS.callerA1, 'Punch Payer');
+    fixtureSql(`
+      insert into crm.deals (id, lead_id, product_id, counsellor_id, team_id, booked_amount)
+      values ('77777777-0000-0000-0000-000000000011', '${lead}',
+              (select id from crm.products limit 1), '${USERS.counsellorA}',
+              crm.team_of('${USERS.callerA1}', current_date), 20000);
+      insert into crm.instalments (deal_id, seq, due_date, amount)
+      values ('77777777-0000-0000-0000-000000000011', 1, current_date - 5, 10000),
+             ('77777777-0000-0000-0000-000000000011', 2, current_date + 25, 10000);
+    `);
+    const cs = await login(h.app, EMAILS.counsellorA);
+
+    const found = await h.app.inject({
+      method: 'GET', url: '/collections/deal-search?q=Punch', headers: auth(cs),
+    });
+    assert.equal(found.statusCode, 200);
+    const hit = found.json().find(
+      (d: { deal_id: string }) => d.deal_id === '77777777-0000-0000-0000-000000000011',
+    );
+    assert.ok(hit, 'searchable by name');
+    assert.equal(Number(hit.outstanding), 20000);
+
+    const paid = await h.app.inject({
+      method: 'POST', url: '/collections/punch-in', headers: auth(cs),
+      payload: { dealId: hit.deal_id, amount: 12500, mode: 'upi', reference: 'UTR-42' },
+    });
+    assert.equal(paid.statusCode, 201);
+    assert.equal(paid.json().applied, 2, 'split across the first and second instalment');
+    assert.equal(Number(paid.json().deal.outstanding), 7500);
+
+    const first = fixtureSql(`
+      select status from crm.instalments
+       where deal_id = '77777777-0000-0000-0000-000000000011' and seq = 1;
+    `).trim();
+    assert.equal(first, 'paid', 'the oldest instalment fills first');
+  });
+
+  it('an overpayment is refused before any row is written', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: '/collections/punch-in', headers: auth(cs),
+      payload: { dealId: '77777777-0000-0000-0000-000000000011', amount: 99999, mode: 'cash' },
+    });
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message, /outstanding/);
+  });
+
+  it('a caller cannot punch in money', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: '/collections/punch-in', headers: auth(a1),
+      payload: { dealId: '77777777-0000-0000-0000-000000000011', amount: 100, mode: 'cash' },
+    });
+    assert.equal(res.statusCode, 403);
+  });
+});
+
 describe('alerts say whose lead each one is', () => {
   it('a counsellor sees the owner on every team alert, not just a lead name', async () => {
     const leadId = makeLeadFor(USERS.callerA1, 'Owner Shown');

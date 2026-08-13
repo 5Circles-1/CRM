@@ -1,4 +1,5 @@
 import { get } from '../api.js';
+import { addLeadModal } from '../addlead.js';
 import { badge, esc, fmtDT, h } from '../util.js';
 
 /**
@@ -63,7 +64,7 @@ const WHATSAPP = [
   ['not_sent', 'WhatsApp not sent'],
 ];
 
-export async function render(outlet) {
+export async function render(outlet, me) {
   const dispositions = await get('/meta/dispositions').catch(() => []);
   let filters = {};
   let preset = 'Everything';
@@ -75,7 +76,10 @@ export async function render(outlet) {
 
   const panel = h(`
     <div class="panel">
-      <h2>Find and re-tap <small>pick a list, or combine the filters</small></h2>
+      <div class="row spread">
+        <h2>Find and re-tap <small>pick a list, or combine the filters</small></h2>
+        <span id="addlead-slot"></span>
+      </div>
 
       <div class="chips" id="presets">
         ${PRESETS.map((p) => `
@@ -180,6 +184,15 @@ export async function render(outlet) {
       results.appendChild(h(`<div class="empty">${esc(err.message)}</div>`));
     }
   };
+
+  if (['counsellor', 'admin', 'ops'].includes(me?.role)) {
+    const slot = panel.querySelector('#addlead-slot');
+    const btn = h('<button class="btn primary small">Add lead</button>');
+    btn.addEventListener('click', () => addLeadModal((lead) => {
+      location.hash = `#/lead/${lead.id}`;
+    }));
+    slot.appendChild(btn);
+  }
 
   panel.querySelector('#presets').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-preset]');

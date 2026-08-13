@@ -1,5 +1,6 @@
 import { get } from '../api.js';
 import { agoLabel, esc, h } from '../util.js';
+import { addLeadModal } from '../addlead.js';
 
 /**
  * Fresh: every lead nobody has ever contacted.
@@ -75,11 +76,15 @@ export async function render(outlet, me) {
               getting old.
             </div>
           </div>
-          ${canSeeAll ? `
-            <div class="chips" style="margin:0">
-              <button class="chip ${scope === 'mine' ? 'on' : ''}" data-scope="mine">Mine</button>
-              <button class="chip ${scope === 'all' ? 'on' : ''}" data-scope="all">Whole floor</button>
-            </div>` : ''}
+          <div class="row" style="gap:8px">
+            ${canSeeAll ? `
+              <div class="chips" style="margin:0">
+                <button class="chip ${scope === 'mine' ? 'on' : ''}" data-scope="mine">Mine</button>
+                <button class="chip ${scope === 'all' ? 'on' : ''}" data-scope="all">Whole floor</button>
+              </div>` : ''}
+            ${['counsellor', 'admin', 'ops'].includes(me.role)
+              ? '<button class="btn primary small" id="add-lead">Add lead</button>' : ''}
+          </div>
         </div>
         <div class="chips" style="margin:10px 0 14px">
           ${FLAGS.map(([v, l]) => `<button class="chip ${flag === v ? 'on' : ''}" data-flag="${v}">${l}</button>`).join('')}
@@ -119,6 +124,7 @@ export async function render(outlet, me) {
       </div>
       </div>`));
 
+    outlet.querySelector('#add-lead')?.addEventListener('click', () => addLeadModal(() => draw()));
     outlet.querySelectorAll('[data-flag]').forEach((b) =>
       b.addEventListener('click', () => { flag = b.dataset.flag; draw(); }));
     outlet.querySelectorAll('[data-scope]').forEach((b) =>

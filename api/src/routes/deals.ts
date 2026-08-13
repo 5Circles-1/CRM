@@ -123,6 +123,54 @@ export async function dealRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
+  /** Search open deals by client, for the payment punch-in. */
+  app.get('/collections/deal-search', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops');
+    const { q: term } = z.object({ q: z.string().trim().min(2).max(64) }).parse(req.query);
+    return req.tx((q) =>
+      q.many(
+        `select * from crm.v_open_deals
+          where full_name ilike '%' || $1 || '%'
+             or (regexp_replace($1, '[^0-9]', '', 'g') <> ''
+                 and phone_e164 like '%' || regexp_replace($1, '[^0-9]', '', 'g'))
+          order by outstanding desc
+          limit 20`,
+        [term],
+      ),
+    );
+  });
+
+  /**
+   * The direct punch-in: one amount against a client, no instalment hunting.
+   * crm.punch_in_payment spreads it oldest-instalment-first and refuses an
+   * overpayment in plain words.
+   */
+  app.post('/collections/punch-in', async (req, reply) => {
+    req.requireRole('counsellor', 'admin', 'ops');
+    const body = z
+      .object({
+        dealId: uuid,
+        amount: money,
+        mode: z.enum(['upi', 'card', 'netbanking', 'cash', 'cheque', 'neft', 'other']),
+        reference: z.string().max(120).optional(),
+        paidOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      })
+      .parse(req.body);
+
+    const result = await req.tx(async (q) => {
+      const applied = await q.one<{ rows: number }>(
+        `select crm.punch_in_payment($1, $2::numeric, $3, $4,
+                  coalesce($5::date::timestamptz + interval '12 hours 30 minutes', now())) as rows`,
+        [body.dealId, body.amount, body.mode, body.reference?.trim() || null,
+         body.paidOn ?? null],
+      );
+      const deal = await q.one(`select * from crm.v_open_deals where deal_id = $1`, [body.dealId]);
+      return { applied: applied?.rows ?? 0, deal };
+    });
+    reply.code(201);
+    return result;
+  });
+
   app.post('/deals/:id/payments', async (req, reply) => {
     const user = req.requireRole('counsellor', 'admin', 'ops');
     const { id } = z.object({ id: uuid }).parse(req.params);

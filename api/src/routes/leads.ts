@@ -169,6 +169,46 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /** Search within whatever the user is allowed to see. */
+  /**
+   * A lead entered by hand: walk-past, phone-in, referral.
+   *
+   * The SQL function owns the rules - duplicate refusal with directions, the
+   * caller-assignment check, and fair distribution when nobody is named. The
+   * leads_insert policy (admin/ops/counsellor, never caller) is enforced by
+   * RLS inside the same transaction; this handler only shapes the request.
+   */
+  app.post('/leads/manual', async (req, reply) => {
+    req.requireRole('admin', 'ops', 'counsellor');
+    const body = z
+      .object({
+        fullName: z.string().min(1).max(120),
+        phone: z.string().min(6).max(20),
+        city: z.string().max(60).optional(),
+        priority: z.enum(['normal', 'immediate']).default('normal'),
+        assignTo: uuid.nullable().optional(),
+        note: z.string().max(300).optional(),
+      })
+      .parse(req.body);
+
+    const row = await req.tx(async (q) => {
+      const created = await q.one<{ lead_id: string }>(
+        `select crm.add_manual_lead($1, $2, $3, $4::crm.lead_priority, $5, $6) as lead_id`,
+        [
+          body.fullName.trim(), body.phone.trim(), body.city?.trim() || null,
+          body.priority, body.assignTo ?? null, body.note?.trim() || null,
+        ],
+      );
+      return q.one(
+        `select id, full_name, phone_e164, status, priority, caller_id, team_id,
+                first_touch_due_at, next_action_at
+           from crm.leads where id = $1`,
+        [created!.lead_id],
+      );
+    });
+    reply.code(201);
+    return row;
+  });
+
   app.get('/leads', async (req) => {
     const user = req.requireUser();
     const query = z

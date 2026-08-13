@@ -15,6 +15,10 @@ export async function render(outlet, me) {
   const overdueAmt = overdue.reduce((a, r) => a + (Number(r.amount) - Number(r.paid_amount)), 0);
 
   outlet.appendChild(h(`
+    <div class="row spread" style="margin-bottom:14px">
+      <div></div>
+      <button class="btn primary" id="punch-in" data-testid="punch-in">Punch in a payment</button>
+    </div>
     <div class="grid cols-3" style="margin-bottom:18px">
       <div class="stat"><div class="k">Open instalments</div><div class="v">${rows.length}</div></div>
       <div class="stat"><div class="k">Outstanding</div><div class="v">${fmtINR(totalDue)}</div></div>
@@ -22,6 +26,9 @@ export async function render(outlet, me) {
         <div class="v" style="color:${overdue.length ? 'var(--bad)' : 'inherit'}">${fmtINR(overdueAmt)}</div>
         <div class="s">${overdue.length} instalment${overdue.length === 1 ? '' : 's'}</div></div>
     </div>`));
+
+  outlet.querySelector('#punch-in')?.addEventListener('click', () =>
+    punchInModal(() => render(outlet, me)));
 
   if (rows.length === 0) {
     outlet.appendChild(h('<div class="panel"><div class="empty">Nothing outstanding. Every rupee booked has been collected.</div></div>'));
@@ -144,4 +151,117 @@ function promiseModal(instalmentId, outstanding, onDone) {
       toast(err.message, 'err');
     }
   });
+}
+
+
+/**
+ * The direct punch-in: type a name or number, pick the client, enter the
+ * amount. The database spreads it oldest-instalment-first and refuses an
+ * overpayment, so the person at the desk never does instalment arithmetic.
+ */
+function punchInModal(onDone) {
+  const today = new Date().toISOString().slice(0, 10);
+  let picked = null;
+
+  const bodyEl = h(`
+    <div>
+      <label class="f">Client
+        <input name="q" placeholder="name, or the last digits of their number…" autocomplete="off">
+      </label>
+      <div id="pi-results"></div>
+      <div id="pi-form" style="display:none">
+        <div class="row spread" style="margin:8px 0">
+          <div id="pi-picked"></div>
+          <button class="btn small" id="pi-change">Change</button>
+        </div>
+        <div class="frow">
+          <label class="f">Amount received (₹) <input name="amount" type="number" min="1" step="0.01"></label>
+          <label class="f">Mode
+            <select name="mode">
+              ${['upi', 'cash', 'neft', 'card', 'netbanking', 'cheque', 'other']
+                .map((m) => `<option value="${m}">${m}</option>`).join('')}
+            </select>
+          </label>
+        </div>
+        <div class="frow">
+          <label class="f">Reference <input name="reference" maxlength="120" placeholder="UTR / receipt no."></label>
+          <label class="f">Paid on <input name="paidOn" type="date" value="${today}" max="${today}"></label>
+        </div>
+      </div>
+    </div>`);
+
+  const footer = h('<div><button class="btn primary" id="pi-save" disabled>Record payment</button></div>');
+  const { close } = openModal('Punch in a payment', bodyEl, footer);
+
+  const qInp = bodyEl.querySelector('[name=q]');
+  const results = bodyEl.querySelector('#pi-results');
+  const form = bodyEl.querySelector('#pi-form');
+  const saveBtn = footer.querySelector('#pi-save');
+
+  const pick = (d) => {
+    picked = d;
+    qInp.parentElement.style.display = 'none';
+    results.innerHTML = '';
+    form.style.display = '';
+    bodyEl.querySelector('#pi-picked').innerHTML = `
+      <b>${esc(d.full_name ?? 'Unnamed')}</b> <span class="hint mono">${esc(d.phone_e164)}</span>
+      <div class="hint">${esc(d.product)} · ${fmtINR(d.outstanding)} outstanding of ${fmtINR(d.booked_amount)}</div>`;
+    const amt = bodyEl.querySelector('[name=amount]');
+    amt.value = Number(d.outstanding).toFixed(2);
+    amt.max = Number(d.outstanding).toFixed(2);
+    saveBtn.disabled = false;
+    amt.focus();
+  };
+
+  let timer = null;
+  qInp.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const term = qInp.value.trim();
+      if (term.length < 2) { results.innerHTML = ''; return; }
+      try {
+        const found = await get(`/collections/deal-search?q=${encodeURIComponent(term)}`);
+        results.innerHTML = found.length === 0
+          ? '<div class="hint" style="padding:6px 0">No open deal matches. Money for somebody new is entered with “Add a client” on Advisory clients.</div>'
+          : found.map((d, i) => `
+              <div class="alert-row" data-pi="${i}" style="cursor:pointer">
+                <span><b>${esc(d.full_name ?? 'Unnamed')}</b>
+                  <span class="hint mono">${esc(d.phone_e164)}</span></span>
+                <span class="hint">${esc(d.product)}</span>
+                <span class="num"><b>${fmtINR(d.outstanding)}</b> <span class="hint">due</span></span>
+              </div>`).join('');
+        results.querySelectorAll('[data-pi]').forEach((row) =>
+          row.addEventListener('click', () => pick(found[Number(row.dataset.pi)])));
+      } catch { results.innerHTML = ''; }
+    }, 250);
+  });
+
+  bodyEl.querySelector('#pi-change').addEventListener('click', () => {
+    picked = null;
+    form.style.display = 'none';
+    qInp.parentElement.style.display = '';
+    saveBtn.disabled = true;
+    qInp.focus();
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const v = (n) => bodyEl.querySelector(`[name=${n}]`).value.trim();
+    if (!picked || !v('amount')) { toast('Pick the client and enter the amount.', 'err'); return; }
+    saveBtn.disabled = true;
+    try {
+      const r = await post('/collections/punch-in', {
+        dealId: picked.deal_id,
+        amount: Number(v('amount')),
+        mode: v('mode'),
+        reference: v('reference') || undefined,
+        paidOn: v('paidOn') || undefined,
+      });
+      toast(`${fmtINR(v('amount'))} recorded for ${picked.full_name ?? 'the client'} — ${
+        fmtINR(r.deal?.outstanding ?? 0)} still outstanding.`);
+      close();
+      onDone?.();
+    } catch (err) { toast(err.message, 'err'); saveBtn.disabled = false; }
+  });
+
+  qInp.focus();
 }

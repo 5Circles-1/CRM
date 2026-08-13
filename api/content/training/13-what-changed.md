@@ -126,6 +126,17 @@ glossary of every screen element and a dictionary of **every term**.
 **What it means for you.** Finish your track. The banner on the Training tab
 tells you what you still owe, and a module that changes asks to be read again.
 
+## Leads by hand, payments by hand
+
+**What changed.** Counsellors, admins and ops can now **Add lead** (on Find
+lead and Fresh leads) for phone-ins, walk-pasts and referrals — fair
+distribution by default, a named caller when the person asked for someone. And
+Collections has **Punch in a payment**: type the client, the amount and the
+mode; the CRM does the instalment arithmetic and refuses overpayments.
+
+**What it means for you.** Nothing lands on sticky notes any more. If it rang,
+walked in, or paid — it goes straight in the CRM, at the moment it happens.
+
 ## Everything else
 
 - **Dark mode** is complete — the ◐ button top-right. White bands on dark

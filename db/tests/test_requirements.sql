@@ -2023,6 +2023,123 @@ select crm_test.check(
   (select 'streak was ' || na_streak from crm.leads where full_name = 'Old History'));
 
 -- =============================================================================
+-- ENTRY (ENT): leads by hand, and the payment punch-in.
+-- =============================================================================
+
+-- A counsellor adds a lead by hand, under the app role like the API does.
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false) as _ \gset
+
+select crm.add_manual_lead('Walk Past', '9812345001', 'Pune', 'normal', null,
+                           'asked at the desk') as _manual_lead \gset
+
+select crm_test.check(
+  'ENT', 'a counsellor can add a lead by hand, and it is a complete lead',
+  (select source_id = '33333333-0000-0000-0000-000000000003'
+      and next_action_at is not null and first_touch_due_at is not null
+     from crm.leads where id = :'_manual_lead'), null);
+
+select crm_test.check(
+  'ENT', 'unnamed assignment goes through real distribution, not around it',
+  (select count(*) = 1 from crm.distribution_events
+    where lead_id = :'_manual_lead'), null);
+
+do $$
+begin
+  perform crm.add_manual_lead('Walk Past Again', '9812345001');
+  perform crm_test.check('ENT', 'the same number twice is refused, naming where the lead is',
+                         false, 'a duplicate lead was created');
+exception when unique_violation then
+  perform crm_test.check('ENT', 'the same number twice is refused, naming where the lead is',
+                         sqlerrm like '%already in the book%', sqlerrm);
+end $$;
+
+do $$
+begin
+  perform crm.add_manual_lead('Junk Number', '12345');
+  perform crm_test.check('ENT', 'an undialable number is refused before anything is created',
+                         false, 'a lead with a junk number was created');
+exception when check_violation then
+  perform crm_test.check('ENT', 'an undialable number is refused before anything is created',
+                         true, null);
+end $$;
+
+-- A caller must still be unable to create leads - the guarantee R9 pins.
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false) as _ \gset
+do $$
+begin
+  perform crm.add_manual_lead('Sneaky Self Lead', '9812345002');
+  perform crm_test.check('ENT', 'a caller still cannot create leads, by hand or otherwise',
+                         false, 'the insert unexpectedly succeeded');
+exception when insufficient_privilege then
+  perform crm_test.check('ENT', 'a caller still cannot create leads, by hand or otherwise',
+                         true, null);
+end $$;
+
+-- The punch-in, on a deal with a real instalment schedule.
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false) as _ \gset
+reset role;
+
+do $$
+declare
+  v_lead uuid;
+  v_deal uuid := '99999999-0000-0000-0000-000000000021';
+  v_cns  uuid := '22222222-0000-0000-0000-000000000005';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, team_id, status, closed_at)
+  values ('33333333-0000-0000-0000-000000000001', 'Instalment Payer', '+919812346001',
+          crm.team_of(v_cns, current_date), 'won', now())
+  returning id into v_lead;
+  insert into crm.deals (id, lead_id, product_id, counsellor_id, team_id, booked_amount)
+  values (v_deal, v_lead, '44444444-0000-0000-0000-000000000002',
+          v_cns, crm.team_of(v_cns, current_date), 30000);
+  insert into crm.instalments (deal_id, seq, due_date, amount)
+  values (v_deal, 1, current_date - 10, 10000),
+         (v_deal, 2, current_date + 20, 10000),
+         (v_deal, 3, current_date + 50, 10000);
+end $$;
+
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false) as _ \gset
+
+select crm.punch_in_payment('99999999-0000-0000-0000-000000000021',
+                            15000, 'upi', 'UTR-TEST-1') as _slices \gset
+
+select crm_test.check(
+  'ENT', 'one punched amount spreads oldest instalment first',
+  :_slices = 2
+  and (select status = 'paid' from crm.instalments
+        where deal_id = '99999999-0000-0000-0000-000000000021' and seq = 1)
+  and (select paid_amount = 5000 from crm.instalments
+        where deal_id = '99999999-0000-0000-0000-000000000021' and seq = 2),
+  'slices: ' || :_slices);
+
+do $$
+begin
+  perform crm.punch_in_payment('99999999-0000-0000-0000-000000000021',
+                               99000, 'cash');
+  perform crm_test.check('ENT', 'an overpayment is refused in rupees, not raw numbers',
+                         false, 'the overpayment was accepted');
+exception when check_violation then
+  perform crm_test.check('ENT', 'an overpayment is refused in rupees, not raw numbers',
+                         sqlerrm like '%outstanding%', sqlerrm);
+end $$;
+
+-- The other team's counsellor cannot punch money into this deal: under their
+-- RLS the deal simply does not exist.
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000006', false) as _ \gset
+do $$
+begin
+  perform crm.punch_in_payment('99999999-0000-0000-0000-000000000021', 1000, 'cash');
+  perform crm_test.check('ENT', 'the team fence holds on the punch-in',
+                         false, 'a cross-team payment was accepted');
+exception when no_data_found then
+  perform crm_test.check('ENT', 'the team fence holds on the punch-in', true, null);
+end $$;
+
+reset role;
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

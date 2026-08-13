@@ -378,6 +378,20 @@
       "label": "Waiting leads by team",
       "does": "Unassigned leads grouped by team with the exact rule blocking each group.",
       "when": "Whenever the Floor says leads are waiting — it names the fix."
+    },
+    {
+      "key": "btn.add_lead",
+      "area": "Buttons",
+      "label": "Add lead",
+      "does": "Enters a lead that did not come through the sheet — phone-in, walk-past, referral. Fair distribution by default.",
+      "when": "Counsellors, admins, ops. Never re-type a sheet lead; duplicates are refused."
+    },
+    {
+      "key": "btn.punch_in",
+      "area": "Buttons",
+      "label": "Punch in a payment",
+      "does": "Records money against a client by name — spread oldest instalment first, overpayments refused.",
+      "when": "The moment money arrives, on the Collections tab."
     }
   ]
 }
