@@ -66,7 +66,7 @@ export async function render(outlet, me) {
         <div style="overflow-x:auto">
         <table class="table"><thead><tr>
           <th>Client</th><th>Product</th><th class="num">Paid</th><th>Last payment</th>
-          <th>Counsellor</th><th>Status</th>
+          <th title="Who converted this client, and their team">Converted by</th><th>Status</th>
           <th title="Added to the client group">Group</th>
           <th title="KYC completed">KYC</th>
           <th title="MITC signed">MITC</th>
@@ -77,10 +77,10 @@ export async function render(outlet, me) {
             <td><a href="#/lead/${esc(r.lead_id)}"><b>${esc(r.full_name ?? 'Unnamed')}</b></a>
                 ${r.is_manual ? '<span class="badge b-mute" title="Entered by hand, not through a recorded sale">manual</span>' : ''}
                 <span class="hint mono">${esc(r.phone_e164)}</span></td>
-            <td>${esc(r.product)}</td>
+            <td>${esc(r.product)}${r.source ? `<div class="hint">${esc(r.source)}</div>` : ''}</td>
             <td class="num">${fmtINR(r.paid_amount)}</td>
             <td>${esc(fmtDate(r.last_paid_at))}</td>
-            <td>${esc(r.counsellor_name ?? '—')}</td>
+            <td>${esc(r.counsellor_name ?? '—')}${r.team_name ? `<div class="hint">${esc(r.team_name)}</div>` : ''}</td>
             <td>${r.client_status === 'active' ? '<span class="badge b-ok">active</span>'
                 : r.client_status === 'expired' ? '<span class="badge b-warn">expired</span>'
                 : '<span class="badge b-bad">refunded</span>'}</td>
@@ -110,7 +110,7 @@ export async function render(outlet, me) {
     outlet.querySelector('[data-pending]')?.addEventListener('click', () => {
       pendingOnly = !pendingOnly; draw();
     });
-    outlet.querySelector('#add-client')?.addEventListener('click', () => addClientModal(draw));
+    outlet.querySelector('#add-client')?.addEventListener('click', () => addClientModal(draw, me));
 
     outlet.querySelectorAll('input[type=checkbox][data-deal]').forEach((cb) =>
       cb.addEventListener('change', async () => {
@@ -145,13 +145,38 @@ export async function render(outlet, me) {
  * creates — so the client behaves identically everywhere and counts in the
  * same totals. It is marked "manual" so reporting stays honest about how they
  * arrived, not to give them a separate life.
+ *
+ * "Converted by" and "Lead source" are on the form because the person typing
+ * is often not the person who made the sale: the deal, its team and the
+ * collections chasing all follow the named counsellor, and the source keeps
+ * source reporting honest. Also opened from Collections → Punch in a payment
+ * for a client who is not in the book yet — `prefill` carries whatever was
+ * already typed into the search box.
  */
-export async function addClientModal(onDone) {
-  const [products, mentorList] = await Promise.all([
+export async function addClientModal(onDone, me = null, prefill = {}) {
+  const [products, mentorList, options] = await Promise.all([
     get('/advisory/products'),
     get('/mentors/book').then((b) => b.mentors).catch(() => []),
+    get('/advisory/entry-options').catch(() => ({ counsellors: [], sources: [] })),
   ]);
   const today = new Date().toISOString().slice(0, 10);
+
+  // A counsellor entering their own sale is the common case — preselect them.
+  // An admin or ops person is doing data entry for somebody else's sale, so
+  // they must say whose; "recorded by" is already captured automatically.
+  const iAmListed = options.counsellors.some((c) => c.id === me?.id);
+  const convOptions = [
+    `<option value="" disabled ${me?.role === 'counsellor' && iAmListed ? '' : 'selected'}>— who converted them? —</option>`,
+    ...options.counsellors.map((c) =>
+      `<option value="${esc(c.id)}" ${c.id === me?.id ? 'selected' : ''}>${esc(c.full_name)}${
+        c.team_name ? ` — ${esc(c.team_name)}` : ''}</option>`),
+    ...(me && !iAmListed
+      ? ['<option value="self">' + esc(me.full_name) + ' (me — no counsellor credit)</option>']
+      : []),
+  ].join('');
+
+  const sourceOptions = options.sources.map((s) =>
+    `<option value="${esc(s.id)}" ${s.name === 'Manual entry' ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
 
   const bodyEl = h(`
     <div>
@@ -160,10 +185,18 @@ export async function addClientModal(onDone) {
         a payment taken before this system. Everyone who pays <b>through</b> the CRM
         appears automatically; you never need this for them.
       </div>
-      <label class="f">Full name <input name="name" required></label>
+      <label class="f">Full name <input name="name" required value="${esc(prefill.name ?? '')}"></label>
       <div class="frow">
-        <label class="f">Phone <input name="phone" placeholder="98xxxxxxxx" required></label>
+        <label class="f">Phone <input name="phone" placeholder="98xxxxxxxx" required value="${esc(prefill.phone ?? '')}"></label>
         <label class="f">Paid on <input type="date" name="paid" value="${today}" max="${today}"></label>
+      </div>
+      <div class="frow">
+        <label class="f">Converted by <span class="hint">the deal and its team follow this person</span>
+          <select name="conv" data-testid="entry-converted-by">${convOptions}</select>
+        </label>
+        <label class="f">Lead source <span class="hint">where they originally came from</span>
+          <select name="source" data-testid="entry-source">${sourceOptions}</select>
+        </label>
       </div>
       <label class="f">Product / plan they bought
         <select name="product">
@@ -179,22 +212,26 @@ export async function addClientModal(onDone) {
           </select>
         </label>
       </div>
+      <label class="f">Reference / note <input name="note" maxlength="300" placeholder="UTR, receipt no., or why this was entered by hand"></label>
       <label class="f">Assign a mentor <span class="hint">optional — can be set later on the Mentors tab</span>
         <select name="mentor">
           <option value="">— none yet —</option>
           ${mentorList.map((m) => `<option value="${esc(m.id)}">${esc(m.full_name)}</option>`).join('')}
         </select>
       </label>
-      <label class="f">Note <input name="note" maxlength="300" placeholder="why this was entered by hand"></label>
     </div>`);
 
-  const footer = h('<div><button class="btn primary">Add client</button></div>');
+  const footer = h('<div><button class="btn primary" data-testid="entry-save">Add client</button></div>');
   const { close } = openModal('Add a paying client', bodyEl, footer);
 
   footer.querySelector('button').addEventListener('click', async () => {
     const v = (n) => bodyEl.querySelector(`[name=${n}]`).value.trim();
     if (!v('name') || !v('phone') || !v('amount')) {
       toast('Name, phone and amount are all required — a client is someone who has paid.', 'err');
+      return;
+    }
+    if (!v('conv')) {
+      toast('Say who converted this client — the sale is credited to them.', 'err');
       return;
     }
     try {
@@ -207,6 +244,8 @@ export async function addClientModal(onDone) {
         mode: v('mode'),
         mentorId: v('mentor') || null,
         note: v('note') || undefined,
+        counsellorId: v('conv') === 'self' ? null : v('conv') || null,
+        sourceId: v('source') || null,
       });
       toast('Client added — they are now in the advisory register and the mentor book.');
       close();

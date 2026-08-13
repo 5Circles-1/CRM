@@ -49,21 +49,48 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
         mode: z.enum(['upi', 'card', 'netbanking', 'cash', 'cheque', 'neft', 'other']).default('other'),
         mentorId: uuid.nullable().optional(),
         note: z.string().max(300).optional(),
+        counsellorId: uuid.nullable().optional(),
+        sourceId: uuid.nullable().optional(),
       })
       .parse(req.body);
 
     const row = await req.tx((q) =>
       q.one<{ deal_id: string }>(
-        `select crm.add_manual_client($1, $2, $3, $4::numeric, $5, $6, $7, $8) as deal_id`,
+        `select crm.add_manual_client($1, $2, $3, $4::numeric, $5, $6, $7, $8, $9, $10) as deal_id`,
         [
           body.fullName.trim(), body.phone.trim(), body.productId, body.amount,
           body.paidAt ?? new Date().toISOString(), body.mode,
           body.mentorId ?? null, body.note?.trim() || null,
+          body.counsellorId ?? null, body.sourceId ?? null,
         ],
       ),
     );
     reply.code(201);
     return row;
+  });
+
+  /**
+   * Everything the manual-entry form needs to name how a client arrived:
+   * the counsellors who could have converted them (with their team, because
+   * the deal follows the counsellor's team) and the lead sources.
+   */
+  app.get('/advisory/entry-options', async (req) => {
+    req.requireRole('admin', 'ops', 'counsellor');
+    return req.tx(async (q) => {
+      const counsellors = await q.many(
+        `select u.id, u.full_name, t.name as team_name
+           from crm.users u
+           left join crm.team_memberships tm
+                  on tm.user_id = u.id and tm.period @> current_date
+           left join crm.teams t on t.id = tm.team_id
+          where u.role = 'counsellor' and u.is_active
+          order by u.full_name`,
+      );
+      const sources = await q.many(
+        `select id, name from crm.lead_sources order by name`,
+      );
+      return { counsellors, sources };
+    });
   });
 
   /** Products, for the manual-add form. */

@@ -86,6 +86,13 @@ That is what turns chasing into forecasting.
 the last digits of a number, an amount and a mode — the CRM spreads it oldest
 instalment first and refuses an amount larger than what is outstanding, so a
 mistyped zero cannot corrupt the collections numbers.
+**Somebody new pays:** if the search finds no open deal, you do not leave the
+screen — **Punch in for a new client** is right there. It opens the same
+Add-a-client form the Advisory tab uses, prefilled with what you typed, and
+asks two questions that matter: **who converted them** (the deal, its team and
+the chasing all follow that counsellor — not whoever did the typing) and
+**what the lead source was**. One form, and the client exists everywhere with
+the money already recorded.
 **The mistake:** thinking collections ends at handover. **The counsellor who
 closed the deal chases the instalments**, permanently.
 
@@ -108,6 +115,12 @@ before this system. It creates a real lead, deal and payment, so they behave
 like every other client, and marks them *manual* so reporting stays honest.
 Anyone who pays **through** the CRM appears automatically; you never need the
 button for them.
+**Converted by and Lead source:** the form asks who actually made the sale and
+where the person originally came from. The counsellor you name gets the deal
+on their team and chases the instalments — a counsellor entering their own
+sale is preselected, but an admin doing data entry **must** name the closer.
+The register shows both, so "whose client is this, from which team, and where
+did they come from" is a column, not a question.
 **The mistake:** ticking a checkpoint before it is genuinely done. The tick is
 a compliance record for a SEBI-registered firm, not a to-do list item.
 

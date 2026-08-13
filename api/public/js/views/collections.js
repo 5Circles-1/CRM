@@ -1,5 +1,6 @@
 import { get, post } from '../api.js';
 import { badge, esc, fmtDate, fmtINR, h, openModal, toast } from '../util.js';
+import { addClientModal } from './advisory.js';
 
 /**
  * The collections queue: every open instalment, most urgent first. The
@@ -28,7 +29,7 @@ export async function render(outlet, me) {
     </div>`));
 
   outlet.querySelector('#punch-in')?.addEventListener('click', () =>
-    punchInModal(() => render(outlet, me)));
+    punchInModal(me, () => render(outlet, me)));
 
   if (rows.length === 0) {
     outlet.appendChild(h('<div class="panel"><div class="empty">Nothing outstanding. Every rupee booked has been collected.</div></div>'));
@@ -158,8 +159,13 @@ function promiseModal(instalmentId, outstanding, onDone) {
  * The direct punch-in: type a name or number, pick the client, enter the
  * amount. The database spreads it oldest-instalment-first and refuses an
  * overpayment, so the person at the desk never does instalment arithmetic.
+ *
+ * Somebody NEW — no open deal in the book — is one button away: the same
+ * Add-a-client form the Advisory tab uses opens right here, prefilled with
+ * whatever was typed, and asks who converted them and what the lead source
+ * was. Both doors create the same audited lead + deal + payment.
  */
-function punchInModal(onDone) {
+function punchInModal(me, onDone) {
   const today = new Date().toISOString().slice(0, 10);
   let picked = null;
 
@@ -169,6 +175,10 @@ function punchInModal(onDone) {
         <input name="q" placeholder="name, or the last digits of their number…" autocomplete="off">
       </label>
       <div id="pi-results"></div>
+      <div id="pi-new-row" class="row spread" style="margin-top:10px">
+        <span class="hint">Not in the book yet — a first payment from somebody new?</span>
+        <button class="btn small" id="pi-new" data-testid="punch-in-new">Punch in for a new client</button>
+      </div>
       <div id="pi-form" style="display:none">
         <div class="row spread" style="margin:8px 0">
           <div id="pi-picked"></div>
@@ -198,9 +208,22 @@ function punchInModal(onDone) {
   const form = bodyEl.querySelector('#pi-form');
   const saveBtn = footer.querySelector('#pi-save');
 
+  const newRow = bodyEl.querySelector('#pi-new-row');
+
+  bodyEl.querySelector('#pi-new').addEventListener('click', () => {
+    const term = qInp.value.trim();
+    const digits = term.replace(/[^0-9]/g, '');
+    close();
+    // Same form as Advisory → Add a client: name, phone, who converted them
+    // (and so which team), the lead source, product, amount, mode.
+    addClientModal(() => onDone?.(), me,
+      digits.length >= 6 ? { phone: term } : { name: term });
+  });
+
   const pick = (d) => {
     picked = d;
     qInp.parentElement.style.display = 'none';
+    newRow.style.display = 'none';
     results.innerHTML = '';
     form.style.display = '';
     bodyEl.querySelector('#pi-picked').innerHTML = `
@@ -222,7 +245,7 @@ function punchInModal(onDone) {
       try {
         const found = await get(`/collections/deal-search?q=${encodeURIComponent(term)}`);
         results.innerHTML = found.length === 0
-          ? '<div class="hint" style="padding:6px 0">No open deal matches. Money for somebody new is entered with “Add a client” on Advisory clients.</div>'
+          ? '<div class="hint" style="padding:6px 0">No open deal matches — they may be fully paid, or new. For somebody new, use “Punch in for a new client” below.</div>'
           : found.map((d, i) => `
               <div class="alert-row" data-pi="${i}" style="cursor:pointer">
                 <span><b>${esc(d.full_name ?? 'Unnamed')}</b>
@@ -240,6 +263,7 @@ function punchInModal(onDone) {
     picked = null;
     form.style.display = 'none';
     qInp.parentElement.style.display = '';
+    newRow.style.display = '';
     saveBtn.disabled = true;
     qInp.focus();
   });

@@ -134,8 +134,16 @@ distribution by default, a named caller when the person asked for someone. And
 Collections has **Punch in a payment**: type the client, the amount and the
 mode; the CRM does the instalment arithmetic and refuses overpayments.
 
+**And when the payer is brand new:** the punch-in no longer sends you to
+another tab. **Punch in for a new client** opens the Add-a-client form right
+there, prefilled with what you typed. Every hand-entered client now records
+**who converted them** — the named counsellor gets the deal, on their team,
+and chases the instalments, not whoever did the typing — and **what the lead
+source was**. Both show as columns on the Advisory register.
+
 **What it means for you.** Nothing lands on sticky notes any more. If it rang,
 walked in, or paid — it goes straight in the CRM, at the moment it happens.
+And an admin punching in a counsellor's sale credits the counsellor, by name.
 
 ## Everything else
 

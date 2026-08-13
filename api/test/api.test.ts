@@ -2751,6 +2751,68 @@ describe('clients added by hand', () => {
     assert.equal(res.statusCode, 403);
   });
 
+  it('an admin entering a sale credits the named counsellor, their team and the source', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+
+    const opts = await h.app.inject({
+      method: 'GET', url: '/advisory/entry-options', headers: auth(admin),
+    });
+    assert.equal(opts.statusCode, 200);
+    const { counsellors, sources } = opts.json();
+    assert.ok(
+      counsellors.some(
+        (c: { full_name: string; team_name: string }) =>
+          c.full_name === 'Counsellor B' && c.team_name === 'Team B',
+      ),
+      'counsellors come with their team, because the deal follows it',
+    );
+    const manualSource = sources.find((s: { name: string }) => s.name === 'Manual entry');
+    assert.ok(manualSource, 'the Manual entry source is offered');
+
+    const products = await h.app.inject({
+      method: 'GET', url: '/advisory/products', headers: auth(admin),
+    });
+    const res = await h.app.inject({
+      method: 'POST', url: '/advisory/manual', headers: auth(admin),
+      payload: {
+        fullName: 'Credited Sale', phone: '9855577003',
+        productId: products.json()[0].id, amount: 20000, mode: 'upi',
+        counsellorId: USERS.counsellorB, sourceId: manualSource.id,
+      },
+    });
+    assert.equal(res.statusCode, 201);
+
+    const register = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(admin) });
+    const row = register.json().find(
+      (r: { deal_id: string }) => r.deal_id === res.json().deal_id,
+    );
+    assert.equal(row.counsellor_name, 'Counsellor B', 'credited to the named closer, not the typist');
+    assert.equal(row.team_name, 'Team B', 'and to the closer\'s team');
+    assert.equal(row.source, 'Manual entry', 'the register answers "where from"');
+  });
+
+  it('"converted by" refuses anyone who is not a counsellor', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: '/advisory/manual', headers: auth(cs),
+      payload: {
+        fullName: 'Bad Credit', phone: '9855577004',
+        productId: '44444444-0000-0000-0000-000000000001', amount: 1000,
+        counsellorId: USERS.callerA1,
+      },
+    });
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message ?? res.body, /active counsellor/);
+  });
+
+  it('a caller cannot read the entry options either', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'GET', url: '/advisory/entry-options', headers: auth(a1),
+    });
+    assert.equal(res.statusCode, 403);
+  });
+
   it('an unusable phone number is refused before anything is created', async () => {
     const cs = await login(h.app, EMAILS.counsellorA);
     // Long enough to pass the schema, junk enough to fail normalisation - so

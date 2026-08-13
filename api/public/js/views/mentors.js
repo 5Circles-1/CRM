@@ -173,7 +173,7 @@ export async function render(outlet, me) {
       </div>`));
 
     // --- wiring ---------------------------------------------------------
-    outlet.querySelector('#add-client')?.addEventListener('click', () => addClientModal(draw));
+    outlet.querySelector('#add-client')?.addEventListener('click', () => addClientModal(draw, me));
     outlet.querySelectorAll('[data-status]').forEach((b) =>
       b.addEventListener('click', () => { f.status = b.dataset.status; draw(); }));
     outlet.querySelectorAll('[data-health]').forEach((b) =>

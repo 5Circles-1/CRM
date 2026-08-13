@@ -392,6 +392,27 @@
       "label": "Punch in a payment",
       "does": "Records money against a client by name — spread oldest instalment first, overpayments refused.",
       "when": "The moment money arrives, on the Collections tab."
+    },
+    {
+      "key": "btn.punch_in_new",
+      "area": "Buttons",
+      "label": "Punch in for a new client",
+      "does": "Inside the payment punch-in: records a first payment from somebody with no open deal. Opens the Add-a-client form, asking who converted them and what the lead source was.",
+      "when": "The person paying is not in the book yet. If a search finds their open deal, use that instead."
+    },
+    {
+      "key": "field.converted_by",
+      "area": "Forms",
+      "label": "Converted by",
+      "does": "Names the counsellor whose sale this is. The deal, its team, and the collections chasing all follow this person — not whoever typed the entry.",
+      "when": "On every hand-entered client. An admin doing data entry must name the counsellor who actually closed."
+    },
+    {
+      "key": "field.lead_source",
+      "area": "Forms",
+      "label": "Lead source",
+      "does": "Where this client originally came from — the sheet, the website, a referral, or Manual entry. Keeps source reporting honest for clients entered by hand.",
+      "when": "On every hand-entered client. Pick the true origin; 'Manual entry' just means the CRM never saw them before."
     }
   ]
 }

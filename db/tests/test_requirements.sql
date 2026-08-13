@@ -1588,7 +1588,55 @@ select crm_test.check(
   'CLI', 'and the original client is untouched by the refused attempt',
   (select count(*) = 1 from crm.v_advisory_clients where full_name = 'Offline Buyer'), null);
 
+-- Entered with no source named: the register must still answer "where from" -
+-- the Manual entry source is the default, never a hole.
+select crm_test.check(
+  'CLI', 'a client entered without a source shows as Manual entry, not blank',
+  (select source = 'Manual entry' from crm.v_advisory_clients
+    where deal_id = :'_manual_deal'), null);
+
+-- Counsellor A types the entry, but names Counsellor B as the converter: the
+-- deal, its team and the register row must follow B, because conversion
+-- credit and collections chasing travel with the closer, not the typist.
+select crm.add_manual_client(
+         'Converted By B', '9855510303',
+         '44444444-0000-0000-0000-000000000001',
+         25000, now(), 'upi', null, 'walk-in closed by B, entered by A',
+         '22222222-0000-0000-0000-000000000006',
+         '33333333-0000-0000-0000-000000000001'
+       ) as _b_deal \gset
+
+-- "Converted by" must name a counsellor. A caller cannot be handed conversion
+-- credit - that would corrupt scoring and collections accountability at once.
+do $$
+begin
+  perform crm.add_manual_client('Bad Credit', '9855510404',
+            '44444444-0000-0000-0000-000000000001', 1000, now(), 'cash', null, null,
+            '22222222-0000-0000-0000-000000000001', null);
+  perform crm_test.check('CLI', '"converted by" refuses anyone who is not a counsellor',
+                         false, 'a caller was credited with a conversion');
+exception when check_violation then
+  perform crm_test.check('CLI', '"converted by" refuses anyone who is not a counsellor',
+                         sqlerrm like '%active counsellor%', sqlerrm);
+end $$;
+
 reset role;
+
+-- Checked from outside the team fence: counsellor A typed the entry, and the
+-- resulting deal belongs to B's team - which is exactly why A's own RLS view
+-- of the register cannot be the thing that verifies it.
+select crm_test.check(
+  'CLI', 'naming who converted credits the deal to that counsellor and their team',
+  (select counsellor_name = 'Counsellor B' and team_name = 'Team B'
+     from crm.v_advisory_clients where deal_id = :'_b_deal'),
+  (select counsellor_name || ' / ' || coalesce(team_name, 'no team')
+     from crm.v_advisory_clients where deal_id = :'_b_deal'));
+
+select crm_test.check(
+  'CLI', 'and the named lead source is recorded and shown on the register',
+  (select source is not null and source <> 'Manual entry'
+     from crm.v_advisory_clients where deal_id = :'_b_deal'),
+  (select source from crm.v_advisory_clients where deal_id = :'_b_deal'));
 
 set role crm_app;
 select set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false) as _ \gset
