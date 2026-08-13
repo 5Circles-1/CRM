@@ -77,6 +77,9 @@ before(async () => {
     insert into crm.attendance_sessions (user_id, started_at)
     select id, now() - interval '2 hours' from crm.users where role in ('caller', 'counsellor');
   `);
+  // The first-login guided tour overlays the whole screen and would swallow
+  // every click in these flows. Everyone here has "already taken" it.
+  fixtureSql(`update crm.users set tour_completed_at = now();`);
   const ops = await login(app, EMAILS.ops);
   const csv = [
     'Full Name,Phone Number,City,campaign_name',
