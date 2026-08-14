@@ -47,8 +47,9 @@ swapped to match how the floor actually talks.
 ## Clients can be corrected — and buy more than one product
 
 **What changed.** Every row on Collections has an **Edit** button. Name and
-phone can be corrected on any client; product, amount, who converted them and
-the lead source can be corrected on hand-entered clients. And the same person
+phone can be corrected on any client; product, amount, **paid date**, mode,
+reference, who converted them and the lead source can be corrected on
+hand-entered clients. And the same person
 can now hold deals for **different products** — a Traders Discovery client
 upgrading to Advisory is a second entry with the new product, not an error.
 Only the **same** product twice is refused, because that is a double-entry.

@@ -294,8 +294,25 @@ async function editClientModal(r, me, onDone) {
             data-testid="edit-amount">
         </label>
       </div>
+      <div class="frow">
+        <label class="f">Paid on
+          <input name="paidOn" type="date" max="${new Date().toISOString().slice(0, 10)}"
+            value="${r.first_paid_on ? esc(String(r.first_paid_on).slice(0, 10)) : ''}"
+            ${Number(r.payment_count) > 1 ? 'disabled' : ''} data-testid="edit-paid-on">
+        </label>
+        <label class="f">Mode
+          <select name="mode" ${Number(r.payment_count) > 1 ? 'disabled' : ''}>
+            ${['upi', 'cash', 'neft', 'card', 'netbanking', 'cheque', 'other']
+              .map((m) => `<option value="${m}" ${m === r.first_payment_mode ? 'selected' : ''}>${m}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <label class="f">Reference / note
+        <input name="reference" maxlength="300" value="${esc(r.first_payment_reference ?? '')}"
+          ${Number(r.payment_count) > 1 ? 'disabled' : ''}>
+      </label>
       ${Number(r.payment_count) > 1 ? `<div class="hint" style="margin:-6px 0 10px">
-        This client has ${esc(String(r.payment_count))} payments recorded, so one amount cannot honestly be
+        This client has ${esc(String(r.payment_count))} payments recorded, so the original entry cannot honestly be
         “corrected” — punch in the difference on Outstanding payments instead.</div>` : ''}
       <div class="frow">
         <label class="f">Converted by
@@ -334,6 +351,10 @@ async function editClientModal(r, me, onDone) {
       if (v('product') && v('product') !== r.product_id) payload.productId = v('product');
       const amt = v('amount');
       if (amt && Number(amt) !== Number(r.booked_amount)) payload.amount = Number(amt);
+      const paidOn = v('paidOn');
+      if (paidOn && paidOn !== String(r.first_paid_on ?? '').slice(0, 10)) payload.paidOn = paidOn;
+      if (v('mode') && v('mode') !== (r.first_payment_mode ?? '')) payload.mode = v('mode');
+      if (v('reference') !== (r.first_payment_reference ?? '')) payload.reference = v('reference');
       if (v('conv') && v('conv') !== (r.counsellor_id ?? '')) payload.counsellorId = v('conv');
       if (v('source') && v('source') !== (r.source_id ?? '')) payload.sourceId = v('source');
     }

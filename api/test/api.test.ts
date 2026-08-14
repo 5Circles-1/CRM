@@ -2926,6 +2926,24 @@ describe('clients added by hand', () => {
         where event_type = 'client_edited' order by id desc limit 1;`,
     ).trim();
     assert.equal(event, '32000.00', 'old and new values land in the lead history');
+
+    // The paid date, mode and reference are payment facts, correctable too.
+    const res2 = await h.app.inject({
+      method: 'PUT', url: `/advisory/${target.deal_id}/details`, headers: auth(cs),
+      payload: { paidOn: '2026-08-01', mode: 'neft', reference: 'UTR-999' },
+    });
+    assert.equal(res2.statusCode, 200);
+    const c = res2.json().client;
+    assert.equal(String(c.first_paid_on).slice(0, 10), '2026-08-01');
+    assert.equal(c.first_payment_mode, 'neft');
+    assert.equal(c.first_payment_reference, 'UTR-999');
+
+    const future = await h.app.inject({
+      method: 'PUT', url: `/advisory/${target.deal_id}/details`, headers: auth(cs),
+      payload: { paidOn: '2031-01-01' },
+    });
+    assert.equal(future.statusCode, 409, 'a payment cannot be re-dated into the future');
+    assert.match(future.json().message, /future/);
   });
 
   it('money recorded through the CRM itself cannot be edited', async () => {

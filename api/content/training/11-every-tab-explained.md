@@ -107,11 +107,13 @@ sale is preselected, but an admin doing data entry **must** name the closer.
 with the new product — the CRM adds a second deal to the same client. What it
 refuses is the **same** product twice: that is a double-entry, not a purchase.
 **Correcting a record:** the **Edit** button on each row fixes typos. Name and
-phone can be corrected on any client. Product, amount, converted-by and source
-can be corrected only on hand-entered clients — money that went through the
-CRM's own flow is an audit record and stays one. Every correction is written
-into the client's history: what it was, what it became, and who changed it.
-Nothing is ever silently rewritten.
+phone can be corrected on any client. Product, amount, **paid date**, mode,
+reference, converted-by and source can be corrected only on hand-entered
+clients — money that went through the CRM's own flow is an audit record and
+stays one, and once a client has more than one payment the original entry is
+real history too. Every correction is written into the client's history: what
+it was, what it became, and who changed it. Nothing is ever silently
+rewritten.
 **The mistake:** ticking a checkpoint before it is genuinely done. The tick is
 a compliance record for a SEBI-registered firm, not a to-do list item.
 

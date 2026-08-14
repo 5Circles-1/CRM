@@ -1624,6 +1624,37 @@ select crm_test.check(
   (select payload::text from crm.lead_events
     where event_type = 'client_edited' order by id desc limit 1));
 
+-- The paid date, mode and reference of the original hand entry are payment
+-- facts and correctable under the same single-payment rule.
+select crm.edit_client(:'_manual_deal',
+         p_paid_at => now() - interval '10 days', p_mode => 'upi',
+         p_reference => 'UTR-CORRECTED');
+
+select crm_test.check(
+  'CLI', 'the paid date, mode and reference of a hand entry are correctable',
+  (select d.booked_at < now() - interval '9 days'
+      and p.paid_at < now() - interval '9 days'
+      and p.mode = 'upi' and p.reference = 'UTR-CORRECTED'
+     from crm.deals d join crm.payments p on p.deal_id = d.id
+    where d.id = :'_manual_deal'),
+  (select d.booked_at::text || ' / ' || p.mode || ' / ' || coalesce(p.reference, 'null')
+     from crm.deals d join crm.payments p on p.deal_id = d.id
+    where d.id = :'_manual_deal'));
+
+do $$
+declare
+  v_deal uuid;
+begin
+  select deal_id into v_deal from crm.v_advisory_clients
+   where full_name = 'Offline Buyer Fixed' and booked_amount = 65000;
+  perform crm.edit_client(v_deal, p_paid_at => now() + interval '2 days');
+  perform crm_test.check('CLI', 'a payment cannot be re-dated into the future', false,
+                         'a future paid date was accepted');
+exception when check_violation then
+  perform crm_test.check('CLI', 'a payment cannot be re-dated into the future',
+                         sqlerrm like '%future%', sqlerrm);
+end $$;
+
 -- Money that came through the CRM's own recorded flow is an audit record:
 -- identity may be fixed, money and credit may not.
 do $$

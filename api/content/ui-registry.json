@@ -411,7 +411,7 @@
       "key": "btn.edit_client",
       "area": "Buttons",
       "label": "Edit (client)",
-      "does": "Corrects a client record on Collections. Name and phone on any client; product, amount, converted-by and source only on hand-entered clients. Every change is written to the client's history with old and new values.",
+      "does": "Corrects a client record on Collections. Name and phone on any client; product, amount, paid date, mode, reference, converted-by and source only on hand-entered clients. Every change is written to the client's history with old and new values.",
       "when": "Typos and wrong entries. Money recorded through the CRM itself is an audit record and cannot be edited."
     },
     {

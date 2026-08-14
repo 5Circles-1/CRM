@@ -118,15 +118,22 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
         amount: z.number().positive().max(100000000).optional(),
         counsellorId: uuid.optional(),
         sourceId: uuid.optional(),
+        paidOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        mode: z.enum(['upi', 'card', 'netbanking', 'cash', 'cheque', 'neft', 'other']).optional(),
+        reference: z.string().max(300).optional(),
       })
       .parse(req.body);
 
     return req.tx(async (q) => {
       await q.one(
-        `select crm.edit_client($1, $2, $3, $4, $5::numeric, $6, $7)`,
+        `select crm.edit_client($1, $2, $3, $4, $5::numeric, $6, $7, $8, $9, $10)`,
         [dealId, body.fullName?.trim() ?? null, body.phone?.trim() ?? null,
          body.productId ?? null, body.amount ?? null,
-         body.counsellorId ?? null, body.sourceId ?? null],
+         body.counsellorId ?? null, body.sourceId ?? null,
+         // Midday IST, the same convention the add form and punch-in use, so
+         // a corrected date never slips a day when rendered back in IST.
+         body.paidOn ? new Date(`${body.paidOn}T12:00:00+05:30`).toISOString() : null,
+         body.mode ?? null, body.reference ?? null],
       );
       // Read back through the invoker-rights view; an edit that moved the
       // client to the other team can legitimately vanish from a counsellor's
