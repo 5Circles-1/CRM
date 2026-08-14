@@ -3,9 +3,10 @@ import { badge, esc, fmtDate, fmtINR, h, openModal, toast } from '../util.js';
 import { addClientModal } from './advisory.js';
 
 /**
- * The collections queue: every open instalment, most urgent first. The
- * counsellor who closed the deal chases it - that accountability is the
- * highest-leverage rule in the build.
+ * Outstanding payments (route #/collections; renamed at the floor's request -
+ * the client book took the name Collections): every open instalment, most
+ * urgent first. The counsellor who closed the deal chases it - that
+ * accountability is the highest-leverage rule in the build.
  */
 export async function render(outlet, me) {
   const rows = await get('/collections/due');
@@ -38,7 +39,7 @@ export async function render(outlet, me) {
 
   const panel = h(`
     <div class="panel">
-      <h2>Dues queue <small>sorted by due date</small></h2>
+      <h2>Still to collect <small>most urgent first — the closer chases their own deals</small></h2>
       <table class="table" data-testid="dues-table"><thead><tr>
         <th>Due</th><th>Client</th><th>Instalment</th><th class="num">Amount</th>
         <th>Status</th><th>Promise</th><th>Closer</th><th></th>
@@ -161,7 +162,7 @@ function promiseModal(instalmentId, outstanding, onDone) {
  * overpayment, so the person at the desk never does instalment arithmetic.
  *
  * Somebody NEW — no open deal in the book — is one button away: the same
- * Add-a-client form the Advisory tab uses opens right here, prefilled with
+ * Add-a-client form the Collections tab uses opens right here, prefilled with
  * whatever was typed, and asks who converted them and what the lead source
  * was. Both doors create the same audited lead + deal + payment.
  */
@@ -214,7 +215,7 @@ function punchInModal(me, onDone) {
     const term = qInp.value.trim();
     const digits = term.replace(/[^0-9]/g, '');
     close();
-    // Same form as Advisory → Add a client: name, phone, who converted them
+    // Same form as Collections → Add a client: name, phone, who converted them
     // (and so which team), the lead source, product, amount, mode.
     addClientModal(() => onDone?.(), me,
       digits.length >= 6 ? { phone: term } : { name: term });

@@ -151,7 +151,7 @@ export async function render(outlet, me) {
                 <span class="hint mono">${esc(c.phone_e164)}</span></td>
             <td>${esc(c.product)}${c.client_status !== 'active' ? ` <span class="badge ${c.client_status === 'expired' ? 'b-warn' : 'b-bad'}">${esc(c.client_status)}</span>` : ''}
                 ${Number(c.mitc_done_at !== null) + Number(c.kyc_done_at !== null) + Number(c.group_added_at !== null) < 3
-                  ? '<span class="badge b-warn" title="Group, KYC or MITC still open — see Advisory clients">paperwork open</span>' : ''}</td>
+                  ? '<span class="badge b-warn" title="Group, KYC or MITC still open — see the Collections tab">paperwork open</span>' : ''}</td>
             <td class="num">${fmtINR(c.paid_amount)}</td>
             <td>${esc(c.mentor_name ?? '—')}</td>
             <td>${c.last_touch_on

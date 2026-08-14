@@ -1571,22 +1571,74 @@ select crm_test.check(
   (select checkpoints_done = 1 and group_added_at is not null
      from crm.v_advisory_clients where deal_id = :'_manual_deal'), null);
 
--- Entering the same phone again must not silently create a second person, and
--- must not leak a raw constraint error either.
+-- The SAME product twice is a double-entry and is refused in plain words,
+-- naming the product.
 do $$
 begin
   perform crm.add_manual_client('Offline Buyer Again', '9855510101',
-            '44444444-0000-0000-0000-000000000001', 15000);
-  perform crm_test.check('CLI', 'a repeat entry on the same phone is refused, in plain words',
-                         false, 'a duplicate client was created');
+            '44444444-0000-0000-0000-000000000002', 15000);
+  perform crm_test.check('CLI', 'the same product twice on one phone is refused, in plain words',
+                         false, 'a duplicate deal was created');
 exception when unique_violation then
-  perform crm_test.check('CLI', 'a repeat entry on the same phone is refused, in plain words',
-                         sqlerrm like '%already has an open deal%', sqlerrm);
+  perform crm_test.check('CLI', 'the same product twice on one phone is refused, in plain words',
+                         sqlerrm like '%already has an open%deal%', sqlerrm);
 end $$;
 
 select crm_test.check(
   'CLI', 'and the original client is untouched by the refused attempt',
   (select count(*) = 1 from crm.v_advisory_clients where full_name = 'Offline Buyer'), null);
+
+-- A DIFFERENT product is a real purchase: the same person upgrades, and the
+-- new deal joins the same lead instead of inventing a second human.
+select crm.add_manual_client('Offline Buyer', '9855510101',
+         '44444444-0000-0000-0000-000000000001', 15000) as _upgrade_deal \gset
+
+select crm_test.check(
+  'CLI', 'the same person can buy a second product - one client, two deals',
+  (select count(*) = 2 and count(distinct lead_id) = 1
+     from crm.v_advisory_clients where full_name = 'Offline Buyer'),
+  (select count(*)::text || ' rows, ' || count(distinct lead_id)::text || ' leads'
+     from crm.v_advisory_clients where full_name = 'Offline Buyer'));
+
+-- Corrections. A typo in the name and a wrong amount are fixed in place, and
+-- the change is stamped into the lead's history - never silently rewritten.
+select crm.edit_client(:'_manual_deal',
+         p_full_name => 'Offline Buyer Fixed', p_amount => 65000);
+
+select crm_test.check(
+  'CLI', 'editing a hand-entered client corrects name and amount in place',
+  (select full_name = 'Offline Buyer Fixed'
+      and booked_amount = 65000 and paid_amount = 65000
+     from crm.v_advisory_clients where deal_id = :'_manual_deal'),
+  (select full_name || ' / ' || booked_amount || ' / ' || paid_amount
+     from crm.v_advisory_clients where deal_id = :'_manual_deal'));
+
+select crm_test.check(
+  'CLI', 'and the correction is written to the lead history with old and new values',
+  (select payload -> 'changes' -> 'amount' ->> 'from' = '60000.00'
+      and payload -> 'changes' -> 'amount' ->> 'to' = '65000.00'
+      and payload -> 'changes' -> 'name' ->> 'to' = 'Offline Buyer Fixed'
+     from crm.lead_events
+    where event_type = 'client_edited'
+    order by id desc limit 1),
+  (select payload::text from crm.lead_events
+    where event_type = 'client_edited' order by id desc limit 1));
+
+-- Money that came through the CRM's own recorded flow is an audit record:
+-- identity may be fixed, money and credit may not.
+do $$
+declare
+  v_real uuid;
+begin
+  select id into v_real from crm.deals
+   where not is_manual and status = 'booked' limit 1;
+  perform crm.edit_client(v_real, p_amount => 999);
+  perform crm_test.check('CLI', 'money recorded through the CRM cannot be edited', false,
+                         'a recorded sale''s amount was rewritten');
+exception when check_violation then
+  perform crm_test.check('CLI', 'money recorded through the CRM cannot be edited',
+                         sqlerrm like '%audit record%', sqlerrm);
+end $$;
 
 -- Entered with no source named: the register must still answer "where from" -
 -- the Manual entry source is the default, never a hole.

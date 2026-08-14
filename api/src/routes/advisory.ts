@@ -101,6 +101,41 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
+  /**
+   * Correct a client record. The rules live in crm.edit_client: identity on
+   * any client, money and credit only on hand-entered deals, every change
+   * appended to the lead's history. The route just passes the form through
+   * and maps the database's plain-words refusals to status codes.
+   */
+  app.put('/advisory/:dealId/details', async (req) => {
+    req.requireRole('admin', 'ops', 'counsellor');
+    const { dealId } = z.object({ dealId: uuid }).parse(req.params);
+    const body = z
+      .object({
+        fullName: z.string().min(1).max(120).optional(),
+        phone: z.string().min(6).max(20).optional(),
+        productId: uuid.optional(),
+        amount: z.number().positive().max(100000000).optional(),
+        counsellorId: uuid.optional(),
+        sourceId: uuid.optional(),
+      })
+      .parse(req.body);
+
+    return req.tx(async (q) => {
+      await q.one(
+        `select crm.edit_client($1, $2, $3, $4, $5::numeric, $6, $7)`,
+        [dealId, body.fullName?.trim() ?? null, body.phone?.trim() ?? null,
+         body.productId ?? null, body.amount ?? null,
+         body.counsellorId ?? null, body.sourceId ?? null],
+      );
+      // Read back through the invoker-rights view; an edit that moved the
+      // client to the other team can legitimately vanish from a counsellor's
+      // own fence, so absence here is not an error.
+      const row = await q.one(`select * from crm.v_advisory_clients where deal_id = $1`, [dealId]);
+      return { ok: true, client: row ?? null };
+    });
+  });
+
   app.put('/advisory/:dealId', async (req) => {
     const user = req.requireRole('admin', 'counsellor');
     const { dealId } = z.object({ dealId: uuid }).parse(req.params);

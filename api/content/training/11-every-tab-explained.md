@@ -76,31 +76,15 @@ no team at all. Each reason names the fix.
 whole floor is starved. Check the per-team breakdown — usually one team is
 working and the other has nobody on shift.
 
-## Collections
+## Collections — the client book
 
-**Who sees it:** counsellors, admins, ops.
-**What it is:** money owed — instalments, promises to pay, who to chase.
-**What to do:** record a promise to pay as a structured promise, not a note.
-That is what turns chasing into forecasting.
-**Punching in a payment:** the **Punch in a payment** button takes a name or
-the last digits of a number, an amount and a mode — the CRM spreads it oldest
-instalment first and refuses an amount larger than what is outstanding, so a
-mistyped zero cannot corrupt the collections numbers.
-**Somebody new pays:** if the search finds no open deal, you do not leave the
-screen — **Punch in for a new client** is right there. It opens the same
-Add-a-client form the Advisory tab uses, prefilled with what you typed, and
-asks two questions that matter: **who converted them** (the deal, its team and
-the chasing all follow that counsellor — not whoever did the typing) and
-**what the lead source was**. One form, and the client exists everywhere with
-the money already recorded.
-**The mistake:** thinking collections ends at handover. **The counsellor who
-closed the deal chases the instalments**, permanently.
-
-## Advisory clients
+*(This tab used to be called Advisory clients.)*
 
 **Who sees it:** counsellors, admins, ops, viewers.
-**What it is:** everyone who has **paid**, with the three checkpoints that gate
-paid advisory:
+**What it is:** every client who has **paid** — one row per product bought, so
+a client who bought two programmes appears twice, which is the truth. Each row
+shows **who converted them** (and their team), **where the lead came from**,
+and the three checkpoints that gate paid advisory:
 
 1. **Group** — added to the client group
 2. **KYC** — completed
@@ -119,10 +103,39 @@ button for them.
 where the person originally came from. The counsellor you name gets the deal
 on their team and chases the instalments — a counsellor entering their own
 sale is preselected, but an admin doing data entry **must** name the closer.
-The register shows both, so "whose client is this, from which team, and where
-did they come from" is a column, not a question.
+**A second product:** the same person buying another programme is a new entry
+with the new product — the CRM adds a second deal to the same client. What it
+refuses is the **same** product twice: that is a double-entry, not a purchase.
+**Correcting a record:** the **Edit** button on each row fixes typos. Name and
+phone can be corrected on any client. Product, amount, converted-by and source
+can be corrected only on hand-entered clients — money that went through the
+CRM's own flow is an audit record and stays one. Every correction is written
+into the client's history: what it was, what it became, and who changed it.
+Nothing is ever silently rewritten.
 **The mistake:** ticking a checkpoint before it is genuinely done. The tick is
 a compliance record for a SEBI-registered firm, not a to-do list item.
+
+## Outstanding payments
+
+*(This tab used to be called Collections.)*
+
+**Who sees it:** counsellors, admins, ops.
+**What it is:** money still owed — instalments, promises to pay, who to chase.
+**What to do:** record a promise to pay as a structured promise, not a note.
+That is what turns chasing into forecasting.
+**Punching in a payment:** the **Punch in a payment** button takes a name or
+the last digits of a number, an amount and a mode — the CRM spreads it oldest
+instalment first and refuses an amount larger than what is outstanding, so a
+mistyped zero cannot corrupt the money numbers.
+**Somebody new pays:** if the search finds no open deal, you do not leave the
+screen — **Punch in for a new client** is right there. It opens the same
+Add-a-client form the Collections tab uses, prefilled with what you typed, and
+asks two questions that matter: **who converted them** (the deal, its team and
+the chasing all follow that counsellor — not whoever did the typing) and
+**what the lead source was**. One form, and the client exists everywhere with
+the money already recorded.
+**The mistake:** thinking the chasing ends at handover. **The counsellor who
+closed the deal chases the instalments**, permanently.
 
 ## Mentors
 
@@ -237,10 +250,22 @@ changing a target is an ops action rather than a deployment.
     "why": "Lead flow now names the blocked team and the exact rule stopping them."
   },
   {
-    "q": "How many checkpoints must be ticked on Advisory clients?",
+    "q": "How many checkpoints must be ticked for each client on Collections?",
     "options": ["Two — KYC and MITC", "Three — group added, KYC and MITC"],
     "answer": 1,
     "why": "Added to the client group is the third."
+  },
+  {
+    "q": "A client's name is misspelt and the amount has an extra zero. What can you do?",
+    "options": ["Nothing — ask a developer", "Edit on Collections — and the change is written into the client's history", "Delete and re-enter them"],
+    "answer": 1,
+    "why": "Corrections are allowed, silent rewrites are not: every edit records what it was, what it became, and who changed it. Nothing here is ever deleted."
+  },
+  {
+    "q": "A Traders Discovery client now buys Advisory too. What happens?",
+    "options": ["The CRM refuses — one deal per person", "Add them again with the new product — a second deal joins the same client"],
+    "answer": 1,
+    "why": "One person can hold deals for different products. Only the same product twice is refused, because that is a double-entry."
   },
   {
     "q": "When do you need the 'Add a client' button?",

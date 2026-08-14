@@ -34,6 +34,7 @@ const PG_STATUS: Record<string, { status: number; code: string }> = {
   '23502': { status: 400, code: 'missing_field' }, // not_null_violation
   '23P01': { status: 409, code: 'overlap' }, // exclusion_violation
   '2201G': { status: 400, code: 'bad_request' }, // invalid_argument
+  'P0002': { status: 404, code: 'not_found' }, // no_data_found: absent, or fenced off by RLS
   '38000': { status: 409, code: 'append_only' }, // raised by tg_append_only
   '57014': { status: 503, code: 'query_timeout' }, // statement_timeout
 };

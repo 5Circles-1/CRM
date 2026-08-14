@@ -8,6 +8,32 @@ summary: Everything added or changed in the last release, why, and what it means
 Read this once. Each entry says what changed, why, and what you should do
 differently — if anything.
 
+## The two money tabs, renamed
+
+**What changed.** The client book (everyone who has paid, with the checkpoints)
+is now called **Collections**. The dues queue (instalments, promises, the
+punch-in) is now called **Outstanding payments**. Nothing moved — the pages,
+their links and everything on them work exactly as before; only the names
+swapped to match how the floor actually talks.
+
+## Clients can be corrected — and buy more than one product
+
+**What changed.** Every row on Collections has an **Edit** button. Name and
+phone can be corrected on any client; product, amount, who converted them and
+the lead source can be corrected on hand-entered clients. And the same person
+can now hold deals for **different products** — a Traders Discovery client
+upgrading to Advisory is a second entry with the new product, not an error.
+Only the **same** product twice is refused, because that is a double-entry.
+
+**Why.** Typos happen at the desk, and until now fixing one meant asking a
+developer. Upgrades happen too, and the CRM flatly refused to record them.
+
+**What it means for you.** Fix mistakes yourself, the moment you see them —
+but know that nothing is silently rewritten: every correction is stamped into
+the client's history with what it was, what it became, and your name. Money
+that went through the CRM's own recorded flow still cannot be edited — that
+is an audit record for a SEBI-registered firm, and it stays one.
+
 ## Far fewer popups
 
 **What changed.** Eight kinds of alert used to interrupt you. Now only two do:
@@ -95,11 +121,12 @@ what is left to collect this month, working days remaining, the run-rate that
 requires, and the pace you are actually running. The 16:00 one stays silent if
 you are on pace. There is also a **Today** strip across the top of every screen.
 
-## Advisory clients: three checkpoints, and manual entry
+## The client book: three checkpoints, and manual entry
 
-**What changed.** The register now has **three** one-way ticks — **added to the
-client group**, **KYC done**, **MITC signed** — with a *Paperwork open* filter.
-There is also **Add a client** for someone who paid outside the CRM.
+**What changed.** The register (now the **Collections** tab) has **three**
+one-way ticks — **added to the client group**, **KYC done**, **MITC signed** —
+with a *Paperwork open* filter. There is also **Add a client** for someone who
+paid outside the CRM.
 
 **What it means for you.** Anyone who pays *through* the CRM still appears
 automatically; you never need the button for them.
@@ -131,15 +158,15 @@ tells you what you still owe, and a module that changes asks to be read again.
 **What changed.** Counsellors, admins and ops can now **Add lead** (on Find
 lead and Fresh leads) for phone-ins, walk-pasts and referrals — fair
 distribution by default, a named caller when the person asked for someone. And
-Collections has **Punch in a payment**: type the client, the amount and the
-mode; the CRM does the instalment arithmetic and refuses overpayments.
+Outstanding payments has **Punch in a payment**: type the client, the amount
+and the mode; the CRM does the instalment arithmetic and refuses overpayments.
 
 **And when the payer is brand new:** the punch-in no longer sends you to
 another tab. **Punch in for a new client** opens the Add-a-client form right
 there, prefilled with what you typed. Every hand-entered client now records
 **who converted them** — the named counsellor gets the deal, on their team,
 and chases the instalments, not whoever did the typing — and **what the lead
-source was**. Both show as columns on the Advisory register.
+source was**. Both show as columns on the Collections tab.
 
 **What it means for you.** Nothing lands on sticky notes any more. If it rang,
 walked in, or paid — it goes straight in the CRM, at the moment it happens.

@@ -19,7 +19,7 @@ below is automatic unless it says a person decides it.
 | One hour with no activity | Signed out; shift ends at your last real action | Hourly check |
 | A lead transferred {{setting:lead.max_transfers}} times | It goes to nurture, out of the live pipeline | On the next transfer attempt |
 | A callback time passes with no call | Marked missed; it counts against callback adherence in your score | Within 5 minutes |
-| An instalment passes its due date | Flagged overdue on Collections | Hourly |
+| An instalment passes its due date | Flagged overdue on Outstanding payments | Hourly |
 | A connect logged under {{setting:dial.min_talk_seconds_for_connect}} seconds | Not counted as a connect in any rate | At once |
 | Reading an unusual volume of leads | A security alert is raised for an admin | Within 5 minutes |
 | Access outside working hours | A security alert is raised | Within 15 minutes |

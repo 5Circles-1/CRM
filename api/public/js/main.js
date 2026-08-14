@@ -29,8 +29,11 @@ const NAV = [
   { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
   { hash: '#/retap', label: 'Re-tap', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
-  { hash: '#/collections', label: 'Collections', roles: ['counsellor', 'admin', 'ops'] },
-  { hash: '#/advisory', label: 'Advisory clients', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
+  // The client book was renamed Collections, and the dues queue Outstanding
+  // payments, at the floor's request - the hashes stay stable so old links,
+  // help anchors and muscle memory keep working.
+  { hash: '#/advisory', label: 'Collections', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/collections', label: 'Outstanding payments', roles: ['counsellor', 'admin', 'ops'] },
   { hash: '#/mentors', label: 'Mentors', roles: ['mentor', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/events', label: 'Events', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
   { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
@@ -72,7 +75,7 @@ const HELP_FOR = {
 };
 
 const TITLES = {
-  day: 'My Pipeline', fresh: 'Fresh leads', reminders: 'Alerts', retap: 'Re-tap', floor: 'Floor', collections: 'Collections', advisory: 'Advisory clients', mentors: 'Mentors',
+  day: 'My Pipeline', fresh: 'Fresh leads', reminders: 'Alerts', retap: 'Re-tap', floor: 'Floor', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
   events: 'Events', training: 'Training',
   dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',

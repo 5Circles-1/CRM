@@ -17,7 +17,7 @@ normal sale would, so they show up in your book and in the advisory register
 together, marked *manual*.
 
 A **paperwork open** chip on a client means their group / KYC / MITC checklist
-is unfinished on the Advisory clients tab. It is not your job to tick it, but
+is unfinished on the Collections tab. It is not your job to tick it, but
 it is worth knowing before you call them.
 
 You see paying clients and nothing else. The live sales pipeline is not visible

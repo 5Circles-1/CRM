@@ -46,8 +46,8 @@ Not everyone sees all of these — you see the ones your role uses.
 | **Alerts** | Everything waiting on you, grouped. Only callbacks interrupt with a popup. |
 | **Re-tap** | Leads that went unanswered repeatedly. Quiet by design, worked as a batch. |
 | **Floor** | The live floor: leaderboard, who is on shift, what is leaking. Counsellors and admins. |
-| **Collections** | Money owed, instalments, promises to pay, who to chase. |
-| **Advisory clients** | Everyone who has paid, with the MITC and KYC checkpoints. |
+| **Collections** | The client book: everyone who has paid, one row per product, with the group/KYC/MITC checkpoints, who converted them and the lead source. |
+| **Outstanding payments** | Money still owed — instalments, promises to pay, who to chase, and the payment punch-in. |
 | **Mentors** | Paying clients kept warm — touchpoints, health, upsell interest. |
 | **Events** | Seminars and webinars, and the roster of who was invited and who came. |
 | **Dashboards** | Charts: conversion, collections over time, funnel, pipeline leakage. |

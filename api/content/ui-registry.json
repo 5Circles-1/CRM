@@ -16,18 +16,18 @@
       "when": "Twice a day if you run a team."
     },
     {
-      "key": "tab.collections",
-      "area": "Tabs",
-      "label": "Collections",
-      "does": "Money owed, instalments, promises to pay and who to chase.",
-      "when": "Daily if you have closed any deal."
-    },
-    {
       "key": "tab.advisory",
       "area": "Tabs",
-      "label": "Advisory clients",
-      "does": "Everyone who has paid, with the MITC and KYC compliance checkpoints.",
-      "when": "After every payment, to clear the checkpoints."
+      "label": "Collections",
+      "does": "The client book: everyone who has paid, one row per product bought, with the group/KYC/MITC checkpoints, who converted them and the lead source. Was called Advisory clients.",
+      "when": "After every payment, to clear the checkpoints; to add or correct a client."
+    },
+    {
+      "key": "tab.collections",
+      "area": "Tabs",
+      "label": "Outstanding payments",
+      "does": "Money still owed: instalments, promises to pay, who to chase, and the payment punch-in. Was called Collections.",
+      "when": "Daily if you have closed any deal."
     },
     {
       "key": "tab.mentors",
@@ -349,7 +349,7 @@
       "area": "Badges",
       "label": "Paperwork open",
       "does": "A paying client whose group / KYC / MITC checklist is unfinished.",
-      "when": "Clear it on Advisory clients; worth knowing before you call them."
+      "when": "Clear it on the Collections tab; worth knowing before you call them."
     },
     {
       "key": "btn.add_client",
@@ -391,7 +391,7 @@
       "area": "Buttons",
       "label": "Punch in a payment",
       "does": "Records money against a client by name — spread oldest instalment first, overpayments refused.",
-      "when": "The moment money arrives, on the Collections tab."
+      "when": "The moment money arrives, on the Outstanding payments tab."
     },
     {
       "key": "btn.punch_in_new",
@@ -406,6 +406,13 @@
       "label": "Converted by",
       "does": "Names the counsellor whose sale this is. The deal, its team, and the collections chasing all follow this person — not whoever typed the entry.",
       "when": "On every hand-entered client. An admin doing data entry must name the counsellor who actually closed."
+    },
+    {
+      "key": "btn.edit_client",
+      "area": "Buttons",
+      "label": "Edit (client)",
+      "does": "Corrects a client record on Collections. Name and phone on any client; product, amount, converted-by and source only on hand-entered clients. Every change is written to the client's history with old and new values.",
+      "when": "Typos and wrong entries. Money recorded through the CRM itself is an audit record and cannot be edited."
     },
     {
       "key": "field.lead_source",

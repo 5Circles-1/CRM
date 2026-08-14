@@ -2813,6 +2813,93 @@ describe('clients added by hand', () => {
     assert.equal(res.statusCode, 403);
   });
 
+  it('the same person can buy a second product; the same product twice is refused', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const products = await h.app.inject({
+      method: 'GET', url: '/advisory/products', headers: auth(cs),
+    });
+    const [p1, p2] = products.json();
+
+    const again = await h.app.inject({
+      method: 'POST', url: '/advisory/manual', headers: auth(cs),
+      payload: { fullName: 'Desk Payer', phone: '9855577001', productId: p1.id, amount: 5000 },
+    });
+    assert.equal(again.statusCode, 409, 'same product twice is a double-entry');
+    assert.match(again.json().message, /already has an open/);
+
+    const upgrade = await h.app.inject({
+      method: 'POST', url: '/advisory/manual', headers: auth(cs),
+      payload: { fullName: 'Desk Payer', phone: '9855577001', productId: p2.id, amount: 12000 },
+    });
+    assert.equal(upgrade.statusCode, 201, 'a different product is a purchase');
+
+    const register = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(cs) });
+    const mine = register.json().filter((r: { full_name: string }) => r.full_name === 'Desk Payer');
+    assert.equal(mine.length, 2, 'one row per product bought');
+    assert.equal(new Set(mine.map((r: { lead_id: string }) => r.lead_id)).size, 1,
+      'both deals belong to the same person, not a duplicate lead');
+  });
+
+  it('a client record can be corrected, and the correction is written to history', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const register = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(cs) });
+    const target = register.json().find(
+      (r: { full_name: string; booked_amount: string }) =>
+        r.full_name === 'Desk Payer' && Number(r.booked_amount) === 30000,
+    );
+    assert.ok(target, 'the original Desk Payer deal is present');
+
+    const res = await h.app.inject({
+      method: 'PUT', url: `/advisory/${target.deal_id}/details`, headers: auth(cs),
+      payload: { fullName: 'Desk Payer Fixed', amount: 32000 },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().client.full_name, 'Desk Payer Fixed');
+    assert.equal(Number(res.json().client.booked_amount), 32000);
+    assert.equal(Number(res.json().client.paid_amount), 32000, 'the single payment follows the correction');
+
+    const event = fixtureSql(
+      `select payload -> 'changes' -> 'amount' ->> 'to' from crm.lead_events
+        where event_type = 'client_edited' order by id desc limit 1;`,
+    ).trim();
+    assert.equal(event, '32000.00', 'old and new values land in the lead history');
+  });
+
+  it('money recorded through the CRM itself cannot be edited', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const real = fixtureSql(
+      `select id from crm.deals where not is_manual and status = 'booked'
+        and team_id = '11111111-0000-0000-0000-000000000001' limit 1;`,
+    ).trim();
+    assert.ok(real, 'a CRM-recorded deal exists in the fixture');
+
+    const res = await h.app.inject({
+      method: 'PUT', url: `/advisory/${real}/details`, headers: auth(cs),
+      payload: { amount: 999 },
+    });
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message, /audit record/);
+  });
+
+  it('a counsellor cannot edit the other team\'s client — it reads as not found', async () => {
+    const csB = await login(h.app, EMAILS.counsellorB);
+    const register = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(csB) });
+    assert.ok(
+      !register.json().some((r: { full_name: string }) => r.full_name === 'Desk Payer Fixed'),
+      'team B does not even see the team A client',
+    );
+
+    const dealId = fixtureSql(
+      `select d.id from crm.deals d join crm.leads l on l.id = d.lead_id
+        where l.full_name = 'Desk Payer Fixed' limit 1;`,
+    ).trim();
+    const res = await h.app.inject({
+      method: 'PUT', url: `/advisory/${dealId}/details`, headers: auth(csB),
+      payload: { fullName: 'Hijacked' },
+    });
+    assert.equal(res.statusCode, 404, 'the edit fence matches the reading fence');
+  });
+
   it('an unusable phone number is refused before anything is created', async () => {
     const cs = await login(h.app, EMAILS.counsellorA);
     // Long enough to pass the schema, junk enough to fail normalisation - so

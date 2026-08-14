@@ -38,22 +38,23 @@ filters by exactly that. A lead that has had five follow-ups with no movement
 should be closed or moved to nurture, not carried forever. Carrying dead leads
 inflates your pipeline and hides the real number.
 
-## Collections stay with you
+## The chasing stays with you
 
 Closing the deal does not end your job. **The counsellor who closed the deal
-chases the instalments.** Collections is your tab, permanently.
+chases the instalments.** Outstanding payments is your tab, permanently.
 
 - Record a **promise to pay** as a structured promise, not a note. That is what
   turns chasing into forecasting.
 - Overdue instalments are flagged automatically.
 - Money is recorded in rupees to the paisa. Never round.
 
-## Advisory clients
+## Collections — the client book
 
-Once someone has paid, they appear on **Advisory clients** with three
-compliance checkpoints: **added to the client group**, **KYC done** and **MITC
-signed**. Highlighted rows are the dangerous ones — money collected and a
-checkpoint still open. The **Paperwork open** filter shows only those.
+Once someone has paid, they appear on **Collections** (the tab that used to be
+called Advisory clients) with three compliance checkpoints: **added to the
+client group**, **KYC done** and **MITC signed**. Highlighted rows are the
+dangerous ones — money collected and a checkpoint still open. The **Paperwork
+open** filter shows only those.
 
 Ticks are one-way and record who ticked them and when. Service delivery itself
 is not done here; it belongs to the advisory pipeline.
@@ -61,7 +62,10 @@ is not done here; it belongs to the advisory pipeline.
 If a client paid outside the CRM — an offline sale, a migrated record — use
 **Add a client**. It creates a real lead, deal and payment so they behave like
 everyone else, and marks them *manual*. Anyone who pays through the CRM is
-added automatically and never needs it.
+added automatically and never needs it. A client buying a **second product**
+is entered the same way — a new deal joins the same person; only the same
+product twice is refused. Typos are fixed with **Edit** on the row, and every
+correction is written into the client's history with old and new values.
 
 ## The ten-minute rule, read as a signal
 
@@ -119,7 +123,7 @@ pace.
   },
   {
     "q": "Money is in and MITC is not ticked. Where does that show?",
-    "options": ["Nowhere", "A highlighted row on Advisory clients"],
+    "options": ["Nowhere", "A highlighted row on Collections"],
     "answer": 1,
     "why": "That single state is what the screen exists to make impossible to miss."
   }

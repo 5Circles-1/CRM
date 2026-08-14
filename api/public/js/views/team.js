@@ -10,11 +10,14 @@ import { avatarHtml, esc, fmtDT, h, toast } from '../util.js';
  */
 export async function render(outlet, me) {
   const canPost = true;  // everyone may reply; RLS scopes them to their team or the floor
+  // Only managers may aim a message at a specific team, so only they get the
+  // team list - asking as anyone else was a guaranteed 403 in the console.
+  const canTarget = me.role === 'admin' || me.role === 'ops';
 
   const draw = async () => {
     const [messages, teams, notifs] = await Promise.all([
       get('/messages').catch(() => []),
-      canPost ? get('/admin/teams').catch(() => []) : Promise.resolve([]),
+      canTarget ? get('/admin/teams').catch(() => []) : Promise.resolve([]),
       get('/me/notifications').catch(() => ({ notifications: [], unread: 0 })),
     ]);
     outlet.innerHTML = '';

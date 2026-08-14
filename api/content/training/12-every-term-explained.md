@@ -52,6 +52,14 @@ most urgent true thing about it.
 **Callback** — a time the customer themselves asked to be called. The one thing
 that always interrupts, and the most expensive thing on the floor to miss.
 
+**Collections** — the client book: everyone who has paid, one row per product
+bought, with the group/KYC/MITC checkpoints, who converted them and the lead
+source. (The tab for money still owed is **Outstanding payments**.)
+
+**Converted by** — the counsellor whose sale a client is. The deal, its team
+and the instalment chasing all follow this person — not whoever typed the
+entry.
+
 **Catch-up cap** — when you return after time away you receive extra leads to
 level up, but no more than **{{setting:distribution.max_catchup_leads}}** so you
 are not buried.
@@ -107,7 +115,7 @@ client has been added to the client group.
 ## H
 
 **Handoff** — passing a paid client from this sales CRM to the advisory
-pipeline. Collections stays here regardless.
+pipeline. The chasing of instalments stays here regardless.
 
 **Health chip** — the green / amber / red dot on a mentor's client. Computed
 from touchpoint recency and outcome; never set by hand.
@@ -164,6 +172,9 @@ after **{{setting:lead.max_transfers}}** transfers or once attempts are
 exhausted.
 
 ## O
+
+**Outstanding payments** — the tab for money still owed: open instalments,
+promises to pay, and the payment punch-in. Used to be called Collections.
 
 **Overdue** — past the next action time you promised, inside working hours.
 
