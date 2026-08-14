@@ -1721,8 +1721,31 @@ select crm_test.check(
      from crm.v_advisory_clients where deal_id = :'_b_deal'),
   (select source from crm.v_advisory_clients where deal_id = :'_b_deal'));
 
+-- The lookup that feeds the Add-a-client form: counsellor A asking about a
+-- number whose deal sits with team B gets the truth, marked not-mine.
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false) as _ \gset
+
+select crm_test.check(
+  'CLI', 'the phone lookup tells the truth across the team fence, marked not-mine',
+  (select (j ->> 'full_name') = 'Converted By B'
+      and (j -> 'open_deals' -> 0 ->> 'mine') = 'false'
+     from crm.lookup_client_by_phone('9855510303') j),
+  (select j::text from crm.lookup_client_by_phone('9855510303') j));
+
+reset role;
+
 set role crm_app;
 select set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false) as _ \gset
+
+do $$
+begin
+  perform crm.lookup_client_by_phone('9855510303');
+  perform crm_test.check('CLI', 'a caller cannot fish the client book by phone', false,
+                         'the lookup unexpectedly succeeded');
+exception when insufficient_privilege then
+  perform crm_test.check('CLI', 'a caller cannot fish the client book by phone', true, null);
+end $$;
 
 do $$
 begin

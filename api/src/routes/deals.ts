@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { badRequest, notFound } from '../http/errors.ts';
+import { paidOnToTimestamp } from '../http/paid-on.ts';
 
 const uuid = z.string().uuid();
 const money = z.number().positive().max(99_999_999);
@@ -160,9 +161,9 @@ export async function dealRoutes(app: FastifyInstance): Promise<void> {
     const result = await req.tx(async (q) => {
       const applied = await q.one<{ rows: number }>(
         `select crm.punch_in_payment($1, $2::numeric, $3, $4,
-                  coalesce($5::date::timestamptz + interval '12 hours 30 minutes', now())) as rows`,
+                  coalesce($5::timestamptz, now())) as rows`,
         [body.dealId, body.amount, body.mode, body.reference?.trim() || null,
-         body.paidOn ?? null],
+         paidOnToTimestamp(body.paidOn)],
       );
       const deal = await q.one(`select * from crm.v_open_deals where deal_id = $1`, [body.dealId]);
       return { applied: applied?.rows ?? 0, deal };

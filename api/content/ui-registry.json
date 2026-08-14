@@ -415,6 +415,13 @@
       "when": "Typos and wrong entries. Money recorded through the CRM itself is an audit record and cannot be edited."
     },
     {
+      "key": "btn.pay_existing",
+      "area": "Buttons",
+      "label": "Record this payment against it",
+      "does": "Appears inside Add-a-client when the typed phone number already belongs to someone with an open deal: one click records the typed amount against that deal instead of creating a duplicate.",
+      "when": "Whenever the form tells you the person is already in the book. If the deal is with the other team, they record it; if it is fully paid, correct the amount with Edit instead."
+    },
+    {
       "key": "field.lead_source",
       "area": "Forms",
       "label": "Lead source",

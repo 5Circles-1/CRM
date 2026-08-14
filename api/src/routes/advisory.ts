@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { notFound } from '../http/errors.ts';
+import { paidOnToTimestamp } from '../http/paid-on.ts';
 
 const uuid = z.string().uuid();
 
@@ -93,6 +94,25 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  /**
+   * Is this phone number already a client? Called by the Add-a-client form
+   * while the number is typed, so the person at the desk learns the truth
+   * BEFORE filling the rest - not from a refusal at the end. The function is
+   * definer-rights so the answer holds across the team fence; the route just
+   * shapes it.
+   */
+  app.get('/advisory/lookup', async (req) => {
+    req.requireRole('admin', 'ops', 'counsellor');
+    const { phone } = z.object({ phone: z.string().min(6).max(20) }).parse(req.query);
+    const row = await req.tx((q) =>
+      q.one<{ found: Record<string, unknown> | null }>(
+        `select crm.lookup_client_by_phone($1) as found`,
+        [phone.trim()],
+      ),
+    );
+    return { found: row?.found ?? null };
+  });
+
   /** Products, for the manual-add form. */
   app.get('/advisory/products', async (req) => {
     req.requireRole('admin', 'ops', 'counsellor', 'mentor', 'viewer');
@@ -130,9 +150,9 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
         [dealId, body.fullName?.trim() ?? null, body.phone?.trim() ?? null,
          body.productId ?? null, body.amount ?? null,
          body.counsellorId ?? null, body.sourceId ?? null,
-         // Midday IST, the same convention the add form and punch-in use, so
-         // a corrected date never slips a day when rendered back in IST.
-         body.paidOn ? new Date(`${body.paidOn}T12:00:00+05:30`).toISOString() : null,
+         // Never-future timestamp: today means "now", a past day pins to
+         // midday IST so the date never slips when rendered back in IST.
+         paidOnToTimestamp(body.paidOn),
          body.mode ?? null, body.reference ?? null],
       );
       // Read back through the invoker-rights view; an edit that moved the

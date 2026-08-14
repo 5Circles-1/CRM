@@ -99,6 +99,13 @@ before this system. It creates a real lead, deal and payment, so they behave
 like every other client, and marks them *manual* so reporting stays honest.
 Anyone who pays **through** the CRM appears automatically; you never need the
 button for them.
+**The form checks the book as you type the phone number.** If the person
+already exists it says so right there — who they are, which deals are open,
+with whom, and what is outstanding — and offers **Record this payment against
+it** in one click. No form gets filled just to be refused at the end. If the
+open deal sits with the other team, the form says so and names them; if it is
+fully paid, more money for the same product means correcting the amount, not
+a second entry.
 **Converted by and Lead source:** the form asks who actually made the sale and
 where the person originally came from. The counsellor you name gets the deal
 on their team and chases the instalments — a counsellor entering their own

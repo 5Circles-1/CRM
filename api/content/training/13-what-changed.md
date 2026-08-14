@@ -192,7 +192,11 @@ and the mode; the CRM does the instalment arithmetic and refuses overpayments.
 
 **And when the payer is brand new:** the punch-in no longer sends you to
 another tab. **Punch in for a new client** opens the Add-a-client form right
-there, prefilled with what you typed. Every hand-entered client now records
+there, prefilled with what you typed. **The form also checks the book as you
+type the phone number** — if the person already exists it says so on the
+spot, shows what is open and with whom, and offers to record the payment
+against the existing deal in one click, instead of refusing a fully-typed
+form at the end. Every hand-entered client now records
 **who converted them** — the named counsellor gets the deal, on their team,
 and chases the instalments, not whoever did the typing — and **what the lead
 source was**. Both show as columns on the Collections tab.

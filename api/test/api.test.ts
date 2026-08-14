@@ -2598,6 +2598,33 @@ describe('manual leads and the payment punch-in', () => {
     assert.equal(first, 'paid', 'the oldest instalment fills first');
   });
 
+  it('a payment dated today is never "in the future", whatever the hour', async () => {
+    // The form defaults "Paid on" to today. The old date arithmetic pinned
+    // the date to a fixed hour of the day, which read as a future timestamp
+    // for most of the working day and refused the punch-in outright.
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const istToday = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+    const res = await h.app.inject({
+      method: 'POST', url: '/collections/punch-in', headers: auth(cs),
+      payload: {
+        dealId: '77777777-0000-0000-0000-000000000011',
+        amount: 500, mode: 'upi', paidOn: istToday,
+      },
+    });
+    assert.equal(res.statusCode, 201, res.body);
+
+    const tomorrow = new Date(Date.now() + 30 * 3600_000).toISOString().slice(0, 10);
+    const future = await h.app.inject({
+      method: 'POST', url: '/collections/punch-in', headers: auth(cs),
+      payload: {
+        dealId: '77777777-0000-0000-0000-000000000011',
+        amount: 500, mode: 'upi', paidOn: tomorrow,
+      },
+    });
+    assert.equal(future.statusCode, 400, 'a genuinely future date is still refused');
+    assert.match(future.json().message, /future/);
+  });
+
   it('an overpayment is refused before any row is written', async () => {
     const cs = await login(h.app, EMAILS.counsellorA);
     const res = await h.app.inject({
@@ -2942,8 +2969,17 @@ describe('clients added by hand', () => {
       method: 'PUT', url: `/advisory/${target.deal_id}/details`, headers: auth(cs),
       payload: { paidOn: '2031-01-01' },
     });
-    assert.equal(future.statusCode, 409, 'a payment cannot be re-dated into the future');
+    assert.equal(future.statusCode, 400, 'a payment cannot be re-dated into the future');
     assert.match(future.json().message, /future/);
+
+    // TODAY is not the future. The old date arithmetic pinned "today" to a
+    // fixed hour and refused it for most of the working day.
+    const istToday = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+    const today = await h.app.inject({
+      method: 'PUT', url: `/advisory/${target.deal_id}/details`, headers: auth(cs),
+      payload: { paidOn: istToday },
+    });
+    assert.equal(today.statusCode, 200, 'correcting the date to today must work at any hour');
   });
 
   it('money recorded through the CRM itself cannot be edited', async () => {
@@ -2979,6 +3015,43 @@ describe('clients added by hand', () => {
       payload: { fullName: 'Hijacked' },
     });
     assert.equal(res.statusCode, 404, 'the edit fence matches the reading fence');
+  });
+
+  it('the add form knows who is already in the book, across the team fence', async () => {
+    // Desk Payer Fixed sits with team A holding two open deals.
+    const csB = await login(h.app, EMAILS.counsellorB);
+    const res = await h.app.inject({
+      url: '/advisory/lookup?phone=9855577001', headers: auth(csB),
+    });
+    assert.equal(res.statusCode, 200);
+    const found = res.json().found;
+    assert.ok(found, 'the other team\'s client is still the truth');
+    assert.equal(found.full_name, 'Desk Payer Fixed');
+    assert.ok(found.open_deals.length >= 2, 'both products are listed');
+    assert.ok(
+      found.open_deals.every((d: { mine: boolean }) => d.mine === false),
+      'but team B cannot record money on them',
+    );
+
+    const csA = await login(h.app, EMAILS.counsellorA);
+    const mine = await h.app.inject({
+      url: '/advisory/lookup?phone=9855577001', headers: auth(csA),
+    });
+    assert.ok(
+      mine.json().found.open_deals.every((d: { mine: boolean }) => d.mine === true),
+      'the owning team gets the one-click punch-in',
+    );
+
+    const nobody = await h.app.inject({
+      url: '/advisory/lookup?phone=9899000000', headers: auth(csA),
+    });
+    assert.equal(nobody.json().found, null, 'an unknown number is simply not found');
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const denied = await h.app.inject({
+      url: '/advisory/lookup?phone=9855577001', headers: auth(a1),
+    });
+    assert.equal(denied.statusCode, 403, 'callers cannot fish the client book by phone');
   });
 
   it('an unusable phone number is refused before anything is created', async () => {

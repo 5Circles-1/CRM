@@ -198,6 +198,7 @@ export async function addClientModal(onDone, me = null, prefill = {}) {
         <label class="f">Phone <input name="phone" placeholder="98xxxxxxxx" required value="${esc(prefill.phone ?? '')}"></label>
         <label class="f">Paid on <input type="date" name="paid" value="${today}" max="${today}"></label>
       </div>
+      <div id="known-client"></div>
       <div class="frow">
         <label class="f">Converted by <span class="hint">the deal and its team follow this person</span>
           <select name="conv" data-testid="entry-converted-by">${convOptions}</select>
@@ -231,9 +232,70 @@ export async function addClientModal(onDone, me = null, prefill = {}) {
 
   const footer = h('<div><button class="btn primary" data-testid="entry-save">Add client</button></div>');
   const { close } = openModal('Add a paying client', bodyEl, footer);
+  const v = (n) => bodyEl.querySelector(`[name=${n}]`).value.trim();
+
+  /**
+   * The truth while you type: if the phone already belongs to someone in the
+   * book, say so HERE — who they are, what is open, with whom — and offer to
+   * record this payment against the existing deal in one click, instead of
+   * letting the whole form be filled and refused at the end.
+   */
+  const known = bodyEl.querySelector('#known-client');
+  const showKnown = async () => {
+    const phone = v('phone');
+    if (phone.replace(/[^0-9]/g, '').length < 10) { known.innerHTML = ''; return; }
+    let found = null;
+    try { found = (await get(`/advisory/lookup?phone=${encodeURIComponent(phone)}`)).found; }
+    catch { return; }
+    if (!found) { known.innerHTML = ''; return; }
+
+    const deals = found.open_deals ?? [];
+    known.innerHTML = `
+      <div class="panel" style="padding:10px 12px;margin:0 0 12px;border:1px solid var(--warn, #b58900)">
+        <b>${esc(found.full_name ?? 'This number')} is already in the book</b>
+        ${deals.length === 0 ? `
+          <div class="hint">No open deal (status: ${esc(found.status)}). Saving this form adds a new
+          deal to the same person — nothing gets duplicated.</div>` : deals.map((d, i) => `
+          <div class="row spread" style="margin-top:8px">
+            <span class="hint"><b>${esc(d.product)}</b> — ${fmtINR(d.paid_amount)} paid of
+              ${fmtINR(d.booked_amount)}, with ${esc(d.counsellor_name ?? '—')}${d.team_name ? ` (${esc(d.team_name)})` : ''}</span>
+            ${d.mine && Number(d.outstanding) > 0
+              ? `<button class="btn small primary" data-pay="${i}" data-testid="pay-existing">Record this payment against it</button>`
+              : d.mine
+              ? '<span class="hint">fully paid — more money for the same product means correcting the amount (✎ Edit on their row); a new product goes below</span>'
+              : '<span class="hint">recorded by that team or an admin</span>'}
+          </div>`).join('')}
+        ${deals.length ? '<div class="hint" style="margin-top:6px">A different product is a new purchase — just pick it below and save as usual.</div>' : ''}
+      </div>`;
+
+    known.querySelectorAll('[data-pay]').forEach((b) =>
+      b.addEventListener('click', async () => {
+        const deal = deals[Number(b.dataset.pay)];
+        if (!v('amount')) { toast('Enter the amount first — then one click records it.', 'err'); return; }
+        b.disabled = true;
+        try {
+          const r = await post('/collections/punch-in', {
+            dealId: deal.deal_id,
+            amount: Number(v('amount')),
+            mode: v('mode'),
+            reference: v('note').slice(0, 120) || undefined,
+            paidOn: v('paid') || undefined,
+          });
+          toast(`${fmtINR(v('amount'))} recorded for ${found.full_name ?? 'the client'} — ${
+            fmtINR(r.deal?.outstanding ?? 0)} still outstanding on ${deal.product}.`);
+          close();
+          onDone();
+        } catch (err) { toast(err.message, 'err'); b.disabled = false; }
+      }));
+  };
+  let lookupTimer = null;
+  bodyEl.querySelector('[name=phone]').addEventListener('input', () => {
+    clearTimeout(lookupTimer);
+    lookupTimer = setTimeout(showKnown, 350);
+  });
+  if (prefill.phone) showKnown();
 
   footer.querySelector('button').addEventListener('click', async () => {
-    const v = (n) => bodyEl.querySelector(`[name=${n}]`).value.trim();
     if (!v('name') || !v('phone') || !v('amount')) {
       toast('Name, phone and amount are all required — a client is someone who has paid.', 'err');
       return;
@@ -258,7 +320,12 @@ export async function addClientModal(onDone, me = null, prefill = {}) {
       toast('Client added — they are now on Collections and in the mentor book.');
       close();
       onDone();
-    } catch (err) { toast(err.message, 'err'); }
+    } catch (err) {
+      toast(err.message, 'err');
+      // The same-product refusal has a one-click way out: surface the
+      // existing deal with its "record against it" button right here.
+      if (/already has an open/.test(err.message ?? '')) showKnown();
+    }
   });
 }
 
