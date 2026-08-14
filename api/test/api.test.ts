@@ -1942,6 +1942,40 @@ describe('attendance till date', () => {
       assert.ok(Number(row.floor_days_since_joining) <= Number(days));
     }
   });
+
+  it('a forgotten End shift never eats the next day, and never blocks it', async () => {
+    // Yesterday, 09:30 IST, never ended - the exact shape that inflated
+    // "time logged" across absent days and made Start shift refuse forever.
+    fixtureSql(`
+      insert into crm.attendance_sessions (user_id, started_at)
+      values ('${USERS.mentor}',
+              ((crm.ist_date(now()) - 1)::timestamp + interval '4 hours')
+                at time zone 'Asia/Kolkata');
+    `);
+
+    const m = await login(h.app, EMAILS.mentor);
+    const res = await h.app.inject({
+      method: 'POST', url: '/attendance/login', headers: auth(m),
+    });
+    assert.equal(res.statusCode, 201, 'Start shift works despite yesterday\'s open session');
+
+    const stale = fixtureSql(`
+      select ended_reason || ':' || round(extract(epoch from (ended_at - started_at)) / 60)::text
+        from crm.attendance_sessions
+       where user_id = '${USERS.mentor}' order by started_at asc limit 1;
+    `).trim();
+    assert.equal(stale, 'stale_shift_closed:1',
+      'the stale shift is closed at its honest end, not carried into today');
+
+    const summary = await h.app.inject({
+      method: 'GET', url: '/me/attendance/summary', headers: auth(m),
+    });
+    assert.equal(Number(summary.json().days_present), 2, 'both days count as present');
+    assert.ok(Number(summary.json().total_minutes) < 24 * 60,
+      'and the total is hours actually worked, not elapsed calendar time');
+
+    await h.app.inject({ method: 'POST', url: '/attendance/logout', headers: auth(m) });
+  });
 });
 
 describe('escalation ladder and pools (API)', () => {

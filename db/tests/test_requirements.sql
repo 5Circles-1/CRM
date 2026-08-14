@@ -1769,6 +1769,58 @@ end $$;
 reset role;
 
 -- =============================================================================
+-- HRS: hours are earned on the day they belong to. A forgotten End shift
+-- inflated "time logged" across absent days and blocked the next Start shift,
+-- which is exactly how 6/10 attendance came with a 15-hour daily average.
+-- =============================================================================
+
+-- The founder (viewer) has no other attendance in this suite: give them a
+-- shift started YESTERDAY morning IST and never ended.
+insert into crm.attendance_sessions (user_id, started_at)
+values ('22222222-0000-0000-0000-00000000000c',
+        ((crm.ist_date(now()) - 1)::timestamp + interval '4 hours')
+          at time zone 'Asia/Kolkata');
+
+select crm_test.check(
+  'HRS', 'an open session from yesterday is capped at its own day, not now()',
+  (select logged_minutes <= 1440 - 240 and logged_minutes > 0
+     from crm.v_attendance_day
+    where user_id = '22222222-0000-0000-0000-00000000000c'
+      and business_date = crm.ist_date(now()) - 1),
+  (select 'logged ' || logged_minutes || ' min' from crm.v_attendance_day
+    where user_id = '22222222-0000-0000-0000-00000000000c'
+      and business_date = crm.ist_date(now()) - 1));
+
+select crm_test.check(
+  'HRS', 'closing stale shifts ends it at the last real action, floored at one minute',
+  (select crm.close_stale_shifts('22222222-0000-0000-0000-00000000000c') = 1), null);
+
+select crm_test.check(
+  'HRS', 'the closed stale shift reads as one honest minute, with the reason recorded',
+  (select round(extract(epoch from (ended_at - started_at)) / 60) = 1
+      and ended_reason = 'stale_shift_closed'
+     from crm.attendance_sessions
+    where user_id = '22222222-0000-0000-0000-00000000000c'
+    order by started_at desc limit 1),
+  (select ended_reason || ' / ' || round(extract(epoch from (ended_at - started_at)) / 60)::text
+     from crm.attendance_sessions
+    where user_id = '22222222-0000-0000-0000-00000000000c'
+    order by started_at desc limit 1));
+
+-- And with the stale shift closed, a fresh one can start today - the person
+-- is present again instead of permanently "already logged in".
+do $$
+begin
+  insert into crm.attendance_sessions (user_id, started_at)
+  values ('22222222-0000-0000-0000-00000000000c', now());
+end $$;
+
+select crm_test.check(
+  'HRS', 'today then counts as a present day of its own',
+  (select count(distinct business_date) = 2 from crm.attendance_sessions
+    where user_id = '22222222-0000-0000-0000-00000000000c'), null);
+
+-- =============================================================================
 -- DUP: one human, one live lead. The floor found the same person in both
 -- teams' books; the schema now makes that impossible rather than unlikely.
 -- =============================================================================

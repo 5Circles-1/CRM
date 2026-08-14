@@ -74,6 +74,14 @@ export const JOBS: Job[] = [
     sql: 'select crm.park_exhausted_leads()',
   },
   {
+    name: 'close_stale_shifts',
+    // The belt to auto_logout_idle's braces: any shift still open from a
+    // previous day is closed at that day's honest end. Start shift also
+    // calls this per-user, so the floor self-heals even if jobs are down.
+    everyMs: 10 * 60_000,
+    sql: 'select crm.close_stale_shifts(null)',
+  },
+  {
     name: 'auto_logout_idle',
     // Runs around the clock on purpose: the forgotten logout happens at
     // 18:40, and a shiftHoursOnly gate would leave the chair "occupied"

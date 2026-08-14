@@ -8,6 +8,23 @@ summary: Everything added or changed in the last release, why, and what it means
 Read this once. Each entry says what changed, why, and what you should do
 differently — if anything.
 
+## Attendance hours are honest now
+
+**What changed.** A shift nobody ended used to keep counting — through the
+evening, through the night, through days the person was absent — and then
+blocked their next **Start shift** with "already logged in", so their actual
+present days were never even recorded. That is how someone could show 6/10
+days present with a 15-hour daily average.
+
+Now hours can only be earned on the day they belong to. A forgotten shift is
+closed automatically at the last thing the person actually did that day, and
+pressing **Start shift** the next morning always works and always counts that
+day as present. The old inflated records have been corrected the same way.
+
+**What it means for you.** Press **End shift** when you leave — that is still
+the honest record, and the system notes who forgot. But forgetting now costs
+one stray minute, not a 24-hour day.
+
 ## One person, one live lead — the duplicates are gone
 
 **What changed.** The floor spotted the same person in both teams' books, and

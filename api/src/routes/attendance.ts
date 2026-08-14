@@ -14,6 +14,13 @@ export async function attendanceRoutes(app: FastifyInstance): Promise<void> {
     const user = req.requireUser();
 
     const row = await req.tx(async (q) => {
+      // A shift forgotten on a previous day must never eat today. Close it
+      // at its own day's honest end first, so "already logged in" can only
+      // ever mean logged in TODAY - the person always gets a fresh session,
+      // and their present days are actually recorded. This was how absent
+      // days turned into 24-hour "logged" days for whoever forgot End shift.
+      await q.one(`select crm.close_stale_shifts($1)`, [user.id]);
+
       const open = await q.one<{ id: string; started_at: Date }>(
         `select id, started_at from crm.attendance_sessions
           where user_id = $1 and ended_at is null`,
