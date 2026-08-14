@@ -1605,24 +1605,96 @@ select crm_test.check(
 select crm.edit_client(:'_manual_deal',
          p_full_name => 'Offline Buyer Fixed', p_amount => 65000);
 
+-- Raising the TOTAL raises what is owed - it must never quietly claim the
+-- client handed over more money than they did.
 select crm_test.check(
-  'CLI', 'editing a hand-entered client corrects name and amount in place',
+  'CLI', 'editing a hand-entered client corrects the name and the total in place',
   (select full_name = 'Offline Buyer Fixed'
-      and booked_amount = 65000 and paid_amount = 65000
+      and booked_amount = 65000 and paid_amount = 60000 and outstanding = 5000
      from crm.v_advisory_clients where deal_id = :'_manual_deal'),
-  (select full_name || ' / ' || booked_amount || ' / ' || paid_amount
+  (select full_name || ' / ' || booked_amount || ' / ' || paid_amount || ' / ' || outstanding
      from crm.v_advisory_clients where deal_id = :'_manual_deal'));
 
 select crm_test.check(
   'CLI', 'and the correction is written to the lead history with old and new values',
-  (select payload -> 'changes' -> 'amount' ->> 'from' = '60000.00'
-      and payload -> 'changes' -> 'amount' ->> 'to' = '65000.00'
+  (select payload -> 'changes' -> 'total' ->> 'from' = '60000.00'
+      and payload -> 'changes' -> 'total' ->> 'to' = '65000.00'
       and payload -> 'changes' -> 'name' ->> 'to' = 'Offline Buyer Fixed'
      from crm.lead_events
     where event_type = 'client_edited'
     order by id desc limit 1),
   (select payload::text from crm.lead_events
     where event_type = 'client_edited' order by id desc limit 1));
+
+-- Put that client back to paid-in-full, so the assertions that follow read a
+-- settled deal rather than one mid-collection.
+select crm.edit_client(:'_manual_deal', p_paid_amount => 65000);
+
+-- Total vs down payment: a part-paid client owes real, chaseable money.
+select crm.add_manual_client(
+         'Part Payer', '9855510505',
+         '44444444-0000-0000-0000-000000000001',
+         30000, now(), 'upi', null, 'paid 3k of 30k at the desk',
+         null, null, 3000, crm.ist_date(now()) + 15
+       ) as _part_deal \gset
+
+select crm_test.check(
+  'CLI', 'a part-paid client records the total sold and the money received',
+  (select booked_amount = 30000 and paid_amount = 3000 and outstanding = 27000
+     from crm.v_advisory_clients where deal_id = :'_part_deal'),
+  (select booked_amount || ' / ' || paid_amount || ' / ' || outstanding
+     from crm.v_advisory_clients where deal_id = :'_part_deal'));
+
+select crm_test.check(
+  'CLI', 'and the balance becomes a real instalment, so it is actually chased',
+  (select count(*) = 1 and max(amount) = 27000
+     from crm.instalments
+    where deal_id = :'_part_deal' and status in ('due', 'part_paid', 'overdue')), null);
+
+select crm_test.check(
+  'CLI', 'the dues queue shows it with the date it falls due',
+  (select due_date = crm.ist_date(now()) + 15
+     from crm.instalments
+    where deal_id = :'_part_deal' and status in ('due', 'part_paid', 'overdue')), null);
+
+-- A down payment larger than the total is a typo, refused in plain words.
+do $$
+begin
+  perform crm.add_manual_client('Over Payer', '9855510606',
+            '44444444-0000-0000-0000-000000000001', 5000, now(), 'upi',
+            null, null, null, null, 9000, null);
+  perform crm_test.check('CLI', 'a down payment larger than the total is refused', false,
+                         'an impossible down payment was accepted');
+exception when check_violation then
+  perform crm_test.check('CLI', 'a down payment larger than the total is refused',
+                         sqlerrm like '%cannot be more than the total%', sqlerrm);
+end $$;
+
+-- Correcting the numbers moves the balance with them: collecting the rest
+-- must close the chase, not leave a phantom instalment behind.
+select crm.edit_client(:'_part_deal', p_paid_amount => 30000);
+
+select crm_test.check(
+  'CLI', 'collecting the balance clears it from the dues queue',
+  (select outstanding = 0 from crm.v_advisory_clients where deal_id = :'_part_deal')
+  and (select count(*) = 0 from crm.instalments
+        where deal_id = :'_part_deal' and status in ('due', 'part_paid', 'overdue')),
+  (select 'outstanding ' || outstanding from crm.v_advisory_clients
+    where deal_id = :'_part_deal'));
+
+select crm_test.check(
+  'CLI', 'and nothing is deleted - the retired instalment is written off, not gone',
+  (select count(*) > 0 from crm.instalments
+    where deal_id = :'_part_deal' and status = 'written_off'), null);
+
+-- Raising the total again re-opens a balance to chase.
+select crm.edit_client(:'_part_deal', p_amount => 40000);
+
+select crm_test.check(
+  'CLI', 'raising the total re-opens the balance for chasing',
+  (select outstanding = 10000 from crm.v_advisory_clients where deal_id = :'_part_deal'),
+  (select 'outstanding ' || outstanding from crm.v_advisory_clients
+    where deal_id = :'_part_deal'));
 
 -- The paid date, mode and reference of the original hand entry are payment
 -- facts and correctable under the same single-payment rule.

@@ -52,17 +52,23 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
         note: z.string().max(300).optional(),
         counsellorId: uuid.nullable().optional(),
         sourceId: uuid.nullable().optional(),
+        // What was actually received now. Omitted means paid in full, which
+        // is what every caller meant before the split existed.
+        paidAmount: z.number().positive().max(100000000).optional(),
+        balanceDueOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       })
       .parse(req.body);
 
     const row = await req.tx((q) =>
       q.one<{ deal_id: string }>(
-        `select crm.add_manual_client($1, $2, $3, $4::numeric, $5, $6, $7, $8, $9, $10) as deal_id`,
+        `select crm.add_manual_client($1, $2, $3, $4::numeric, $5, $6, $7, $8, $9, $10,
+                                      $11::numeric, $12::date) as deal_id`,
         [
           body.fullName.trim(), body.phone.trim(), body.productId, body.amount,
           body.paidAt ?? new Date().toISOString(), body.mode,
           body.mentorId ?? null, body.note?.trim() || null,
           body.counsellorId ?? null, body.sourceId ?? null,
+          body.paidAmount ?? null, body.balanceDueOn ?? null,
         ],
       ),
     );
@@ -141,19 +147,23 @@ export async function advisoryRoutes(app: FastifyInstance): Promise<void> {
         paidOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         mode: z.enum(['upi', 'card', 'netbanking', 'cash', 'cheque', 'neft', 'other']).optional(),
         reference: z.string().max(300).optional(),
+        paidAmount: z.number().positive().max(100000000).optional(),
+        balanceDueOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       })
       .parse(req.body);
 
     return req.tx(async (q) => {
       await q.one(
-        `select crm.edit_client($1, $2, $3, $4, $5::numeric, $6, $7, $8, $9, $10)`,
+        `select crm.edit_client($1, $2, $3, $4, $5::numeric, $6, $7, $8, $9, $10,
+                                $11::numeric, $12::date)`,
         [dealId, body.fullName?.trim() ?? null, body.phone?.trim() ?? null,
          body.productId ?? null, body.amount ?? null,
          body.counsellorId ?? null, body.sourceId ?? null,
          // Never-future timestamp: today means "now", a past day pins to
          // midday IST so the date never slips when rendered back in IST.
          paidOnToTimestamp(body.paidOn),
-         body.mode ?? null, body.reference ?? null],
+         body.mode ?? null, body.reference ?? null,
+         body.paidAmount ?? null, body.balanceDueOn ?? null],
       );
       // Read back through the invoker-rights view; an edit that moved the
       // client to the other team can legitimately vanish from a counsellor's

@@ -8,6 +8,24 @@ summary: Everything added or changed in the last release, why, and what it means
 Read this once. Each entry says what changed, why, and what you should do
 differently — if anything.
 
+## Total and down payment, so part payments get chased
+
+**What changed.** Adding a client by hand now asks for two numbers — the
+**total** fee agreed and the **down payment** received now — and the client
+book shows **Total / Paid / Due** as separate columns, with the date the
+balance falls due.
+
+**Why.** One number meant a man who paid ₹3,000 of a ₹30,000 programme was
+recorded as a ₹3,000 client, fully paid. The ₹27,000 still owed existed
+nowhere — not on the client book, not in the dues queue, not in anyone's
+collection target. It could only be chased from memory.
+
+**What it means for you.** Any balance now becomes a **real instalment**: it
+appears on **Outstanding payments**, goes overdue if it slips, and is
+collected with the ordinary punch-in. Paid in full? Type the total and the
+down payment follows it — still one number, as before. And ✎ Edit carries the
+same two fields, so correcting either one moves the balance with it.
+
 ## Attendance hours are honest now
 
 **What changed.** A shift nobody ended used to keep counting — through the

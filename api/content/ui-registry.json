@@ -415,6 +415,20 @@
       "when": "Typos and wrong entries. Money recorded through the CRM itself is an audit record and cannot be edited."
     },
     {
+      "key": "field.total_and_down",
+      "area": "Forms",
+      "label": "Total payment / Down payment",
+      "does": "Two numbers on a hand-entered client: the full fee agreed, and what was actually received now. Any difference becomes a real instalment on Outstanding payments, with a due date.",
+      "when": "Every hand entry. Paid in full — type the total and the down payment follows it."
+    },
+    {
+      "key": "col.due",
+      "area": "Columns",
+      "label": "Due (Collections)",
+      "does": "What is still to collect from that client, in red, with the date the balance falls due — the Total minus the Paid column.",
+      "when": "Anything above zero is money the closer is chasing on Outstanding payments."
+    },
+    {
       "key": "btn.pay_existing",
       "area": "Buttons",
       "label": "Record this payment against it",

@@ -46,12 +46,16 @@ export async function render(outlet, me) {
         <div class="stat ${outstanding ? 'tone-bad' : 'tone-good'}">
           <div class="k">Paperwork open</div><div class="v">${outstanding}</div>
           <div class="s">group, KYC or MITC missing</div></div>
+        ${(() => {
+          const owed = all.reduce((a, r) => a + Number(r.outstanding ?? 0), 0);
+          const owing = all.filter((r) => Number(r.outstanding) > 0).length;
+          return `<div class="stat ${owed ? 'tone-bad' : 'tone-good'}">
+            <div class="k">Still to collect</div><div class="v">${fmtINR(owed)}</div>
+            <div class="s">${owing} client${owing === 1 ? '' : 's'} part-paid</div></div>`;
+        })()}
         <div class="stat"><div class="k">Active</div>
           <div class="v">${all.filter((r) => r.client_status === 'active').length}</div>
           <div class="s">subscription running</div></div>
-        <div class="stat"><div class="k">Expired</div>
-          <div class="v">${all.filter((r) => r.client_status === 'expired').length}</div>
-          <div class="s">due a renewal conversation</div></div>
       </div>
 
       <div class="panel">
@@ -68,7 +72,11 @@ export async function render(outlet, me) {
         ${rows.length === 0 ? '<div class="empty">Nobody in this list yet. A client appears here the moment a payment is recorded against their deal.</div>' : `
         <div style="overflow-x:auto">
         <table class="table"><thead><tr>
-          <th>Client</th><th>Product</th><th class="num">Paid</th><th>Last payment</th>
+          <th>Client</th><th>Product</th>
+          <th class="num" title="The full fee agreed">Total</th>
+          <th class="num" title="Money actually received">Paid</th>
+          <th class="num" title="Still to collect">Due</th>
+          <th>Last payment</th>
           <th title="Who converted this client, and their team">Converted by</th><th>Status</th>
           <th title="Added to the client group">Group</th>
           <th title="KYC completed">KYC</th>
@@ -84,7 +92,13 @@ export async function render(outlet, me) {
                   title="Correct the name, phone${r.is_manual ? ', product, amount, who converted them or the source' : ''}"
                   data-testid="edit-client">✎ Edit</button></div>` : ''}</td>
             <td>${esc(r.product)}${r.source ? `<div class="hint">${esc(r.source)}</div>` : ''}</td>
+            <td class="num">${fmtINR(r.booked_amount)}</td>
             <td class="num">${fmtINR(r.paid_amount)}</td>
+            <td class="num">${Number(r.outstanding) > 0
+              ? `<b style="color:var(--bad)">${fmtINR(r.outstanding)}</b>${r.balance_due_on
+                  ? `<div class="hint">${r.balance_overdue ? 'overdue since ' : 'by '}${esc(fmtDate(r.balance_due_on))}</div>`
+                  : ''}`
+              : '<span class="hint">—</span>'}</td>
             <td>${esc(fmtDate(r.last_paid_at))}</td>
             <td>${esc(r.counsellor_name ?? '—')}${r.team_name ? `<div class="hint">${esc(r.team_name)}</div>` : ''}</td>
             <td>${r.client_status === 'active' ? '<span class="badge b-ok">active</span>'
@@ -213,12 +227,23 @@ export async function addClientModal(onDone, me = null, prefill = {}) {
         </select>
       </label>
       <div class="frow">
-        <label class="f">Amount paid (₹) <input type="number" name="amount" min="1" step="1" required></label>
+        <label class="f">Total payment (₹) <span class="hint">the full fee agreed</span>
+          <input type="number" name="total" min="1" step="1" required data-testid="entry-total">
+        </label>
+        <label class="f">Down payment (₹) <span class="hint">received now</span>
+          <input type="number" name="amount" min="1" step="1" required data-testid="entry-down">
+        </label>
+      </div>
+      <div id="balance-line"></div>
+      <div class="frow">
         <label class="f">Mode
           <select name="mode">
             ${['upi', 'cash', 'neft', 'card', 'netbanking', 'cheque', 'other']
               .map((m) => `<option value="${m}">${m}</option>`).join('')}
           </select>
+        </label>
+        <label class="f" id="balance-due-wrap" style="display:none">Balance due by
+          <input type="date" name="balanceDue" data-testid="entry-balance-due">
         </label>
       </div>
       <label class="f">Reference / note <input name="note" maxlength="300" placeholder="UTR, receipt no., or why this was entered by hand"></label>
@@ -295,21 +320,70 @@ export async function addClientModal(onDone, me = null, prefill = {}) {
   });
   if (prefill.phone) showKnown();
 
+  /**
+   * Total vs down payment: the balance is shown as it is typed, and the
+   * "due by" date only appears when there is actually something to chase.
+   * Typing the total mirrors into the down payment until somebody edits it,
+   * so a client who paid in full is still one number.
+   */
+  const totalInp = bodyEl.querySelector('[name=total]');
+  const downInp = bodyEl.querySelector('[name=amount]');
+  const dueWrap = bodyEl.querySelector('#balance-due-wrap');
+  const dueInp = bodyEl.querySelector('[name=balanceDue]');
+  const balanceLine = bodyEl.querySelector('#balance-line');
+  let downTouched = false;
+
+  const inThirtyDays = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+  dueInp.value = inThirtyDays;
+  dueInp.min = today;
+
+  const drawBalance = () => {
+    const total = Number(totalInp.value || 0);
+    const down = Number(downInp.value || 0);
+    const balance = Math.round((total - down) * 100) / 100;
+    if (!total || !down) { balanceLine.innerHTML = ''; dueWrap.style.display = 'none'; return; }
+    if (down > total) {
+      balanceLine.innerHTML = `<div class="hint" style="color:var(--bad);margin:-4px 0 10px">
+        The down payment cannot be more than the total.</div>`;
+      dueWrap.style.display = 'none';
+      return;
+    }
+    dueWrap.style.display = balance > 0 ? '' : 'none';
+    balanceLine.innerHTML = balance > 0
+      ? `<div class="hint" style="margin:-4px 0 10px">
+           <b>${esc(fmtINR(balance))} still to collect</b> — it becomes an instalment on
+           Outstanding payments, so it gets chased like any other due amount.</div>`
+      : '<div class="hint" style="margin:-4px 0 10px">Paid in full — nothing left to collect.</div>';
+  };
+
+  totalInp.addEventListener('input', () => {
+    if (!downTouched) downInp.value = totalInp.value;
+    drawBalance();
+  });
+  downInp.addEventListener('input', () => { downTouched = true; drawBalance(); });
+
   footer.querySelector('button').addEventListener('click', async () => {
-    if (!v('name') || !v('phone') || !v('amount')) {
-      toast('Name, phone and amount are all required — a client is someone who has paid.', 'err');
+    if (!v('name') || !v('phone') || !v('total') || !v('amount')) {
+      toast('Name, phone, total and down payment are all required — a client is someone who has paid.', 'err');
+      return;
+    }
+    if (Number(v('amount')) > Number(v('total'))) {
+      toast('The down payment cannot be more than the total.', 'err');
       return;
     }
     if (!v('conv')) {
       toast('Say who converted this client — the sale is credited to them.', 'err');
       return;
     }
+    const balance = Number(v('total')) - Number(v('amount'));
     try {
       await post('/advisory/manual', {
         fullName: v('name'),
         phone: v('phone'),
         productId: v('product'),
-        amount: Number(v('amount')),
+        amount: Number(v('total')),
+        paidAmount: Number(v('amount')),
+        balanceDueOn: balance > 0 ? (v('balanceDue') || undefined) : undefined,
         paidAt: v('paid') ? new Date(`${v('paid')}T12:00:00+05:30`).toISOString() : undefined,
         mode: v('mode'),
         mentorId: v('mentor') || null,
@@ -317,7 +391,9 @@ export async function addClientModal(onDone, me = null, prefill = {}) {
         counsellorId: v('conv') === 'self' ? null : v('conv') || null,
         sourceId: v('source') || null,
       });
-      toast('Client added — they are now on Collections and in the mentor book.');
+      toast(balance > 0
+        ? `Client added — ${fmtINR(balance)} still to collect, now on Outstanding payments.`
+        : 'Client added — they are now on Collections and in the mentor book.');
       close();
       onDone();
     } catch (err) {
@@ -355,12 +431,25 @@ async function editClientModal(r, me, onDone) {
             ${products.map((p) => `<option value="${esc(p.id)}" ${p.id === r.product_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
           </select>
         </label>
-        <label class="f">Amount paid (₹)
-          <input name="amount" type="number" min="1" step="0.01"
+        <label class="f">Total payment (₹) <span class="hint">the full fee agreed</span>
+          <input name="total" type="number" min="1" step="0.01"
             value="${Number(r.booked_amount)}" ${Number(r.payment_count) > 1 ? 'disabled' : ''}
-            data-testid="edit-amount">
+            data-testid="edit-total">
         </label>
       </div>
+      <div class="frow">
+        <label class="f">Received so far (₹)
+          <input name="amount" type="number" min="1" step="0.01"
+            value="${Number(r.paid_amount)}" ${Number(r.payment_count) > 1 ? 'disabled' : ''}
+            data-testid="edit-amount">
+        </label>
+        <label class="f">Balance due by
+          <input name="balanceDue" type="date"
+            value="${r.balance_due_on ? esc(String(r.balance_due_on).slice(0, 10)) : ''}"
+            ${Number(r.payment_count) > 1 ? 'disabled' : ''} data-testid="edit-balance-due">
+        </label>
+      </div>
+      <div id="edit-balance-line"></div>
       <div class="frow">
         <label class="f">Paid on
           <input name="paidOn" type="date" max="${new Date().toISOString().slice(0, 10)}"
@@ -407,6 +496,25 @@ async function editClientModal(r, me, onDone) {
   const footer = h('<div><button class="btn primary" data-testid="edit-save">Save corrections</button></div>');
   const { close } = openModal(`Edit ${r.full_name ?? 'client'}`, bodyEl, footer);
 
+  // The balance follows the two numbers as they are corrected, so nobody has
+  // to work out what the change did to what is still owed.
+  const eLine = bodyEl.querySelector('#edit-balance-line');
+  const drawEditBalance = () => {
+    if (!eLine) return;
+    const total = Number(bodyEl.querySelector('[name=total]')?.value || 0);
+    const got = Number(bodyEl.querySelector('[name=amount]')?.value || 0);
+    const balance = Math.round((total - got) * 100) / 100;
+    eLine.innerHTML = !total || !got ? ''
+      : got > total
+        ? '<div class="hint" style="color:var(--bad);margin:-4px 0 10px">Received cannot be more than the total.</div>'
+      : balance > 0
+        ? `<div class="hint" style="margin:-4px 0 10px"><b>${esc(fmtINR(balance))} still to collect</b> — kept on Outstanding payments.</div>`
+        : '<div class="hint" style="margin:-4px 0 10px">Paid in full — nothing left to collect.</div>';
+  };
+  bodyEl.querySelector('[name=total]')?.addEventListener('input', drawEditBalance);
+  bodyEl.querySelector('[name=amount]')?.addEventListener('input', drawEditBalance);
+  drawEditBalance();
+
   footer.querySelector('button').addEventListener('click', async () => {
     const v = (n) => bodyEl.querySelector(`[name=${n}]`)?.value.trim();
     // Send only what actually changed; the database ignores no-ops anyway,
@@ -416,8 +524,12 @@ async function editClientModal(r, me, onDone) {
     if (v('phone') && v('phone') !== (r.phone_e164 ?? '')) payload.phone = v('phone');
     if (manual) {
       if (v('product') && v('product') !== r.product_id) payload.productId = v('product');
+      const tot = v('total');
       const amt = v('amount');
-      if (amt && Number(amt) !== Number(r.booked_amount)) payload.amount = Number(amt);
+      if (tot && Number(tot) !== Number(r.booked_amount)) payload.amount = Number(tot);
+      if (amt && Number(amt) !== Number(r.paid_amount)) payload.paidAmount = Number(amt);
+      const due = v('balanceDue');
+      if (due && due !== String(r.balance_due_on ?? '').slice(0, 10)) payload.balanceDueOn = due;
       const paidOn = v('paidOn');
       if (paidOn && paidOn !== String(r.first_paid_on ?? '').slice(0, 10)) payload.paidOn = paidOn;
       if (v('mode') && v('mode') !== (r.first_payment_mode ?? '')) payload.mode = v('mode');

@@ -2975,18 +2975,37 @@ describe('clients added by hand', () => {
 
     const res = await h.app.inject({
       method: 'PUT', url: `/advisory/${target.deal_id}/details`, headers: auth(cs),
-      payload: { fullName: 'Desk Payer Fixed', amount: 32000 },
+      payload: { fullName: 'Desk Payer Fixed', amount: 32000, paidAmount: 32000 },
     });
     assert.equal(res.statusCode, 200);
     assert.equal(res.json().client.full_name, 'Desk Payer Fixed');
     assert.equal(Number(res.json().client.booked_amount), 32000);
     assert.equal(Number(res.json().client.paid_amount), 32000, 'the single payment follows the correction');
+    assert.equal(Number(res.json().client.outstanding), 0);
 
     const event = fixtureSql(
-      `select payload -> 'changes' -> 'amount' ->> 'to' from crm.lead_events
+      `select payload -> 'changes' -> 'total' ->> 'to' from crm.lead_events
         where event_type = 'client_edited' order by id desc limit 1;`,
     ).trim();
     assert.equal(event, '32000.00', 'old and new values land in the lead history');
+
+    // Raising the total alone must never claim more money was received.
+    const raised = await h.app.inject({
+      method: 'PUT', url: `/advisory/${target.deal_id}/details`, headers: auth(cs),
+      payload: { amount: 40000 },
+    });
+    assert.equal(Number(raised.json().client.paid_amount), 32000, 'received is untouched');
+    assert.equal(Number(raised.json().client.outstanding), 8000, 'the difference becomes owed');
+    const chased = fixtureSql(
+      `select coalesce(sum(amount), 0) from crm.instalments
+        where deal_id = '${target.deal_id}' and status in ('due', 'part_paid', 'overdue');`,
+    ).trim();
+    assert.equal(chased, '8000.00', 'and it is a real instalment, so Outstanding payments chases it');
+
+    await h.app.inject({
+      method: 'PUT', url: `/advisory/${target.deal_id}/details`, headers: auth(cs),
+      payload: { amount: 32000 },
+    });
 
     // The paid date, mode and reference are payment facts, correctable too.
     const res2 = await h.app.inject({
@@ -3049,6 +3068,60 @@ describe('clients added by hand', () => {
       payload: { fullName: 'Hijacked' },
     });
     assert.equal(res.statusCode, 404, 'the edit fence matches the reading fence');
+  });
+
+  it('a part-paid client owes real money that Outstanding payments chases', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const products = await h.app.inject({
+      method: 'GET', url: '/advisory/products', headers: auth(cs),
+    });
+    const res = await h.app.inject({
+      method: 'POST', url: '/advisory/manual', headers: auth(cs),
+      payload: {
+        fullName: 'Half Payer', phone: '9855577010', productId: products.json()[0].id,
+        amount: 30000, paidAmount: 3000, mode: 'upi',
+      },
+    });
+    assert.equal(res.statusCode, 201);
+
+    const register = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(cs) });
+    const row = register.json().find((r: { deal_id: string }) => r.deal_id === res.json().deal_id);
+    assert.equal(Number(row.booked_amount), 30000, 'total sold');
+    assert.equal(Number(row.paid_amount), 3000, 'money actually received');
+    assert.equal(Number(row.outstanding), 27000, 'and the gap is visible without arithmetic');
+    assert.ok(row.balance_due_on, 'with a date it falls due');
+
+    // The whole point: it reaches the people who chase money.
+    const due = await h.app.inject({ method: 'GET', url: '/collections/due', headers: auth(cs) });
+    const chase = due.json().find(
+      (d: { deal_id: string }) => d.deal_id === res.json().deal_id,
+    );
+    assert.ok(chase, 'the balance appears in the dues queue');
+    assert.equal(Number(chase.amount) - Number(chase.paid_amount), 27000);
+
+    // And collecting it through the normal punch-in settles the client.
+    const paid = await h.app.inject({
+      method: 'POST', url: '/collections/punch-in', headers: auth(cs),
+      payload: { dealId: res.json().deal_id, amount: 27000, mode: 'neft' },
+    });
+    assert.equal(paid.statusCode, 201);
+    const after = await h.app.inject({ method: 'GET', url: '/advisory', headers: auth(cs) });
+    const settled = after.json().find((r: { deal_id: string }) => r.deal_id === res.json().deal_id);
+    assert.equal(Number(settled.outstanding), 0, 'nothing left to collect');
+  });
+
+  it('a down payment larger than the total is refused', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: '/advisory/manual', headers: auth(cs),
+      payload: {
+        fullName: 'Typo Payer', phone: '9855577011',
+        productId: '44444444-0000-0000-0000-000000000001',
+        amount: 5000, paidAmount: 9000,
+      },
+    });
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message, /cannot be more than the total/);
   });
 
   it('the add form knows who is already in the book, across the team fence', async () => {

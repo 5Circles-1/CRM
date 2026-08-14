@@ -83,8 +83,10 @@ working and the other has nobody on shift.
 **Who sees it:** counsellors, admins, ops, viewers.
 **What it is:** every client who has **paid** — one row per product bought, so
 a client who bought two programmes appears twice, which is the truth. Each row
-shows **who converted them** (and their team), **where the lead came from**,
-and the three checkpoints that gate paid advisory:
+shows the money in three columns — **Total** (the fee agreed), **Paid** (what
+has actually come in) and **Due** (what is still to collect, with the date it
+falls due) — plus **who converted them** (and their team), **where the lead
+came from**, and the three checkpoints that gate paid advisory:
 
 1. **Group** — added to the client group
 2. **KYC** — completed
@@ -106,6 +108,13 @@ it** in one click. No form gets filled just to be refused at the end. If the
 open deal sits with the other team, the form says so and names them; if it is
 fully paid, more money for the same product means correcting the amount, not
 a second entry.
+**Total and down payment:** the form asks for the **total** fee agreed and the
+**down payment** received now. Type the total and the down payment follows it,
+so a client who paid in full is still one number. When they differ, the form
+shows what is left, asks when it falls due, and turns that balance into a real
+instalment — so it appears on **Outstanding payments**, goes overdue if it
+slips, and counts in the collections figures. A part payment recorded as one
+number was money nobody could chase.
 **Converted by and Lead source:** the form asks who actually made the sale and
 where the person originally came from. The counsellor you name gets the deal
 on their team and chases the instalments — a counsellor entering their own
