@@ -74,13 +74,15 @@ export async function render(outlet, me) {
           <th title="KYC completed">KYC</th>
           <th title="MITC signed">MITC</th>
           <th>Subscription ends</th>
-          ${canEdit ? '<th></th>' : ''}
         </tr></thead><tbody>
         ${rows.map((r, i) => `
           <tr${Number(r.checkpoints_done) < 3 ? ' class="radar-hot"' : ''}>
             <td><a href="#/lead/${esc(r.lead_id)}"><b>${esc(r.full_name ?? 'Unnamed')}</b></a>
                 ${r.is_manual ? '<span class="badge b-mute" title="Entered by hand, not through a recorded sale">manual</span>' : ''}
-                <span class="hint mono">${esc(r.phone_e164)}</span></td>
+                <span class="hint mono">${esc(r.phone_e164)}</span>
+                ${canEdit ? `<div style="margin-top:4px"><button class="btn small act-edit" data-i="${i}"
+                  title="Correct the name, phone${r.is_manual ? ', product, amount, who converted them or the source' : ''}"
+                  data-testid="edit-client">✎ Edit</button></div>` : ''}</td>
             <td>${esc(r.product)}${r.source ? `<div class="hint">${esc(r.source)}</div>` : ''}</td>
             <td class="num">${fmtINR(r.paid_amount)}</td>
             <td>${esc(fmtDate(r.last_paid_at))}</td>
@@ -97,11 +99,8 @@ export async function render(outlet, me) {
             <td>${canEdit
                 ? `<input type="date" data-deal="${esc(r.deal_id)}" data-k="subEnd"
                      value="${r.subscription_ends_at ? esc(String(r.subscription_ends_at).slice(0, 10)) : ''}"
-                     style="border:1px solid var(--line);border-radius:7px;padding:5px">`
+                     style="border:1px solid var(--line);border-radius:7px;padding:5px;width:140px">`
                 : esc(fmtDate(r.subscription_ends_at))}</td>
-            ${canEdit ? `<td class="right"><button class="btn small act-edit" data-i="${i}"
-                title="Correct the name, phone${r.is_manual ? ', product, amount, who converted them or the source' : ''}"
-                data-testid="edit-client">Edit</button></td>` : ''}
           </tr>`).join('')}
         </tbody></table></div>
         <div class="hint" style="margin-top:8px">
