@@ -1715,6 +1715,51 @@ end $$;
 reset role;
 
 -- =============================================================================
+-- DUP: one human, one live lead. The floor found the same person in both
+-- teams' books; the schema now makes that impossible rather than unlikely.
+-- =============================================================================
+
+do $$
+declare
+  v_first uuid;
+begin
+  insert into crm.leads (source_id, phone_e164, full_name)
+  values ('33333333-0000-0000-0000-000000000003', '9899900011', 'Dup Guard')
+  returning id into v_first;
+
+  begin
+    insert into crm.leads (source_id, phone_e164, full_name)
+    values ('33333333-0000-0000-0000-000000000003', '9899900011', 'Dup Guard Copy');
+    perform crm_test.check('DUP', 'a second live lead on one phone is impossible, even racing',
+                           false, 'the duplicate insert succeeded');
+  exception when unique_violation then
+    perform crm_test.check('DUP', 'a second live lead on one phone is impossible, even racing',
+                           true, null);
+  end;
+
+  -- Parked is still live: nurture must hold the fence too, because the re-tap
+  -- and previous-month pools are exactly where the duplicates came from.
+  update crm.leads set status = 'nurture', next_action_at = null where id = v_first;
+  begin
+    insert into crm.leads (source_id, phone_e164, full_name)
+    values ('33333333-0000-0000-0000-000000000003', '9899900011', 'Dup Guard Parked Copy');
+    perform crm_test.check('DUP', 'a parked (nurture) lead holds the fence like a working one',
+                           false, 'a duplicate slipped past a parked lead');
+  exception when unique_violation then
+    perform crm_test.check('DUP', 'a parked (nurture) lead holds the fence like a working one',
+                           true, null);
+  end;
+
+  -- Terminal is history: a person lost last year who enquires again is a
+  -- genuinely fresh lead and must never be blocked.
+  update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+   where id = v_first;
+  insert into crm.leads (source_id, phone_e164, full_name)
+  values ('33333333-0000-0000-0000-000000000003', '9899900011', 'Dup Guard Fresh');
+  perform crm_test.check('DUP', 'a terminal history never blocks a fresh enquiry', true, null);
+end $$;
+
+-- =============================================================================
 -- QUIET (QUI): repeated no-answers stop shouting and become a batch job.
 --
 -- The floor's complaint: a hundred red alerts, most of them the same handful

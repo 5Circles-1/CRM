@@ -8,6 +8,34 @@ summary: Everything added or changed in the last release, why, and what it means
 Read this once. Each entry says what changed, why, and what you should do
 differently — if anything.
 
+## One person, one live lead — the duplicates are gone
+
+**What changed.** The floor spotted the same person in both teams' books, and
+they were right. Three doors let it happen, and all three are now closed:
+
+1. A lead **parked in re-tap or nurture for months** counted as "too old" by
+   the duplicate check, so when that person filled the Meta form again a
+   brand-new lead was created — and distribution often handed the copy to the
+   other team. A still-live lead now absorbs a re-enquiry at **any** age, gets
+   marked *immediate*, and comes back out of the parked pool.
+2. **Previous-month uploads** only checked for duplicates inside the same
+   month. The same person in January's sheet (uploaded for one team) and
+   February's sheet (uploaded for the other) became two live leads. Uploads
+   now check against every live lead, whichever team or month holds it.
+3. The database itself never forbade duplicates. Now it does: **at most one
+   live lead per phone number**, enforced by the schema, so no bug, race or
+   import can ever recreate the problem.
+
+**What it means for you.** Duplicates that already existed have been merged:
+the copy with the real call history was kept and the other closed as a
+duplicate, with a note in both leads' histories saying exactly what happened
+and which record survived. Nothing was deleted — the closed copy's calls are
+still readable on its own timeline. If a lead you were working suddenly shows
+"Duplicate of another lead record", the same person is alive in the other
+row; find them by phone in **Find lead**. Someone whose every old lead is
+closed (lost, won, invalid) still becomes a fresh lead when they enquire
+again — history never blocks a genuine return.
+
 ## The two money tabs, renamed
 
 **What changed.** The client book (everyone who has paid, with the checkpoints)

@@ -396,12 +396,19 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
             skipped += 1;
             continue;
           }
-          // De-duplicate within the same imported month, so re-uploading the
-          // same sheet does not double the pool.
+          // De-duplicate against EVERY live lead, not just this month's pool.
+          // The old check only looked inside the same imported month, so the
+          // same person uploaded in January's sheet (Team A) and February's
+          // sheet (Team B) became two live leads - one in each team's book.
+          // If any live row exists - live pipeline or another month's pool -
+          // this row is a duplicate of it, wherever it is. Only people whose
+          // every earlier lead is terminal get a fresh pool row.
           const exists = await q.one<{ id: string }>(
             `select id from crm.leads
-              where phone_e164 = $1 and pool = 'previous_month' and imported_month = $2::date`,
-            [phone, monthStart],
+              where phone_e164 = $1
+                and status in ('new', 'working', 'callback', 'qualified', 'negotiation', 'nurture')
+              limit 1`,
+            [phone],
           );
           if (exists) {
             duplicate += 1;

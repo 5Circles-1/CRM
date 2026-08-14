@@ -227,6 +227,69 @@ describe('ingestion', () => {
     assert.ok(rows.length >= 1);
     assert.match(rows[0].reject_reason, /not dialable/);
   });
+
+  it('a parked lead far older than the dedupe window still absorbs a re-enquiry', async () => {
+    // This was the duplication bug the floor caught: the window was measured
+    // against created_at alone, so a person parked in re-tap for four months
+    // came back as a brand-new lead - and distribution handed the copy to the
+    // other team.
+    fixtureSql(`
+      insert into crm.leads (source_id, phone_e164, full_name, status, next_action_at,
+                             created_at, pool, retap_since, team_id)
+      values ('33333333-0000-0000-0000-000000000001', '+919811100077', 'Old Parked',
+              'working', now(), now() - interval '200 days', 'retap',
+              now() - interval '120 days', '11111111-0000-0000-0000-000000000001');
+    `);
+
+    const ops = await login(h.app, EMAILS.ops);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/ingest/sources/33333333-0000-0000-0000-000000000001/csv',
+      headers: auth(ops),
+      payload: { csv: 'Full Name,Phone Number\nOld Parked,9811100077' },
+    });
+    assert.equal(res.json().created, 0, 'no new lead may be created');
+    assert.equal(res.json().duplicate, 1, 'the enquiry attaches to the old lead');
+
+    const after = fixtureSql(`
+      select count(*) || ':' || max(reenquiry_count) || ':' || coalesce(max(pool), 'live')
+        from crm.leads where phone_e164 = '+919811100077';
+    `).trim();
+    assert.equal(after, '1:1:live', 'one lead, re-enquiry counted, pulled out of the parked pool');
+
+    // Take the fixture out of the live views so later tests count their own.
+    fixtureSql(`update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+                 where phone_e164 = '+919811100077';`);
+  });
+
+  it('history uploads cannot put the same person in both teams\' pools', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const csv = 'Full Name,Phone Number\nHistory Person,9811100088';
+
+    const jan = await h.app.inject({
+      method: 'POST', url: '/admin/history/import', headers: auth(admin),
+      payload: { csv, teamId: '11111111-0000-0000-0000-000000000001', month: '2026-01' },
+    });
+    assert.equal(jan.json().created, 1);
+
+    // The same person in February's sheet, uploaded against the OTHER team -
+    // exactly how one human ended up in both teams' books.
+    const feb = await h.app.inject({
+      method: 'POST', url: '/admin/history/import', headers: auth(admin),
+      payload: { csv, teamId: '11111111-0000-0000-0000-000000000002', month: '2026-02' },
+    });
+    assert.equal(feb.json().created, 0, 'the second upload must not create a copy');
+    assert.equal(feb.json().duplicate, 1);
+
+    const count = fixtureSql(
+      `select count(*) from crm.leads where phone_e164 = '+919811100088';`,
+    ).trim();
+    assert.equal(count, '1', 'one live lead, one team, however many sheets they appear in');
+
+    fixtureSql(`update crm.leads set status = 'invalid', closed_at = now(), next_action_at = null,
+                       pool = null
+                 where phone_e164 = '+919811100088';`);
+  });
 });
 
 describe('row-level security through the API', () => {

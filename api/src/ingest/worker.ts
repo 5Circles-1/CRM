@@ -262,14 +262,25 @@ export class IngestWorker {
       return 'quarantined';
     }
 
-    // A repeat enquiry from the same number inside the dedupe window attaches
-    // to the existing lead. Re-enquiry is a buying signal, not a duplicate to
-    // be silently discarded - it bumps priority and lands on the timeline.
+    // A repeat enquiry attaches to the existing lead. Re-enquiry is a buying
+    // signal, not a duplicate to be silently discarded - it bumps priority
+    // and lands on the timeline.
+    //
+    // A LIVE lead matches at any age: the re-tap and nurture pools hold leads
+    // far past the dedupe window, and matching those only by created_at was
+    // how one person ended up as two live leads on two different teams. The
+    // window applies only to closed leads, where a fresh enquiry genuinely is
+    // a fresh lead. The unique index leads_one_live_per_phone_idx enforces the
+    // same rule at the schema level, so a race between two syncs errors
+    // loudly instead of duplicating quietly.
     const existing = await q.one<{ id: string; caller_id: string | null }>(
       `select id, caller_id from crm.leads
         where phone_e164 = $1
-          and created_at > now() - make_interval(days => crm.setting_int('lead.dedupe_window_days', 90))
-        order by created_at desc limit 1`,
+          and (status in ('new', 'working', 'callback', 'qualified', 'negotiation', 'nurture')
+               or created_at > now() - make_interval(days => crm.setting_int('lead.dedupe_window_days', 90)))
+        order by (status in ('new', 'working', 'callback', 'qualified', 'negotiation', 'nurture')) desc,
+                 created_at desc
+        limit 1`,
       [phone],
     );
 
@@ -281,7 +292,10 @@ export class IngestWorker {
                 next_action_at = least(coalesce(next_action_at, now()), now() + interval '15 minutes'),
                 next_action_note = 'Re-enquiry received',
                 status = case when status in ('nurture','lost') then 'working' else status end,
-                closed_at = case when status in ('nurture','lost') then null else closed_at end
+                closed_at = case when status in ('nurture','lost') then null else closed_at end,
+                -- A parked lead that re-enquires goes back to live work.
+                pool = null,
+                retap_since = null
           where id = $1`,
         [existing.id],
       );

@@ -83,7 +83,8 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
   users_email_key:
     'An account with that email address already exists. It may be deactivated — reactivate it instead of creating a second one.',
   users_employee_code_key: 'That employee code is already used by another account.',
-  leads_phone_e164_key: 'A lead with that phone number already exists.',
+  leads_one_live_per_phone_idx:
+    'A live lead with that phone number already exists — open it from Find lead instead of creating a second one.',
   products_code_key: 'That product code is already in use.',
   teams_code_key: 'That team code is already in use.',
 };
