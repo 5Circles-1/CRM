@@ -52,14 +52,82 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         `select u.id, u.full_name, u.email, u.role, u.employee_code, u.is_active,
                 u.dialing_msisdn, u.avatar_url,
                 crm.team_of(u.id, current_date) as team_id,
-                t.name as team_name, tm.rotation_order
+                t.name as team_name, tm.rotation_order,
+                crm.tier_of(u.id) as tier,
+                (pt.pinned_by is not null
+                 and (pt.pin_expires_at is null or pt.pin_expires_at > now())) as tier_pinned,
+                pt.pin_reason as tier_pin_reason,
+                pt.pin_expires_at as tier_pin_expires_at
            from crm.users u
            left join crm.team_memberships tm
              on tm.user_id = u.id and tm.period @> current_date
            left join crm.teams t on t.id = tm.team_id
+           left join crm.performance_tiers pt on pt.user_id = u.id
           order by u.role, u.full_name`,
       ),
     );
+  });
+
+  /**
+   * Pin a caller's tier, or hand it back to the daily ranking.
+   *
+   * The ranking (crm.rank_performance_tiers) decides ACE automatically; a pin
+   * is the human override - it needs a reason, it can expire, and it lands in
+   * the audit log via the performance_tiers audit trigger. mode 'auto' clears
+   * the pin so the next ranking run owns the seat again.
+   */
+  app.put('/admin/users/:id/tier', async (req) => {
+    const actor = req.requireRole('admin');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .discriminatedUnion('mode', [
+        z.object({ mode: z.literal('auto') }),
+        z.object({
+          mode: z.literal('pin'),
+          tier: z.enum(['ace', 'standard', 'restricted']),
+          reason: z.string().trim().min(3).max(300),
+          expiresAt: z.coerce.date().nullable().optional(),
+        }),
+      ])
+      .parse(req.body);
+
+    return req.tx(async (q) => {
+      const target = await q.one<{ role: string }>(
+        `select role from crm.users where id = $1 and is_active`, [id],
+      );
+      if (!target) throw notFound('no active user with that id');
+      if (target.role !== 'caller') {
+        throw badRequest('tiers apply to callers - they shape fresh-lead distribution');
+      }
+
+      if (body.mode === 'auto') {
+        // Reset to standard NOW rather than leaving the pinned value to
+        // linger until the next ranking run - un-pinning a RESTRICTED caller
+        // must not keep them blocked for another fifteen minutes.
+        await q.query(
+          `update crm.performance_tiers
+              set tier = 'standard',
+                  pinned_by = null, pin_reason = null, pin_expires_at = null,
+                  updated_at = now()
+            where user_id = $1`,
+          [id],
+        );
+        return { userId: id, mode: 'auto' };
+      }
+
+      const row = await q.one(
+        `insert into crm.performance_tiers
+           (user_id, tier, pinned_by, pin_reason, pin_expires_at, updated_at)
+         values ($1, $2, $3, $4, $5, now())
+         on conflict (user_id) do update
+            set tier = excluded.tier, pinned_by = excluded.pinned_by,
+                pin_reason = excluded.pin_reason,
+                pin_expires_at = excluded.pin_expires_at, updated_at = now()
+         returning user_id, tier, pin_reason, pin_expires_at`,
+        [id, body.tier, actor.id, body.reason, body.expiresAt ?? null],
+      );
+      return { mode: 'pin', ...row };
+    });
   });
 
   app.post('/admin/users', async (req, reply) => {

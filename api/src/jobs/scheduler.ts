@@ -53,6 +53,16 @@ export const JOBS: Job[] = [
     sql: 'select crm.snapshot_scores(crm.ist_date(now()))',
   },
   {
+    name: 'rank_performance_tiers',
+    // Effectively nightly: the ranking reads completed days only, so every
+    // run inside one day lands on the same ACE. Fifteen minutes just means
+    // a morning restart never leaves the floor distributing without its
+    // best-caller share. Runs around the clock so the pick is ready before
+    // the first Start shift, and 0051 seeds it at migration time.
+    everyMs: 15 * 60_000,
+    sql: 'select crm.rank_performance_tiers()',
+  },
+  {
     name: 'mark_overdue_instalments',
     everyMs: 60 * 60_000,
     sql: 'select crm.mark_overdue_instalments()',

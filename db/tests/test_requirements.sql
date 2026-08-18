@@ -2762,6 +2762,101 @@ select crm_test.check(
   null);
 
 -- =============================================================================
+-- TIER (TIR): the daily ACE ranking. The team's best caller over the last
+-- completed days gets the guaranteed fresh-lead share; live pins outrank the
+-- ranking; expired pins return the seat to it; the switch turns it all off.
+-- =============================================================================
+
+-- A small floor for the test: three dials clears the promotion bar.
+update crm.settings set value = '3'::jsonb where key = 'tier.min_dials_to_rank';
+
+-- Yesterday's work: A1 dialled three times with two real conversations;
+-- A2 dialled once and got no answer. Yesterday, because the ranking reads
+-- completed days only - today's calls from earlier in this file must not
+-- move the answer.
+do $$
+declare
+  v_src   uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1    uuid := '22222222-0000-0000-0000-000000000001';
+  v_a2    uuid := '22222222-0000-0000-0000-000000000002';
+  v_team  uuid;
+  v_yday  timestamptz := ((crm.ist_date(now()) - 1)::timestamp + interval '11 hours')
+                           at time zone 'Asia/Kolkata';
+  v_lead  uuid;
+  i       int;
+begin
+  v_team := crm.team_of(v_a1, current_date);
+  for i in 1..3 loop
+    insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                           status, next_action_at)
+    values (v_src, 'Tier A1 Lead ' || i, '+91955570000' || i, v_a1, v_team,
+            'working', now())
+    returning id into v_lead;
+    insert into crm.call_attempts (lead_id, user_id, started_at, disposition, duration_seconds)
+    values (v_lead, v_a1, v_yday,
+            case when i <= 2 then 'connected_interested'::crm.disposition
+                 else 'not_answered'::crm.disposition end,
+            case when i <= 2 then 60 else 0 end);
+  end loop;
+
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                         status, next_action_at)
+  values (v_src, 'Tier A2 Lead', '+919555700004', v_a2, v_team, 'working', now())
+  returning id into v_lead;
+  insert into crm.call_attempts (lead_id, user_id, started_at, disposition, duration_seconds)
+  values (v_lead, v_a2, v_yday, 'not_answered', 0);
+end $$;
+
+select crm.rank_performance_tiers() as _tier1 \gset
+
+select crm_test.check(
+  'TIR', 'the ranking places every measured caller in a tier',
+  :_tier1 >= 2, 'ranked ' || :_tier1);
+
+select crm_test.check(
+  'TIR', 'the team''s best caller of the completed window is ACE',
+  crm.tier_of(:A1) = 'ace', 'A1 is ' || crm.tier_of(:A1));
+
+select crm_test.check(
+  'TIR', 'and the rest of the team is STANDARD, never restricted, by the ranking',
+  crm.tier_of(:A2) = 'standard', 'A2 is ' || crm.tier_of(:A2));
+
+-- A live pin outranks the ranking.
+insert into crm.performance_tiers (user_id, tier, pinned_by, pin_reason, pin_expires_at)
+values (:A1, 'standard', :ADMIN, 'test: coaching week', now() + interval '2 days')
+on conflict (user_id) do update
+   set tier = excluded.tier, pinned_by = excluded.pinned_by,
+       pin_reason = excluded.pin_reason, pin_expires_at = excluded.pin_expires_at;
+
+select crm.rank_performance_tiers() as _tier2 \gset
+
+select crm_test.check(
+  'TIR', 'a live admin pin is never overwritten by the ranking',
+  crm.tier_of(:A1) = 'standard', 'A1 is ' || crm.tier_of(:A1));
+
+-- An expired pin hands the seat back to the ranking.
+update crm.performance_tiers set pin_expires_at = now() - interval '1 hour'
+ where user_id = :A1;
+
+select crm.rank_performance_tiers() as _tier3 \gset
+
+select crm_test.check(
+  'TIR', 'an expired pin is cleared and the ranking decides again',
+  crm.tier_of(:A1) = 'ace'
+  and (select pinned_by is null from crm.performance_tiers where user_id = :A1),
+  'A1 is ' || crm.tier_of(:A1));
+
+-- The off switch.
+update crm.settings set value = 'false'::jsonb where key = 'tier.auto_rank';
+
+select crm_test.check(
+  'TIR', 'tier.auto_rank = false freezes tiers exactly as they are',
+  (select crm.rank_performance_tiers() = 0), null);
+
+update crm.settings set value = 'true'::jsonb where key = 'tier.auto_rank';
+update crm.settings set value = '20'::jsonb where key = 'tier.min_dials_to_rank';
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

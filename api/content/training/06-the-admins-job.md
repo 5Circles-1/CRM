@@ -62,11 +62,20 @@ Archive. Nothing is ever deleted, and paying clients are never touched. Use it
 after a launch so the first sheet sync's months of history do not bury the
 floor.
 
-## Tiers — a personnel decision, recorded
+## Tiers — ranked daily, overridable by a person
 
-Pinning someone to **RESTRICTED** or **ACE** requires a **reason** and an
-**expiry date**, and it is written to the audit log under your name. When the
-expiry passes the pin lapses automatically.
+**ACE is picked automatically every day**: each team's best caller on the
+leaderboard over the last {{setting:tier.rank_window_days}} completed days —
+with at least {{setting:tier.min_dials_to_rank}} dials in that window —
+becomes ACE and holds the guaranteed
+{{setting:distribution.ace_share_pct}}% of the team's fresh leads. The pick
+changes overnight, never mid-day, and the ranking never sets RESTRICTED on
+its own. `tier.auto_rank` switches the whole thing off.
+
+Pinning someone to **RESTRICTED** or **ACE** (Admin → Users → Tier) outranks
+the ranking. A pin requires a **reason**, may carry an **expiry date**, and
+is written to the audit log under your name. When the expiry passes, the seat
+returns to the daily ranking automatically.
 
 Do not use a pin as a substitute for a conversation. The person can see the
 tier, and they should hear the reason from you before they read it on a screen.
