@@ -346,11 +346,18 @@ Rules of the pilot:
 **Weekly (5 min):** `sudo apt update && sudo apt -y upgrade` for security
 patches; glance at `sudo journalctl -u crm --since yesterday | grep -i error`.
 
-**Updating the app** when new code lands on the main branch:
+**Updating the app** when new code lands on the main branch — one command:
+```bash
+sudo /opt/crm/deploy/update.sh
+```
+It pulls, reinstalls dependencies only if the lockfile changed, applies any
+new migrations (each recorded, never re-run), restarts, and proves the
+service came back. The manual form — for the first update on a server that
+predates the script, or when debugging:
 ```bash
 cd /opt/crm && sudo -u crm git pull
 cd api && sudo -u crm npm ci --omit=dev
-sudo -u postgres CRM_DB=crm ./../db/migrate.sh   # applies only new migrations
+sudo -u postgres CRM_DB=crm ../db/migrate.sh   # applies only new migrations
 sudo systemctl restart crm
 ```
 
