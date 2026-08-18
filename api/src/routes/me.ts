@@ -411,7 +411,8 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       q.many<{ key: string; value: unknown }>(
         `select key, value from crm.settings
           where key in ('alerts.poll_seconds', 'alerts.popup_kinds',
-                        'alerts.repeat_minutes', 'ui.refresh_seconds',
+                        'alerts.repeat_minutes', 'alerts.chime',
+                        'ui.refresh_seconds',
                         'sla.untouched_reassign_minutes')`,
       ),
     );

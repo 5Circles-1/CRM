@@ -12,9 +12,8 @@ below is automatic unless it says a person decides it.
 
 | Behaviour | Consequence | When |
 |---|---|---|
-| A new lead not dialled | It moves to the next caller | After {{setting:sla.untouched_reassign_minutes}} working minutes |
-| Nobody in the team dials it | It returns to the first caller and stays there | After everyone has had a turn |
-| Two no-connect attempts | The lead escalates to the counsellor | Immediately on the second |
+| A new lead not dialled | It stays yours and reads as untouched on Fresh leads and the Floor — nobody sweeps it away | Immediately visible |
+| Two no-connect attempts | The lead escalates to the counsellor to tap (at most {{setting:escalation.counsellor_daily_cap}} per counsellor per day; past that it stays with you, clearly badged “Not answered ×2”) | Immediately on the second |
 | Shift not started | You receive no fresh leads | Until you start |
 | One hour with no activity | Signed out; shift ends at your last real action | Hourly check |
 | A lead transferred {{setting:lead.max_transfers}} times | It goes to nurture, out of the live pipeline | On the next transfer attempt |
@@ -51,9 +50,6 @@ protects the person doing it as much as the person it is done to.
 - **Auto-logout.** Your hours are backdated to your last real action.
 - **The lunch freeze.** Nothing breaches between 14:00 and 14:30.
 - **Sunday.** The clock does not run at all.
-- **A lead the sweep moved away from you before you could reach it**, if you
-  were on another call — the pass-over is recorded with its reason, and the
-  reason is visible.
 - **An honest bad disposition.** Logging *not interested* truthfully is doing
   the job correctly, not failing at it.
 

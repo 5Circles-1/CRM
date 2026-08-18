@@ -1,5 +1,5 @@
 import { get } from '../api.js';
-import { esc, fmtDate, h } from '../util.js';
+import { esc, fmtDate, h, starsHtml } from '../util.js';
 
 /**
  * Requirement 7. Own trend first, rank second - the score exists for
@@ -34,7 +34,7 @@ export async function render(outlet) {
     <div class="grid cols-3">
       <div class="stat"><div class="k">Today</div>
         <div class="v" style="font-size:34px" data-testid="score-total">${Number(latest.total).toFixed(0)}</div>
-        <div class="s">${deltaText}</div></div>
+        <div class="s">${starsHtml(latest.total, 'Your rating today — one star per 20 points')} ${deltaText}</div></div>
       <div class="stat"><div class="k">Your 7-day average</div>
         <div class="v">${latest.own_7day_avg ?? '—'}</div>
         <div class="s">out of 100</div></div>

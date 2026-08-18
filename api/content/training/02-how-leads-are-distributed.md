@@ -68,23 +68,26 @@ If nobody in a team is on the floor, the lead is **held at team level**, not
 forced onto an absent person. It is handed out the moment someone starts a
 shift.
 
-## The ten-minute rule
+## Your leads stay yours
 
-A **new** lead you have not called within **{{setting:sla.untouched_reassign_minutes}}
-working minutes** moves to the next caller in the team. Then the next. Once
-everybody has had their turn, it comes **back to whoever had it first**, and
-stays with them — a lead circulating forever is how a pipeline leaks while
-looking busy.
+A lead that lands on you **stays with you**. Nothing sweeps it to another
+caller and nothing moves it to the other team on a timer — the floor asked for
+that, and the rule is now simple: a lead changes hands only when a counsellor
+or admin transfers it by hand, or when you could not reach it twice and it
+escalates to your counsellor to tap (at most
+{{setting:escalation.counsellor_daily_cap}} of those per counsellor per day).
 
-This only applies to leads **nobody has called yet**. A lead you have already
-dialled never moves on its own.
+The flip side: an untouched lead is **visibly yours**. It sits at the top of
+your pipeline, flags on the Fresh leads tab, and your counsellor can see
+exactly how long it has waited. Nobody takes it away — and nobody else is
+going to call it either.
 
 ## The lunch freeze
 
-Between **14:00 and 14:30** the clock stops. No lead breaches, no SLA runs, the
-ten-minute sweep pauses and no escalation fires. A banner counts it down. Work
-carries on if you want to — nothing is blocked — but the system will not hold
-that half hour against anybody.
+Between **14:00 and 14:30** the clock stops. No lead breaches, no SLA runs and
+no escalation fires. A banner counts it down. Work carries on if you want to —
+nothing is blocked — but the system will not hold that half hour against
+anybody.
 
 ## Immediate leads
 

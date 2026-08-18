@@ -13,7 +13,7 @@ one has a specific way to clear it.
 | Flag | What triggers it | What it costs | How to clear it |
 |---|---|---|---|
 | **Overdue follow-up** | `next_action_at` is in the past, in working hours | The lead cools; leakage list grows | Call them, log the call, set the next action |
-| **Untouched lead** | Assigned, never dialled | It leaves you after {{setting:sla.untouched_reassign_minutes}} working minutes | Dial it |
+| **Untouched lead** | Assigned, never dialled | It stays yours and shows as waiting on Fresh leads and the Floor — nobody else will call it | Dial it |
 | **Immediate lead not contacted** | Priority lead past {{setting:sla.immediate_first_touch_minutes}} working minutes | Highest-intent lead going cold | Call now |
 | **Missed callback** | A scheduled callback passed with no call | The most expensive miss on the floor — they *wanted* to talk | Call, apologise, rebook |
 | **Unverified dials** | Logged calls with no matching device call-log entry | Suggests invented activity | Install the companion app; attach the device call when logging |
@@ -21,7 +21,7 @@ one has a specific way to clear it.
 | **"Not interested" on a job enquiry** | Wrong disposition on a non-prospect | Poisons the floor's conversion rate | Change it to *Job enquiry* |
 | **Shift not started** | No attendance session today | You receive no fresh leads, and hours do not count | Press **Start shift** |
 | **Auto-logged-out** | 1 hour with no activity | Nothing, if genuine — the timer backdates to your last real action | Sign back in |
-| **Repeated reassignment away from you** | The sweep keeps moving your untouched leads | Visible on Floor → Lead flow; a coaching conversation | Dial leads within the window |
+| **Not answered ×2** | A lead unreached twice in a row | It wears a 📵 badge everywhere and may escalate to the counsellor | Try a different time, WhatsApp them, or let the counsellor tap it |
 | **Transfer cap hit** | A lead transferred {{setting:lead.max_transfers}} times | It goes to nurture and leaves the live pipeline | Work it before the cap, or accept nurture |
 | **Money in, MITC or KYC not done** | Payment recorded, checkpoint open | Compliance exposure for a SEBI-registered firm | Tick it on Collections once genuinely done |
 | **Red client (mentor)** | Concern raised, gone quiet, or follow-up badly overdue | The relationship is at risk | Log a touchpoint |

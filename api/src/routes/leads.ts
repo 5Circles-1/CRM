@@ -80,6 +80,38 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * Set or correct the lead's location.
+   *
+   * City arrives blank from most Meta lead forms, and the floor asked to be
+   * able to fill it in from the call ("where are you calling from?"). One
+   * field, recorded in the lead's history like every other change.
+   */
+  app.put('/leads/:id/city', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({ city: z.string().trim().max(60).nullable() })
+      .parse(req.body ?? {});
+    const city = body.city || null;
+
+    return req.tx(async (q) => {
+      const row = await q.one(
+        `update crm.leads set city = $2, updated_at = now()
+          where id = $1
+          returning id, city`,
+        [id, city],
+      );
+      if (!row) throw notFound('no lead with that id');
+      await q.query(
+        `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
+         values ($1, 'note', $2, $3)`,
+        [id, user.id, JSON.stringify({ city_set: city })],
+      );
+      return row;
+    });
+  });
+
+  /**
    * Mark that the lead actually came in.
    *
    * Separate from the will_visit outcome on purpose: a promise to visit and a
@@ -225,6 +257,9 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
         // follow-up (FU1..FU5), and the floor thinks in those terms: "give me
         // everyone due their 3rd follow-up" is a list they worked daily.
         attempts: z.enum(['0', '1', '2', '3', '4', '5plus']).optional(),
+        // The "not answered twice in a row" list. A count, not a disposition
+        // filter: a lead whose LAST outcome was busy still belongs on it.
+        na: z.enum(['2plus']).optional(),
         limit: z.coerce.number().int().min(1).max(200).default(50),
         offset: z.coerce.number().int().min(0).default(0),
       })
@@ -262,6 +297,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
                    when '5plus' then attempt_count >= 5
                    else attempt_count = $8::int
                  end)
+            and ($9::text is null or na_streak >= 2)
           order by next_action_at asc nulls last, created_at desc
           limit $3 offset $4`,
         [
@@ -273,6 +309,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
           query.due ?? null,
           query.whatsapp ?? null,
           query.attempts ?? null,
+          query.na ?? null,
         ],
       );
 

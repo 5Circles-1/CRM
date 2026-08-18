@@ -230,9 +230,9 @@ means no fresh leads and no hours counted.
 
 **Talk time** — how long you actually spoke, in MM:SS.
 
-**Ten-minute rule** — a new lead not dialled within
-**{{setting:sla.untouched_reassign_minutes}}** working minutes moves to the next
-caller, round the team, then back to whoever had it first.
+**Ten-minute rule** — retired. Leads no longer move between callers on a
+timer: a lead stays with whoever it was assigned to until a counsellor or
+admin transfers it by hand.
 
 **Tier** — ACE, STANDARD or RESTRICTED. Decides your share of fresh leads.
 

@@ -252,6 +252,42 @@ it('caller: the re-tap filters narrow the lead list', async () => {
   await signOut();
 });
 
+it('caller: a lead page shows its own pipeline, and Back restores the list as it was', async () => {
+  await signIn(EMAILS.callerA1);
+  await page.goto(`${base}/ui/#/leads`);
+  await page.waitForSelector('#presets', { timeout: 20000 });
+
+  // Work from a real search, the way the floor uses Find lead. Phone search
+  // matches the tail of the number, so ask the database for one A1 owns.
+  const tail = fixtureSql(`
+    select right(phone_e164, 6) from crm.leads
+     where caller_id = '${USERS.callerA1}'
+       and status not in ('won', 'lost', 'invalid')
+     order by created_at limit 1;`).trim();
+  await page.fill('[data-testid=lead-search]', tail);
+  await page.waitForSelector('#results a[href^="#/lead/"]', { timeout: 20000 });
+
+  await page.locator('#results a[href^="#/lead/"]').first().click();
+
+  // Every lead carries its own pipeline - the journey strip - from day one;
+  // the first call fills it in.
+  await page.waitForSelector('[data-testid=lead-journey]', { timeout: 20000 });
+  const journey = await page.locator('[data-testid=lead-journey]').innerText();
+  assert.match(journey, /1st call/i, 'the journey names its stages');
+  assert.match(journey, /Lead in/i, 'and starts where the lead started');
+  await page.screenshot({ path: path.join(SHOTS, '8-lead-journey.png'), fullPage: true });
+
+  // Back returns to the SAME list - search and results intact - never to the
+  // main page. This was the floor's complaint about Find lead.
+  await page.click('[data-testid=back-btn]');
+  await page.waitForSelector('#presets', { timeout: 20000 });
+  assert.equal(await page.inputValue('[data-testid=lead-search]'), tail,
+    'the search text must survive the round trip');
+  await page.waitForSelector('#results a[href^="#/lead/"]', { timeout: 20000 });
+
+  await signOut();
+});
+
 it('caller: reads a training module, answers the check, and acknowledges it', async () => {
   await signIn(EMAILS.callerA1);
   // A first-login tour may be showing; it must never block the app.
@@ -290,5 +326,46 @@ it('caller: reads a training module, answers the check, and acknowledges it', as
   assert.ok(read.some((t) => /read/i.test(t)), `expected a read badge, saw ${read.join('|')}`);
 
   await page.screenshot({ path: path.join(SHOTS, '7-training.png'), fullPage: true });
+  await signOut();
+});
+
+it('admin: the Data tab parks old leads behind a two-step button', async () => {
+  // A lead old enough to archive, created here so no earlier flow depends on
+  // it. This test runs last on purpose: parking is the end of the story.
+  fixtureSql(`
+    insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                           status, next_action_at, created_at)
+    values ('33333333-0000-0000-0000-000000000001', 'E2E Ancient', '+919811299001',
+            '${USERS.callerA1}', crm.team_of('${USERS.callerA1}', current_date),
+            'working', now(), '2026-08-01 10:00:00+05:30');
+  `);
+
+  await signIn(EMAILS.admin);
+  await page.goto(`${base}/ui/#/admin`);
+  await page.click('button[data-tab="data"]');
+
+  await page.waitForSelector('[data-testid=archive-check]');
+  await page.fill('[name=cutoff]', '2026-08-15');
+  await page.click('[data-testid=archive-check]');
+
+  // Step one: an honest count, nothing moved yet.
+  await page.waitForSelector('[data-testid=archive-go]');
+  const still = fixtureSql(
+    `select pool is null from crm.leads where full_name = 'E2E Ancient';`,
+  ).trim();
+  assert.equal(still, 't', 'the check step must move nothing');
+  await page.screenshot({ path: path.join(SHOTS, '9-admin-archive.png'), fullPage: true });
+
+  // Step two: the real thing.
+  await page.click('[data-testid=archive-go]');
+  await page.waitForFunction(
+    `document.querySelector('#arch-result')?.textContent?.includes('parked in Previous months')`,
+  );
+  const parked = fixtureSql(
+    `select status || ' ' || coalesce(pool, '-') from crm.leads
+      where full_name = 'E2E Ancient';`,
+  ).trim();
+  assert.equal(parked, 'nurture previous_month', 'the old lead is parked, not deleted');
+
   await signOut();
 });

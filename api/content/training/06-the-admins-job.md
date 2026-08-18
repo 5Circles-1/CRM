@@ -42,7 +42,8 @@ target is an ops action, not a deployment.
 |---|---|---|
 | `dial.daily_target_per_caller` | {{setting:dial.daily_target_per_caller}} | The dial target on every caller's brief |
 | `sla.immediate_first_touch_minutes` | {{setting:sla.immediate_first_touch_minutes}} | How long an immediate lead may go untouched |
-| `sla.untouched_reassign_minutes` | {{setting:sla.untouched_reassign_minutes}} | The ten-minute rule |
+| `sla.untouched_reassign_minutes` | {{setting:sla.untouched_reassign_minutes}} | The retired sweep — 0 keeps leads with their caller |
+| `escalation.counsellor_daily_cap` | {{setting:escalation.counsellor_daily_cap}} | Most caller→counsellor hand-ups per counsellor per day |
 | `distribution.ace_share_pct` | {{setting:distribution.ace_share_pct}} | ACE's guaranteed share of fresh leads |
 | `distribution.max_catchup_leads` | {{setting:distribution.max_catchup_leads}} | Catch-up cap for someone returning |
 | `lead.max_transfers` | {{setting:lead.max_transfers}} | Transfers before a lead goes to nurture |
@@ -50,6 +51,16 @@ target is an ops action, not a deployment.
 | `finance.monthly_breakeven_inr` | {{setting:finance.monthly_breakeven_inr}} | The office breakeven behind every target |
 | `freeze.start_minutes` / `freeze.end_minutes` | {{setting:freeze.start_minutes}} / {{setting:freeze.end_minutes}} | The lunch freeze window |
 | `reminder.morning_minutes` | {{setting:reminder.morning_minutes}} | When the morning brief goes out |
+
+## Keeping the floor on current data
+
+**Admin → Data** parks every lead created before a date you pick — and not
+worked since it — into **Previous months**: out of every pipeline, alert and
+fresh list, still searchable, one click from being worked again. Two steps on
+purpose: first it tells you exactly how many would move, then you press
+Archive. Nothing is ever deleted, and paying clients are never touched. Use it
+after a launch so the first sheet sync's months of history do not bury the
+floor.
 
 ## Tiers — a personnel decision, recorded
 

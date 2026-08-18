@@ -186,6 +186,9 @@ function card(l) {
         <span class="name">${esc(l.full_name ?? 'Unnamed lead')}</span>
         <span class="phone mono">${esc(l.phone_e164)}</span>
         ${l.whatsapp_sent_at ? '<span class="badge b-ok" title="WhatsApp sent">WA</span>' : ''}
+        ${Number(l.na_streak) >= 2
+          ? `<span class="badge b-bad" title="Not answered ${Number(l.na_streak)} times in a row">📵 Not answered ×${Number(l.na_streak)}</span>`
+          : ''}
         <span style="margin-left:auto">${when}</span>
       </div>
       <div class="r2">
@@ -194,7 +197,7 @@ function card(l) {
         <span>${l.last_disposition
           ? `last: ${esc(String(l.last_disposition).replace(/_/g, ' '))}`
           : 'never contacted'}</span>
-        <span>attempts ${Number(l.attempt_count) || 0}${Number(l.na_streak) > 0 ? ` · NA streak ${Number(l.na_streak)}` : ''}</span>
+        <span>attempts ${Number(l.attempt_count) || 0}</span>
         ${l.next_action_note ? `<span class="note">“${esc(l.next_action_note)}”</span>` : ''}
         ${l.callback_note && l.callback_note !== l.next_action_note
           ? `<span class="note">“${esc(l.callback_note)}”</span>` : ''}

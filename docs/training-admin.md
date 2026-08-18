@@ -78,9 +78,9 @@ Reactivate it.
 
 | Setting | Default | Change it when |
 |---|---|---|
-| `sla.untouched_reassign_minutes` | 10 | The ten-minute rule is too tight or too loose. **0 disables it** |
+| `sla.untouched_reassign_minutes` | 0 (off) | Leads stay with their caller; a value above 0 would revive the old sweep |
 | `alerts.poll_seconds` | 20 | Popups feel too frequent, or new leads appear too slowly |
-| `alerts.popup_kinds` | callbacks, reassignments | Something is interrupting that should sit quietly in the bell |
+| `alerts.popup_kinds` | callback due, own reminder | Something is interrupting that should sit quietly in the bell |
 | `sla.retry_after_not_answered_minutes` | 180 | Callers are being nagged about dead numbers |
 | `sla.retry_after_switched_off_minutes` | 240 | Same, for phones that are off |
 | `sla.retry_after_will_call_back_minutes` | 2880 | Someone said they would ring us and we are chasing anyway |
@@ -165,7 +165,7 @@ development tool.
 ## 🟢 Green flags
 
 - Pipeline leaks low and falling across the day
-- Few automatic reassignments
+- Untouched counts low — every lead's owner is starting their list
 - Talk time steady or rising
 - Walk-ins converting better than phone-only leads
 - Collections tracking at or above pace on the thermometer

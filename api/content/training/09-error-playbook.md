@@ -21,13 +21,14 @@ Log a call with the correct disposition, or change the status on the lead page.
 The stage follows the outcome; do not fight it by editing around it.
 
 **A lead vanished from my pipeline.**
-It moved or it closed. Search **Find lead**. If the sweep moved it, the lead's
-history shows when and why.
+It closed, it escalated to your counsellor after two unreached attempts, or a
+counsellor transferred it. Search **Find lead** — the lead's history shows
+exactly when and why. Leads never move between callers on their own.
 
 **The customer says they were already called by someone else.**
 Open the lead and read its history — every attempt, by whom, is there. If it
-was a colleague, apologise, and check whether the lead was reassigned by the
-ten-minute rule. This is normal and not anyone's fault.
+was a colleague, apologise; the history will show the transfer or escalation
+that explains it. This is normal and not anyone's fault.
 
 **I cannot close the call form.**
 You have not set a next action. Every open lead must carry one. If there is

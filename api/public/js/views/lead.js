@@ -1,5 +1,5 @@
 import { get, post, put } from '../api.js';
-import { badge, esc, fmtDT, fmtINR, fmtTalk, h, localToIso, openModal, parseTalk, toast, tomorrowAt } from '../util.js';
+import { badge, esc, fmtDate, fmtDT, fmtINR, fmtTalk, h, localToIso, openModal, parseTalk, toast, tomorrowAt } from '../util.js';
 
 const OPEN_STATUSES = new Set(['new', 'working', 'callback', 'qualified', 'negotiation']);
 
@@ -27,6 +27,17 @@ export async function render(outlet, me, params) {
   const canBook = canTransfer && open;
 
   outlet.innerHTML = '';
+
+  // Back to wherever this lead was opened from - the list keeps its filters
+  // and scroll, so "open a lead, glance, go back" costs nothing. Landing here
+  // directly (a pasted link) falls back to Find lead.
+  const backBar = h('<div style="margin-bottom:10px"><button class="btn small" data-testid="back-btn">← Back to the list</button></div>');
+  backBar.querySelector('button').addEventListener('click', () => {
+    if (history.length > 1) history.back();
+    else location.hash = '#/leads';
+  });
+  outlet.appendChild(backBar);
+
   outlet.appendChild(h(`
     <div class="panel">
       <div class="row spread">
@@ -34,10 +45,15 @@ export async function render(outlet, me, params) {
           <h2 class="mt0" style="font-size:19px" data-testid="lead-name">${esc(lead.full_name ?? 'Unnamed lead')}
             <span data-testid="lead-status">${badge(lead.status)}</span>
             ${lead.priority === 'immediate' ? '<span class="badge b-bad">immediate</span>' : ''}
+            ${Number(lead.na_streak) >= 2
+              ? `<span class="badge b-bad" data-testid="na-flag" title="Unreached ${Number(lead.na_streak)} times in a row">📵 Not answered ×${Number(lead.na_streak)}</span>`
+              : ''}
           </h2>
           <div class="row" style="color:var(--muted)">
             <a href="tel:${esc(lead.phone_e164)}" class="mono" style="font-size:16px;font-weight:700">${esc(lead.phone_e164)}</a>
-            ${lead.city ? `<span>· ${esc(lead.city)}</span>` : ''}
+            <button class="linklike" data-act="city" data-testid="city-btn"
+              title="${lead.city ? 'Change the location' : 'Set the location'}">📍 ${
+              lead.city ? esc(lead.city) : 'add location'}</button>
             ${lead.email ? `<span>· ${esc(lead.email)}</span>` : ''}
           </div>
         </div>
@@ -73,6 +89,11 @@ export async function render(outlet, me, params) {
           <div class="s">re-enquiries ${Number(lead.reenquiry_count)}</div></div>
       </div>
     </div>`));
+
+  // This client's own pipeline. It exists from the first call: before that the
+  // strip shows where the journey WILL start, after it every stage of this one
+  // person's progress is one glance - no hunting through tabs.
+  outlet.appendChild(journeyPanel(lead, data));
 
   // Call attempts
   const attempts = h(`<div class="panel"><h2>Calls <small>${data.attempts.length}</small></h2></div>`);
@@ -135,6 +156,7 @@ export async function render(outlet, me, params) {
       }
       return;
     }
+    if (act === 'city') cityModal(lead, () => render(outlet, me, params));
     if (act === 'callback') callbackModal(lead, () => render(outlet, me, params));
     if (act === 'reminder') reminderModal(lead, () => render(outlet, me, params));
     if (act === 'qualify') qualifyModal(lead, () => render(outlet, me, params));
@@ -150,6 +172,110 @@ export async function render(outlet, me, params) {
       }
     }
   };
+}
+
+/**
+ * One client, one pipeline: the journey strip.
+ *
+ * Reads only what the lead detail already returns - no extra endpoint. The
+ * follow-up count is attempt_count minus the first call, which is exactly the
+ * FU1..FU5 column of the old Excel the floor still thinks in.
+ */
+function journeyPanel(lead, data) {
+  const attempts = data.attempts ?? [];
+  const firstCall = attempts.length ? attempts[attempts.length - 1] : null;
+  const followups = Math.max(0, Number(lead.attempt_count) - 1);
+  const reached = Number(lead.connect_count) > 0;
+  const na = Number(lead.na_streak);
+  const dealDone = lead.status === 'won' || lead.status === 'handed_off';
+  const lost = ['lost', 'invalid'].includes(lead.status);
+
+  const steps = [
+    { label: 'Lead in', state: 'done', sub: fmtDT(lead.created_at) },
+    {
+      label: '1st call',
+      state: firstCall ? 'done' : 'now',
+      sub: firstCall ? fmtDT(firstCall.started_at) : 'not called yet',
+    },
+    {
+      label: 'Follow-ups',
+      state: followups > 0 ? 'done' : firstCall ? 'now' : '',
+      sub: followups > 0 ? `×${followups} done` : 'none yet',
+    },
+    {
+      label: 'Reached',
+      state: reached ? 'done' : na >= 2 ? 'bad' : firstCall ? 'now' : '',
+      sub: reached ? 'spoke to them' : na >= 2 ? `not answered ×${na}` : 'no real talk yet',
+    },
+    {
+      label: 'Visit',
+      state: lead.walked_in_at ? 'done' : lead.walkin_expected_at ? 'now' : '',
+      sub: lead.walked_in_at ? fmtDT(lead.walked_in_at)
+        : lead.walkin_expected_at ? `promised ${fmtDT(lead.walkin_expected_at)}` : '—',
+    },
+    {
+      label: lost ? 'Closed' : 'Deal',
+      state: dealDone ? 'done' : lost ? 'bad' : '',
+      sub: dealDone ? 'won 🎉' : lost ? String(lead.status) : 'not yet',
+    },
+  ];
+
+  const next = [];
+  if (lead.next_action_at) {
+    next.push(`<b>Next:</b> ${esc(fmtDT(lead.next_action_at))}${lead.next_action_note ? ` — ${esc(lead.next_action_note)}` : ''}`);
+  }
+  if (lead.reminder_at) {
+    next.push(`⏰ <b>Your reminder:</b> ${esc(fmtDT(lead.reminder_at))}${lead.reminder_note ? ` — ${esc(lead.reminder_note)}` : ''}`);
+  }
+
+  const panel = h(`
+    <div class="panel" data-testid="lead-journey">
+      <h2 class="mt0">This client's pipeline
+        <small>${attempts.length === 0
+          ? 'starts with the first call — everything after that lands here on its own'
+          : `${Number(lead.attempt_count)} call${Number(lead.attempt_count) === 1 ? '' : 's'} so far`}</small></h2>
+      <div class="journey">
+        ${steps.map((s, i) => `
+          <div class="j-step ${esc(s.state)}">
+            <div class="j-dot">${s.state === 'done' ? '✓' : s.state === 'bad' ? '!' : i + 1}</div>
+            <div class="j-label">${esc(s.label)}</div>
+            <div class="j-sub">${esc(s.sub)}</div>
+          </div>`).join('')}
+      </div>
+      ${next.length ? `<div class="hint" style="margin-top:10px">${next.join(' &nbsp;·&nbsp; ')}</div>` : ''}
+    </div>`);
+  return panel;
+}
+
+/**
+ * Where this person is. Most Meta forms arrive with no city, and "where are
+ * you calling from?" is asked on every first call anyway - this is the box it
+ * goes into.
+ */
+function cityModal(lead, onDone) {
+  const body = h(`
+    <div>
+      <label class="f">City / location
+        <input name="city" maxlength="60" placeholder="e.g. Kanpur" value="${esc(lead.city ?? '')}">
+      </label>
+      <div class="hint">Shown beside the name on every list. Leave it blank to clear.</div>
+    </div>`);
+  const footer = h('<div><button class="btn primary" data-testid="city-save">Save location</button></div>');
+  const { close } = openModal('Lead location', body, footer);
+  body.querySelector('[name=city]').focus();
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    try {
+      await put(`/leads/${lead.id}/city`, {
+        city: body.querySelector('[name=city]').value.trim() || null,
+      });
+      toast('Location saved.');
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
 }
 
 /**
@@ -238,6 +364,7 @@ function eventLabel(e) {
     case 'claimed_from_pool': return 'Picked up from a pool and put back into work';
     case 'cross_team_transfer': return `Moved to the other team after ${Number(p.after_days ?? '')} days untouched`;
     case 'reminder_set': return `Reminder ${p.muted ? 'muted' : 'set'}${p.at ? ' for ' + fmtDT(p.at) : ''}`;
+    case 'archived': return `Archived — created before ${fmtDate(p.cutoff)}; pick up & work brings it back`;
     default: return String(e.event_type).replace(/_/g, ' ');
   }
 }

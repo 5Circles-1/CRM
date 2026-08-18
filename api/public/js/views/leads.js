@@ -15,6 +15,7 @@ import { badge, esc, fmtDT, h } from '../util.js';
 /** One-click lists, in the order a caller would reach for them. */
 const PRESETS = [
   { label: 'Everything', filters: {} },
+  { label: 'Not answered ×2+', filters: { na: '2plus' } },
   { label: 'Did not answer', filters: { lastDisposition: 'not_answered' } },
   { label: 'Asked for a callback', filters: { lastDisposition: 'callback_requested' } },
   { label: 'Will call us back', filters: { lastDisposition: 'will_call_back_self' } },
@@ -24,6 +25,16 @@ const PRESETS = [
   { label: 'Never contacted', filters: { due: 'untouched' } },
   { label: 'No WhatsApp yet', filters: { whatsapp: 'not_sent' } },
 ];
+
+/**
+ * What the screen looked like when the user left it, kept for the session.
+ *
+ * Opening a lead and coming back used to land on a blank search - filters
+ * gone, list gone, scroll gone - which read as "back to the main page" and
+ * cost the caller their place in a list they were working top to bottom.
+ * Module state survives in-app navigation, so back really means back.
+ */
+const saved = { q: '', preset: 'Everything', controls: {}, scrollY: 0 };
 
 const DUE = [
   ['', 'Any time'],
@@ -67,7 +78,7 @@ const WHATSAPP = [
 export async function render(outlet, me) {
   const dispositions = await get('/meta/dispositions').catch(() => []);
   let filters = {};
-  let preset = 'Everything';
+  let preset = saved.preset;
 
   // Every view starts by clearing the outlet; this one forgot, so the
   // router's loading spinner stayed on screen above the panel, spinning
@@ -108,6 +119,12 @@ export async function render(outlet, me) {
         <label class="f">Follow-up round
           <select name="attempts">${ROUNDS.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
         </label>
+        <label class="f">Not answered
+          <select name="na">
+            <option value="">Any</option>
+            <option value="2plus">2+ times in a row</option>
+          </select>
+        </label>
         <button class="btn" id="clear">Clear</button>
       </div>
 
@@ -117,7 +134,7 @@ export async function render(outlet, me) {
 
   const input = panel.querySelector('[name=q]');
   const results = panel.querySelector('#results');
-  const controls = ['lastDisposition', 'due', 'status', 'whatsapp', 'attempts'];
+  const controls = ['lastDisposition', 'due', 'status', 'whatsapp', 'attempts', 'na'];
   let timer = null;
 
   const readControls = () => {
@@ -126,6 +143,10 @@ export async function render(outlet, me) {
       const v = panel.querySelector(`[name=${name}]`).value;
       if (v) filters[name] = v;
     }
+    // Remember the screen as it now is, so coming back from a lead restores it.
+    saved.preset = preset;
+    saved.controls = { ...filters };
+    saved.q = input.value;
   };
 
   const applyPreset = (p) => {
@@ -169,7 +190,9 @@ export async function render(outlet, me) {
           <tr>
             <td>${esc(l.full_name ?? 'Unnamed')}</td>
             <td class="mono">${esc(l.phone_e164)}</td>
-            <td>${badge(l.status)}</td>
+            <td>${badge(l.status)}${Number(l.na_streak) >= 2
+                  ? ` <span class="badge b-bad" title="Not answered ${Number(l.na_streak)} times in a row">📵 ×${Number(l.na_streak)}</span>`
+                  : ''}</td>
             <td>${l.last_disposition
                   ? esc(String(l.last_disposition).replace(/_/g, ' '))
                   : '<span class="hint">never contacted</span>'}</td>
@@ -220,11 +243,29 @@ export async function render(outlet, me) {
     run();
   });
 
+  // Put the screen back the way it was left, so returning from a lead is a
+  // return - not a restart.
+  input.value = saved.q;
+  for (const name of controls) {
+    panel.querySelector(`[name=${name}]`).value = saved.controls[name] ?? '';
+  }
+  readControls();
+
+  // Opening a lead remembers where the list stood, so Back lands mid-list.
+  results.addEventListener('click', (e) => {
+    if (e.target.closest('a[href^="#/lead/"]')) saved.scrollY = window.scrollY;
+  });
+
   input.addEventListener('input', () => {
     clearTimeout(timer);
+    saved.q = input.value;
     timer = setTimeout(run, 300);
   });
 
-  input.focus();
+  input.focus({ preventScroll: true });
   await run();
+  if (saved.scrollY) {
+    window.scrollTo(0, saved.scrollY);
+    saved.scrollY = 0;
+  }
 }

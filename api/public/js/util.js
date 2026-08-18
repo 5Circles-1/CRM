@@ -127,6 +127,18 @@ export function parseTalk(text) {
 }
 
 /**
+ * A 0-100 score as a five-star rating. The number is for analysis; the stars
+ * are the rating the floor asked for - readable across the room, no
+ * arithmetic. One star per 20 points, rounded.
+ */
+export function starsHtml(points, title = '') {
+  const p = Number(points);
+  if (!Number.isFinite(p)) return '';
+  const n = Math.max(0, Math.min(5, Math.round(p / 20)));
+  return `<span class="stars" title="${esc(title || `${p.toFixed(0)} / 100`)}">${'★'.repeat(n)}${'☆'.repeat(5 - n)}</span>`;
+}
+
+/**
  * A person as a face: their uploaded icon, or initials on a colour that stays
  * stable for that name. Every board and table uses this one helper, so a
  * person looks the same everywhere.

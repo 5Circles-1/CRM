@@ -105,7 +105,7 @@ where the month stands against the ₹7,00,000 breakeven.
 ## 🟢 Green flags
 
 - Pipeline leaks trending down through the day
-- Few automatic reassignments — your callers are starting their lists
+- Untouched counts low — your callers are starting their lists
 - Talk time rising across the team
 - Walk-ins converting at a visibly better rate than phone-only leads
 - Your overdue instalment list is short and getting shorter
