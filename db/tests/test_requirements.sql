@@ -2665,6 +2665,103 @@ end $$;
 reset role;
 
 -- =============================================================================
+-- ARCHIVE (ARC): the Admin -> Data button. Old, undealt, unworked leads park
+-- in Previous months; clients and live conversations are untouched; nothing
+-- is deleted; callers cannot press the button.
+-- =============================================================================
+
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                       next_action_at, created_at)
+values
+  (:SRC, 'Arc Old Waiting', '+919555200001', :A1, crm.team_of(:A1, current_date),
+   'working', now(), '2026-08-01 10:00:00+05:30'),
+  (:SRC, 'Arc Old Worked',  '+919555200002', :A1, crm.team_of(:A1, current_date),
+   'working', now(), '2026-08-01 10:00:00+05:30');
+
+-- Worked SINCE the cutoff: a live conversation, whatever its creation date.
+update crm.leads set last_contacted_at = now() where full_name = 'Arc Old Worked';
+
+-- An old lead with money on it is a client, not clutter.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, counsellor_id,
+                       team_id, status, next_action_at, created_at)
+values (:SRC, 'Arc Client', '+919555200003', :A1, :CNS_A,
+        crm.team_of(:A1, current_date), 'negotiation', now(), '2026-08-01 10:00:00+05:30');
+insert into crm.deals (lead_id, product_id, counsellor_id, team_id, booked_amount)
+select id, '44444444-0000-0000-0000-000000000010', :CNS_A::uuid, team_id, 5000
+  from crm.leads where full_name = 'Arc Client';
+
+-- A pending callback on a soon-to-be-parked lead must be cancelled, or the
+-- bell rings forever for a person nobody is working.
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+select id, :A1, :A1, now() - interval '1 hour', 'arc test'
+  from crm.leads where full_name = 'Arc Old Waiting';
+
+-- A caller cannot press the button.
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false) as _ \gset
+do $$
+begin
+  perform crm.archive_leads_before('2026-08-15'::date, false);
+  perform crm_test.check('ARC', 'a caller cannot archive the lead book',
+                         false, 'the archive ran for a caller');
+exception when insufficient_privilege then
+  perform crm_test.check('ARC', 'a caller cannot archive the lead book', true, null);
+end $$;
+
+-- The admin's dry run counts without moving anything.
+select set_config('app.user_id', '22222222-0000-0000-0000-00000000000a', false) as _ \gset
+
+select crm.archive_leads_before('2026-08-15'::date, true) as _arc_dry \gset
+
+select crm_test.check(
+  'ARC', 'the dry run counts the old waiting lead',
+  :_arc_dry >= 1, 'dry run said ' || :_arc_dry);
+
+-- (The pending callback flipped its status to 'callback' - the point is that
+-- the dry run parks nothing, so: still live, still out of every pool.)
+select crm_test.check(
+  'ARC', 'and moves nothing',
+  (select status <> 'nurture' and pool is null
+     from crm.leads where full_name = 'Arc Old Waiting'), null);
+
+-- The real thing.
+select crm.archive_leads_before('2026-08-15'::date, false) as _arc_real \gset
+
+select crm_test.check(
+  'ARC', 'the archive parks the old waiting lead in Previous months',
+  (select status = 'nurture' and pool = 'previous_month' and next_action_at is null
+     from crm.leads where full_name = 'Arc Old Waiting'), null);
+
+select crm_test.check(
+  'ARC', 'a lead worked since the cutoff stays live, whatever its age',
+  (select status = 'working' and pool is null
+     from crm.leads where full_name = 'Arc Old Worked'), null);
+
+-- (Booking the deal marked them 'won' - exactly why they must never park.)
+select crm_test.check(
+  'ARC', 'a lead with a deal is a client and is never parked',
+  (select status <> 'nurture' and pool is null
+     from crm.leads where full_name = 'Arc Client'), null);
+
+select crm_test.check(
+  'ARC', 'the parked lead''s pending callback is cancelled, not left ringing',
+  (select c.status = 'cancelled'
+     from crm.callbacks c join crm.leads l on l.id = c.lead_id
+    where l.full_name = 'Arc Old Waiting'
+    order by c.created_at desc limit 1), null);
+
+select crm_test.check(
+  'ARC', 'each parked lead''s history says why it left the pipeline',
+  (select count(*) = 1 from crm.lead_events e
+     join crm.leads l on l.id = e.lead_id
+    where l.full_name = 'Arc Old Waiting' and e.event_type = 'archived'), null);
+
+select crm_test.check(
+  'ARC', 'the parked lead no longer appears on the fresh list or the pipeline',
+  (select count(*) = 0 from crm.v_fresh_leads where full_name = 'Arc Old Waiting')
+  and (select count(*) = 0 from crm.v_my_pipeline where full_name = 'Arc Old Waiting'),
+  null);
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

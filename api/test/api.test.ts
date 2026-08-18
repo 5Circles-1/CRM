@@ -2149,6 +2149,60 @@ describe('per-lead reminders (API)', () => {
   });
 });
 
+describe('lead location and the admin archive (API)', () => {
+  it('lets the caller set the lead\'s location, and clear a wrong one', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'API Locate');
+    const a1 = await login(h.app, EMAILS.callerA1);
+
+    const set = await h.app.inject({
+      method: 'PUT', url: `/leads/${leadId}/city`, headers: auth(a1),
+      payload: { city: '  Kanpur ' },
+    });
+    assert.equal(set.statusCode, 200);
+    assert.equal(set.json().city, 'Kanpur', 'stored trimmed, as typed');
+
+    const clear = await h.app.inject({
+      method: 'PUT', url: `/leads/${leadId}/city`, headers: auth(a1),
+      payload: { city: null },
+    });
+    assert.equal(clear.json().city, null, 'a wrong guess must not stick forever');
+  });
+
+  it('archives old leads from Admin: dry run counts, the real run parks, a caller is refused', async () => {
+    const oldId = makeLeadFor(USERS.callerA1, 'API Old Lead');
+    fixtureSql(`update crm.leads set created_at = '2026-08-01T10:00:00+05:30'
+                 where id = '${oldId}';`);
+
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const denied = await h.app.inject({
+      method: 'POST', url: '/admin/archive-leads', headers: auth(a1),
+      payload: { before: '2026-08-15', dryRun: true },
+    });
+    assert.equal(denied.statusCode, 403, 'parking the lead book is an owner act');
+
+    const admin = await login(h.app, EMAILS.admin);
+    const dry = await h.app.inject({
+      method: 'POST', url: '/admin/archive-leads', headers: auth(admin),
+      payload: { before: '2026-08-15', dryRun: true },
+    });
+    assert.equal(dry.statusCode, 200);
+    assert.ok(Number(dry.json().archived) >= 1, 'the dry run counts the old lead');
+    assert.equal(
+      fixtureSql(`select pool is null from crm.leads where id = '${oldId}';`).trim(),
+      't', 'the dry run moves nothing');
+
+    const real = await h.app.inject({
+      method: 'POST', url: '/admin/archive-leads', headers: auth(admin),
+      payload: { before: '2026-08-15', dryRun: false },
+    });
+    assert.ok(Number(real.json().archived) >= 1);
+    assert.equal(
+      fixtureSql(`select status || ' ' || coalesce(pool, '-')
+                    from crm.leads where id = '${oldId}';`).trim(),
+      'nurture previous_month', 'the old lead parks in Previous months');
+  });
+});
+
 describe('team chat (API)', () => {
   it('lets an admin broadcast to the whole floor, and everyone reads it', async () => {
     const admin = await login(h.app, EMAILS.admin);

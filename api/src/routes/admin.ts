@@ -329,6 +329,32 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return row;
   });
 
+  /**
+   * Park everything older than a date - the "clean CRM" button.
+   *
+   * The SQL function owns the rules (admin gate re-checked inside, clients
+   * and recently-worked leads untouched, nothing deleted); this handler only
+   * shapes the request. dryRun counts what would move, so the button can say
+   * "this will park 117 leads" before anything happens.
+   */
+  app.post('/admin/archive-leads', async (req) => {
+    req.requireRole('admin', 'ops');
+    const body = z
+      .object({
+        before: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'before must be YYYY-MM-DD'),
+        dryRun: z.boolean().default(false),
+      })
+      .parse(req.body);
+
+    const row = await req.tx((q) =>
+      q.one<{ archived: number }>(
+        `select crm.archive_leads_before($1::date, $2) as archived`,
+        [body.before, body.dryRun],
+      ),
+    );
+    return { cutoff: body.before, dryRun: body.dryRun, archived: Number(row!.archived) };
+  });
+
   app.get('/admin/quarantine', async (req) => {
     req.requireRole('admin', 'ops');
     return req.tx((q) =>

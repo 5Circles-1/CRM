@@ -7,6 +7,7 @@ const TABS = [
   ['users', 'Users'],
   ['ingest', 'Ingestion'],
   ['products', 'Products'],
+  ['data', 'Data'],
   ['quarantine', 'Quarantine'],
   ['alerts', 'Security alerts'],
 ];
@@ -19,7 +20,7 @@ export async function render(outlet, me) {
   outlet.appendChild(tabs);
   outlet.appendChild(body);
 
-  const draw = { settings, users, ingest, products, quarantine, alerts };
+  const draw = { settings, users, ingest, products, data, quarantine, alerts };
   tabs.addEventListener('click', (e) => {
     const tab = e.target?.dataset?.tab;
     if (!tab) return;
@@ -64,6 +65,75 @@ async function settings(body, me) {
     try {
       await put(`/admin/settings/${encodeURIComponent(key)}`, { value });
       toast(`${key} updated.`);
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+}
+
+/* ---------------- data: keep the floor on current leads ---------------- */
+
+/**
+ * The archive button. Two steps on purpose: first a dry-run that says exactly
+ * how many leads would move, then the real thing - an owner-level act should
+ * never fire off one accidental click. Nothing is deleted: parked leads live
+ * in Previous months, searchable, one click from being worked again.
+ */
+async function data(body) {
+  body.innerHTML = '';
+  const panel = h(`
+    <div class="panel">
+      <h2>Keep the floor on current data <small>nothing is deleted — old leads park in Previous months</small></h2>
+      <p class="hint mt0" style="max-width:680px">
+        Every lead created before the date below — and not worked since it — leaves every
+        pipeline, alert and fresh list and parks in <b>Previous months</b>. Paying clients and
+        anyone with a deal are never touched. A parked lead stays searchable in Find lead and
+        comes back with one click (Pick up &amp; work) if the person ever calls again.
+      </p>
+      <div class="frow" style="max-width:460px;align-items:flex-end">
+        <label class="f" style="margin:0">Keep leads from
+          <input type="date" name="cutoff" value="2026-08-15">
+        </label>
+        <button class="btn primary" id="arch-check" data-testid="archive-check">Check what would move</button>
+      </div>
+      <div id="arch-result" style="margin-top:12px"></div>
+    </div>`);
+  body.appendChild(panel);
+
+  const result = panel.querySelector('#arch-result');
+  panel.querySelector('#arch-check').addEventListener('click', async () => {
+    const before = panel.querySelector('[name=cutoff]').value;
+    if (!before) { toast('Pick a date first.', 'err'); return; }
+    try {
+      const r = await post('/admin/archive-leads', { before, dryRun: true });
+      result.innerHTML = '';
+      if (r.archived === 0) {
+        result.appendChild(h(`<div class="empty">Nothing older than ${esc(before)} is still live — the floor is already clean.</div>`));
+        return;
+      }
+      const go = h(`
+        <div class="banner warn">
+          <b>${r.archived} lead${r.archived === 1 ? '' : 's'}</b> created before ${esc(before)}
+          would move to Previous months.
+          <button class="btn danger" id="arch-go" data-testid="archive-go" style="margin-left:10px">Archive them now</button>
+        </div>`);
+      result.appendChild(go);
+      go.querySelector('#arch-go').addEventListener('click', async (e) => {
+        e.target.disabled = true;
+        try {
+          const done = await post('/admin/archive-leads', { before, dryRun: false });
+          result.innerHTML = '';
+          result.appendChild(h(`
+            <div class="banner" style="background:var(--ok-bg);color:var(--ok);border-color:var(--ok-bg)">
+              ${done.archived} lead${done.archived === 1 ? '' : 's'} parked in Previous months.
+              The pipelines now carry only current data.
+            </div>`));
+          toast('Archived.');
+        } catch (err) {
+          toast(err.message, 'err');
+          e.target.disabled = false;
+        }
+      });
     } catch (err) {
       toast(err.message, 'err');
     }

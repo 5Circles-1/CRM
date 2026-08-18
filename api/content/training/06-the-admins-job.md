@@ -52,6 +52,16 @@ target is an ops action, not a deployment.
 | `freeze.start_minutes` / `freeze.end_minutes` | {{setting:freeze.start_minutes}} / {{setting:freeze.end_minutes}} | The lunch freeze window |
 | `reminder.morning_minutes` | {{setting:reminder.morning_minutes}} | When the morning brief goes out |
 
+## Keeping the floor on current data
+
+**Admin → Data** parks every lead created before a date you pick — and not
+worked since it — into **Previous months**: out of every pipeline, alert and
+fresh list, still searchable, one click from being worked again. Two steps on
+purpose: first it tells you exactly how many would move, then you press
+Archive. Nothing is ever deleted, and paying clients are never touched. Use it
+after a launch so the first sheet sync's months of history do not bury the
+floor.
+
 ## Tiers — a personnel decision, recorded
 
 Pinning someone to **RESTRICTED** or **ACE** requires a **reason** and an

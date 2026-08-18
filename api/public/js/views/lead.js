@@ -1,5 +1,5 @@
 import { get, post, put } from '../api.js';
-import { badge, esc, fmtDT, fmtINR, fmtTalk, h, localToIso, openModal, parseTalk, toast, tomorrowAt } from '../util.js';
+import { badge, esc, fmtDate, fmtDT, fmtINR, fmtTalk, h, localToIso, openModal, parseTalk, toast, tomorrowAt } from '../util.js';
 
 const OPEN_STATUSES = new Set(['new', 'working', 'callback', 'qualified', 'negotiation']);
 
@@ -51,7 +51,9 @@ export async function render(outlet, me, params) {
           </h2>
           <div class="row" style="color:var(--muted)">
             <a href="tel:${esc(lead.phone_e164)}" class="mono" style="font-size:16px;font-weight:700">${esc(lead.phone_e164)}</a>
-            ${lead.city ? `<span>· ${esc(lead.city)}</span>` : ''}
+            <button class="linklike" data-act="city" data-testid="city-btn"
+              title="${lead.city ? 'Change the location' : 'Set the location'}">📍 ${
+              lead.city ? esc(lead.city) : 'add location'}</button>
             ${lead.email ? `<span>· ${esc(lead.email)}</span>` : ''}
           </div>
         </div>
@@ -154,6 +156,7 @@ export async function render(outlet, me, params) {
       }
       return;
     }
+    if (act === 'city') cityModal(lead, () => render(outlet, me, params));
     if (act === 'callback') callbackModal(lead, () => render(outlet, me, params));
     if (act === 'reminder') reminderModal(lead, () => render(outlet, me, params));
     if (act === 'qualify') qualifyModal(lead, () => render(outlet, me, params));
@@ -245,6 +248,37 @@ function journeyPanel(lead, data) {
 }
 
 /**
+ * Where this person is. Most Meta forms arrive with no city, and "where are
+ * you calling from?" is asked on every first call anyway - this is the box it
+ * goes into.
+ */
+function cityModal(lead, onDone) {
+  const body = h(`
+    <div>
+      <label class="f">City / location
+        <input name="city" maxlength="60" placeholder="e.g. Kanpur" value="${esc(lead.city ?? '')}">
+      </label>
+      <div class="hint">Shown beside the name on every list. Leave it blank to clear.</div>
+    </div>`);
+  const footer = h('<div><button class="btn primary" data-testid="city-save">Save location</button></div>');
+  const { close } = openModal('Lead location', body, footer);
+  body.querySelector('[name=city]').focus();
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    try {
+      await put(`/leads/${lead.id}/city`, {
+        city: body.querySelector('[name=city]').value.trim() || null,
+      });
+      toast('Location saved.');
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+}
+
+/**
  * The per-lead reminder choice. Two independent things: whether this lead
  * reminds you at all, and a one-off time you want to be nudged. Muting is the
  * answer to "stop nagging me about this one"; the time is "but do remind me
@@ -330,6 +364,7 @@ function eventLabel(e) {
     case 'claimed_from_pool': return 'Picked up from a pool and put back into work';
     case 'cross_team_transfer': return `Moved to the other team after ${Number(p.after_days ?? '')} days untouched`;
     case 'reminder_set': return `Reminder ${p.muted ? 'muted' : 'set'}${p.at ? ' for ' + fmtDT(p.at) : ''}`;
+    case 'archived': return `Archived — created before ${fmtDate(p.cutoff)}; pick up & work brings it back`;
     default: return String(e.event_type).replace(/_/g, ' ');
   }
 }

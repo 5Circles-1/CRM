@@ -22,6 +22,10 @@
 --
 -- HOW TO RUN
 --
+-- Prefer the button: Admin -> Data does the same thing with a preview count
+-- (crm.archive_leads_before, migration 0050). This script is the psql way in,
+-- for when the UI is unreachable:
+--
 --   sudo -u postgres psql -d crm -f /opt/crm/db/ops/archive-before.sql
 --
 -- To use a different cutoff:
@@ -33,7 +37,7 @@
 
 \if :{?cutoff}
 \else
-  \set cutoff '2026-08-14'
+  \set cutoff '2026-08-15'
 \endif
 
 begin;

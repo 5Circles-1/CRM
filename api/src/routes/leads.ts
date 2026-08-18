@@ -80,6 +80,38 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * Set or correct the lead's location.
+   *
+   * City arrives blank from most Meta lead forms, and the floor asked to be
+   * able to fill it in from the call ("where are you calling from?"). One
+   * field, recorded in the lead's history like every other change.
+   */
+  app.put('/leads/:id/city', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({ city: z.string().trim().max(60).nullable() })
+      .parse(req.body ?? {});
+    const city = body.city || null;
+
+    return req.tx(async (q) => {
+      const row = await q.one(
+        `update crm.leads set city = $2, updated_at = now()
+          where id = $1
+          returning id, city`,
+        [id, city],
+      );
+      if (!row) throw notFound('no lead with that id');
+      await q.query(
+        `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
+         values ($1, 'note', $2, $3)`,
+        [id, user.id, JSON.stringify({ city_set: city })],
+      );
+      return row;
+    });
+  });
+
+  /**
    * Mark that the lead actually came in.
    *
    * Separate from the will_visit outcome on purpose: a promise to visit and a
