@@ -33,9 +33,22 @@ if (serviceUserId && hasSheetCreds) {
   const worker = new IngestWorker(app.db, serviceUserId);
   const intervalMin = Number(process.env.INGEST_INTERVAL_MINUTES ?? 5);
   let running = false;
-  ingestTimer = setInterval(async () => {
+  // Every run leaves a heartbeat, so the Floor can show when the importer
+  // last ran instead of the floor discovering silence days later.
+  const beat = async (ms: number, error: string | null): Promise<void> => {
+    try {
+      await app.db.withUser(serviceUserId, (q) =>
+        q.query('select crm.record_job_run($1, $2, $3)', ['sheet_sync', ms, error]),
+      );
+    } catch (err) {
+      app.log.warn({ err }, 'could not record sheet-sync heartbeat');
+    }
+  };
+
+  const syncOnce = async (): Promise<void> => {
     if (running) return;
     running = true;
+    const started = Date.now();
     try {
       const summaries = await worker.runAll();
       for (const s of summaries) {
@@ -46,12 +59,34 @@ if (serviceUserId && hasSheetCreds) {
           );
         }
       }
+      const failures = summaries.flatMap((s) => s.errors);
+      await beat(Date.now() - started, failures.length ? failures.slice(0, 3).join('; ') : null);
     } catch (err) {
       app.log.error({ err }, 'sheet sync failed');
+      await beat(Date.now() - started, err instanceof Error ? err.message : String(err));
     } finally {
       running = false;
     }
-  }, intervalMin * 60_000);
+  };
+
+  // Let an admin pull the sheet from the Floor screen without shell access.
+  app.decorate('syncSheetsNow', async () => {
+    const started = Date.now();
+    try {
+      const summaries = await worker.runAll();
+      const failures = summaries.flatMap((s) => s.errors);
+      await beat(Date.now() - started, failures.length ? failures.slice(0, 3).join('; ') : null);
+      return summaries;
+    } catch (err) {
+      await beat(Date.now() - started, err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  });
+
+  // Run once at boot rather than waiting out the first interval: a restart
+  // after an outage should pull the backlog immediately.
+  void syncOnce();
+  ingestTimer = setInterval(() => void syncOnce(), intervalMin * 60_000);
   ingestTimer.unref();
   app.log.info({ everyMinutes: intervalMin }, 'Google Sheet sync scheduled');
 } else if (serviceUserId) {

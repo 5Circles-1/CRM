@@ -51,7 +51,7 @@ const WAIT_WHY = (w) => ({
 
 export async function render(outlet, me) {
   const [floor, immediate, leakage, candidates, targets, qualified, negotiation, today,
-         overallToday, avatars, leadFlow, followups] = await Promise.all([
+         overallToday, avatars, leadFlow, followups, intake] = await Promise.all([
     get('/dashboards/floor'),
     get('/queues/immediate'),
     get('/dashboards/leakage'),
@@ -64,9 +64,17 @@ export async function render(outlet, me) {
     get('/users/avatars').catch(() => ({})),
     get('/dashboards/lead-flow').catch(() => null),
     get('/dashboards/followups').catch(() => []),
+    get('/dashboards/intake').catch(() => null),
   ]);
 
   outlet.innerHTML = '';
+
+  // --- is the lead pipe alive? straight to the top, before anything else ---
+  //
+  // Leads stopped arriving from the sheet for two days and every screen
+  // looked merely quiet. Nothing is more urgent than "the leads are not
+  // coming in", so nothing sits above it.
+  if (intake) renderIntake(outlet, intake, me);
 
   // --- the leaderboard: overall standings first, then who is winning what ---
   let boardDays = 1;
@@ -514,4 +522,125 @@ function labelLeak(t) {
     missed_callback: 'Missed callback',
     unassigned: 'Unassigned',
   }[t] ?? t;
+}
+
+/**
+ * Lead intake: is the pipe actually delivering?
+ *
+ * The floor lost two days of Meta leads because "no fresh leads" and "the
+ * importer has stopped" look identical from every other screen. This panel
+ * only shows itself when something is wrong or worth knowing, so on a healthy
+ * day it is one quiet line — and on a broken one it is the first thing on the
+ * page, naming the fix.
+ */
+const INTAKE_WHY = {
+  not_connected: ['No sheet connected', 'This source has no Google Sheet configured. Add the spreadsheet in Admin → Lead sources, or import a CSV there.'],
+  never_run: ['Never imported', 'The sheet is configured but has never synced. The importer needs SERVICE_USER_ID and Google credentials in the API environment.'],
+  failing: ['Import failing', 'The last run returned an error — the message is below. A renamed tab or revoked sheet access are the usual causes.'],
+  stale: ['Import has stalled', 'The last successful sync is older than it should be. The importer may have stopped, or the server may have been restarted without credentials.'],
+  all_rejected: ['Every row rejected', 'Rows are arriving but all of them are being quarantined — usually the phone column was renamed in the sheet. Fix the mapping in Admin → Lead sources; nothing is lost, quarantined rows can be replayed.'],
+  off: ['Switched off', 'This source is inactive, so it is not imported.'],
+};
+
+function renderIntake(outlet, intake, me) {
+  const sources = intake.sources ?? [];
+  const bad = sources.filter((s) => !['healthy', 'off'].includes(s.state));
+  const quiet = Number(intake.minutes_since_lead ?? 0) > 120;
+  const enginesDead = intake.jobs_never_ran === true;
+  const canAct = me.role === 'admin' || me.role === 'ops';
+
+  // Nothing wrong and leads flowing: one line, no noise.
+  if (!bad.length && !quiet && !enginesDead) {
+    outlet.appendChild(h(`
+      <div class="hint" style="margin-bottom:12px">
+        Lead intake healthy — ${Number(intake.leads_today ?? 0)} lead${Number(intake.leads_today) === 1 ? '' : 's'} in today,
+        newest ${Number(intake.minutes_since_lead ?? 0)}m ago.
+      </div>`));
+    return;
+  }
+
+  const panel = h(`
+    <div class="panel" data-testid="intake-health"
+         style="margin-bottom:16px;border:2px solid var(--bad)">
+      <div class="row spread wrap">
+        <h2 class="mt0" style="color:var(--bad)">⚠ Leads are not arriving</h2>
+        ${canAct ? '<button class="btn primary" id="sync-now" data-testid="sync-now">Import the sheet now</button>' : ''}
+      </div>
+      <div class="hint" style="margin-bottom:10px">
+        ${Number(intake.leads_today ?? 0)} lead${Number(intake.leads_today) === 1 ? '' : 's'} created today${
+          intake.minutes_since_lead != null
+            ? ` · newest was ${Number(intake.minutes_since_lead)} minutes ago`
+            : ' · no leads on record at all'}.
+      </div>
+      ${enginesDead ? `
+        <div class="alert-row" style="border-left:3px solid var(--bad)">
+          <b>The background engine has never run on this server.</b>
+          <div class="hint">Sheet import, lead distribution, reminders and scoring are all driven by it.
+          It needs <code>SERVICE_USER_ID</code> set in the API environment — until then leads must be
+          imported by hand from Admin → Lead sources.</div>
+        </div>` : ''}
+      ${bad.map((s) => {
+        const [title, why] = INTAKE_WHY[s.state] ?? [s.state, ''];
+        return `
+        <div class="alert-row" style="border-left:3px solid var(--bad)">
+          <b>${esc(s.source_name)} — ${esc(title)}</b>
+          <div class="hint">${esc(why)}</div>
+          <div class="hint">
+            ${s.last_synced_at
+              ? `last sync ${esc(fmtDT(s.last_synced_at))} (${Number(s.minutes_since_sync)}m ago)`
+              : 'never synced'}
+            ${s.rows_seen != null ? ` · last run saw ${Number(s.rows_seen)} row${Number(s.rows_seen) === 1 ? '' : 's'},
+              created ${Number(s.rows_created)}, matched ${Number(s.rows_duplicate)} existing,
+              quarantined ${Number(s.rows_quarantined)}` : ''}
+          </div>
+          ${s.error_text ? `<div class="hint mono" style="color:var(--bad)">${esc(s.error_text)}</div>` : ''}
+        </div>`;
+      }).join('')}
+      ${!bad.length && quiet ? `
+        <div class="alert-row" style="border-left:3px solid var(--warn)">
+          <b>Every source looks configured, but nothing new has come in.</b>
+          <div class="hint">Either the sheet genuinely has no new rows, or every row matched somebody
+          already in the book (a re-enquiry attaches to the existing lead rather than creating a second one).
+          The counts on each source below tell you which.</div>
+        </div>` : ''}
+      <details style="margin-top:8px">
+        <summary class="hint">All sources</summary>
+        <table class="table"><thead><tr>
+          <th>Source</th><th>State</th><th>Last sync</th>
+          <th class="num">Seen</th><th class="num">Created</th>
+          <th class="num">Matched</th><th class="num">Rejected</th>
+        </tr></thead><tbody>
+        ${sources.map((s) => `
+          <tr>
+            <td>${esc(s.source_name)}</td>
+            <td>${s.state === 'healthy'
+              ? '<span class="badge b-ok">healthy</span>'
+              : `<span class="badge b-bad">${esc(String(s.state).replace(/_/g, ' '))}</span>`}</td>
+            <td>${s.last_synced_at ? esc(fmtDT(s.last_synced_at)) : '<span class="hint">never</span>'}</td>
+            <td class="num">${s.rows_seen ?? '—'}</td>
+            <td class="num">${s.rows_created ?? '—'}</td>
+            <td class="num">${s.rows_duplicate ?? '—'}</td>
+            <td class="num">${s.rows_quarantined ?? '—'}</td>
+          </tr>`).join('')}
+        </tbody></table>
+      </details>
+    </div>`);
+  outlet.appendChild(panel);
+
+  panel.querySelector('#sync-now')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = 'Importing…';
+    try {
+      const r = await post('/dashboards/intake/sync-now', {});
+      const made = (r.summaries ?? []).reduce((a, s) => a + Number(s.created ?? 0), 0);
+      toast(made > 0
+        ? `${made} new lead${made === 1 ? '' : 's'} imported.`
+        : 'The sheet was read, but there was nothing new in it.');
+      render(outlet, me);
+    } catch (err) {
+      toast(err.message, 'err');
+      e.target.disabled = false;
+      e.target.textContent = 'Import the sheet now';
+    }
+  });
 }

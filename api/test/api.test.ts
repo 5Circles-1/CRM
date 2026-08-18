@@ -2814,6 +2814,53 @@ describe('lead flow explains itself', () => {
   });
 });
 
+describe('lead intake health', () => {
+  it('reports every source, its state and the last run, to whoever runs the floor', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/intake', headers: auth(cs) });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+
+    assert.ok(Array.isArray(body.sources) && body.sources.length >= 1);
+    assert.ok(body.sources.every((s: { state: string }) => typeof s.state === 'string'),
+      'every source carries a state the screen can colour');
+    assert.equal(typeof body.leads_today, 'number');
+    assert.equal(typeof body.jobs_never_ran, 'boolean',
+      'the floor can tell whether the background engine has ever run');
+
+    // The CSV imports earlier in this suite went through a real source, so at
+    // least one has genuinely synced and must not be reported as broken.
+    const synced = body.sources.filter((s: { last_synced_at: string | null }) => s.last_synced_at);
+    assert.ok(synced.length >= 1, 'the sources imported in this suite show a sync time');
+  });
+
+  it('refuses a sync from someone who does not run the floor, and says so plainly when the importer is absent', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const denied = await h.app.inject({
+      method: 'POST', url: '/dashboards/intake/sync-now', headers: auth(a1), payload: {},
+    });
+    assert.equal(denied.statusCode, 403);
+
+    // The test server has no Google credentials, so the importer is not
+    // attached - the admin must be told that, not shown a false success.
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST', url: '/dashboards/intake/sync-now', headers: auth(admin), payload: {},
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().message, /not configured on this server/);
+  });
+
+  it('offers the four new advisory products for sale', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/advisory/products', headers: auth(cs) });
+    const names = res.json().map((p: { name: string }) => p.name);
+    for (const wanted of ['Swing Advisory', 'Trader Advisory', 'Pro Advisory', 'Grow+']) {
+      assert.ok(names.includes(wanted), `${wanted} is sellable`);
+    }
+  });
+});
+
 describe('clients added by hand', () => {
   it('a counsellor can enter an offline client, and they appear in both books', async () => {
     const cs = await login(h.app, EMAILS.counsellorA);

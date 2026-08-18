@@ -8,6 +8,30 @@ summary: Everything added or changed in the last release, why, and what it means
 Read this once. Each entry says what changed, why, and what you should do
 differently — if anything.
 
+## The CRM now tells you when leads stop arriving
+
+**What changed.** The Floor tab has a **lead intake** check at the very top.
+While everything is flowing it is one quiet line. The moment a source stops
+importing — sheet disconnected, credentials missing, tab renamed, every row
+rejected — it turns into a red panel naming the source, the reason and the
+fix, with an **Import the sheet now** button for admins and ops. Admins also
+get a notification within the hour when nothing has arrived while the floor
+is open.
+
+**Why.** Leads sat in the Meta sheet for two days and never reached the CRM,
+and every screen just looked quiet. "No fresh leads" and "the importer has
+stopped" must never look the same again.
+
+**What it means for you.** If Fresh leads is empty, look at the top of
+**Floor**. It will either say intake is healthy — in which case the sheet
+genuinely has nothing new — or tell you exactly what broke.
+
+## Four new products
+
+**What changed.** Swing Advisory, Trader Advisory, Pro Advisory and Grow+ are
+sellable everywhere a product is chosen. They are priced per deal, so the
+amount the counsellor enters is the amount that counts.
+
 ## Total and down payment, so part payments get chased
 
 **What changed.** Adding a client by hand now asks for two numbers — the

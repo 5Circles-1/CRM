@@ -15,6 +15,12 @@ declare module 'fastify' {
   }
   interface FastifyInstance {
     db: Database;
+    /**
+     * Pull every configured sheet right now. Set by the entry point only when
+     * the importer is actually configured, so a route can tell "it ran" from
+     * "this server has no importer" rather than reporting a false success.
+     */
+    syncSheetsNow?: () => Promise<unknown[]>;
   }
 }
 

@@ -1841,6 +1841,81 @@ end $$;
 reset role;
 
 -- =============================================================================
+-- INT: lead intake must be visible and must alarm. Two days of Meta leads
+-- were lost because "no leads today" and "the importer has stopped" looked
+-- identical from every screen.
+-- =============================================================================
+
+select crm_test.check(
+  'INT', 'every lead source reports an intake state, including never-synced ones',
+  (select count(*) = (select count(*) from crm.lead_sources)
+     from crm.v_intake_health where state is not null), null);
+
+select crm_test.check(
+  'INT', 'a configured source that has never synced is called out, not shown as healthy',
+  (select bool_and(state <> 'healthy') from crm.v_intake_health
+    where sheet_configured and last_synced_at is null),
+  (select string_agg(source_name || '=' || state, ', ') from crm.v_intake_health));
+
+-- The watchdog: no leads for hours while the floor is open must reach an
+-- admin. The alarm is time-gated, so this only asserts during shift hours.
+do $$
+declare
+  v_sent int;
+  v_admin uuid := '22222222-0000-0000-0000-00000000000a';
+begin
+  if not crm.is_shift_time(now()) then
+    perform crm_test.check('INT', 'the intake watchdog stays silent outside shift hours',
+                           crm.check_lead_intake() = 0, null);
+    return;
+  end if;
+
+  -- Nothing has been created for a very long time as far as the alarm is
+  -- concerned: drop the threshold to zero minutes so the condition is met.
+  update crm.settings set value = '0'::jsonb where key = 'intake.silence_alert_minutes';
+  delete from crm.notifications where kind = 'intake_stalled';
+
+  v_sent := crm.check_lead_intake();
+  perform crm_test.check('INT', 'a stalled lead feed raises an admin notification',
+                         v_sent > 0, 'notifications sent: ' || v_sent);
+  perform crm_test.check('INT', 'and the admin is one of the people told',
+                         exists (select 1 from crm.notifications
+                                  where kind = 'intake_stalled' and user_id = v_admin), null);
+
+  -- ...but it must not spam: a second run inside the hour stays quiet.
+  perform crm_test.check('INT', 'the alarm nags hourly, never every tick',
+                         crm.check_lead_intake() = 0, null);
+
+  update crm.settings set value = '120'::jsonb where key = 'intake.silence_alert_minutes';
+end $$;
+
+-- The heartbeat: "when did the engine last run" must have an answer.
+select crm.record_job_run('test_job', 12, null);
+select crm_test.check(
+  'INT', 'a job run leaves a heartbeat the floor can read',
+  (select last_ok_at is not null and run_count = 1 and last_error is null
+     from crm.job_runs where name = 'test_job'), null);
+
+select crm.record_job_run('test_job', 9, 'boom');
+select crm_test.check(
+  'INT', 'and a failure is recorded without erasing the last success',
+  (select last_error = 'boom' and last_ok_at is not null
+      and run_count = 2 and fail_count = 1
+     from crm.job_runs where name = 'test_job'), null);
+
+select crm_test.check(
+  'INT', 'the floor summary knows whether the engine has ever run',
+  (select not jobs_never_ran from crm.v_intake_summary), null);
+
+-- The four products the floor asked for exist and are sellable.
+select crm_test.check(
+  'INT', 'the new advisory products are on the list',
+  (select count(*) = 4 from crm.products
+    where name in ('Swing Advisory', 'Trader Advisory', 'Pro Advisory', 'Grow+')
+      and is_active),
+  (select string_agg(name, ', ') from crm.products where is_active));
+
+-- =============================================================================
 -- HRS: hours are earned on the day they belong to. A forgotten End shift
 -- inflated "time logged" across absent days and blocked the next Start shift,
 -- which is exactly how 6/10 attendance came with a 15-hour daily average.

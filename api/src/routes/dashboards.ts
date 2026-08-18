@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { logLeadAccess } from '../http/context.ts';
+import { badRequest } from '../http/errors.ts';
 
 /**
  * Requirement 2: dashboards for caller and counsellor performance.
@@ -215,6 +216,39 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       const waiting = await q.many(`select * from crm.v_lead_flow_waiting`);
       return { callers, waiting, ...(pending ?? {}) };
     });
+  });
+
+  /**
+   * Is the lead pipe alive? Per source: connected, last sync, what the last
+   * run created or rejected, and the last error - plus whether the background
+   * engine is running at all.
+   *
+   * This exists because "leads are in the sheet but not in the CRM" was a
+   * question only readable from server logs, and so went unanswered for two
+   * days. It carries plumbing status, never lead data.
+   */
+  app.get('/dashboards/intake', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    return req.tx(async (q) => {
+      const summary = await q.one(`select * from crm.v_intake_summary`);
+      const sources = await q.many(
+        `select * from crm.v_intake_health
+          order by (state <> 'healthy') desc, is_active desc, source_name`,
+      );
+      return { ...(summary ?? {}), sources };
+    });
+  });
+
+  /** Pull the sheet right now, rather than waiting for the next tick. */
+  app.post('/dashboards/intake/sync-now', async (req) => {
+    req.requireRole('admin', 'ops');
+    const summaries = await app.syncSheetsNow?.();
+    if (!summaries) {
+      throw badRequest(
+        'the sheet importer is not configured on this server - it needs SERVICE_USER_ID and Google credentials in the API environment',
+      );
+    }
+    return { ran: summaries.length, summaries };
   });
 
   /** Run the held-lead sweep now, rather than waiting for the next minute. */

@@ -112,6 +112,14 @@ export const JOBS: Job[] = [
     everyMs: 6 * 60 * 60_000,
     sql: 'select crm.purge_expired_sessions()',
   },
+  {
+    name: 'check_lead_intake',
+    // The floor lost two days of Meta leads to a silent importer. This is the
+    // watchdog: while the floor is open, no leads arriving or a source that
+    // cannot import raises an admin notification within the hour.
+    everyMs: 10 * 60_000,
+    sql: 'select crm.check_lead_intake()',
+  },
 ];
 
 /**
@@ -165,9 +173,31 @@ export class Scheduler {
       const result = await this.db.withUser(this.serviceUserId, (q) => q.query(job.sql));
       const value = result.rows[0] ? Object.values(result.rows[0])[0] : null;
       this.log.debug({ job: job.name, ms: Date.now() - started, result: value }, 'job finished');
+      await this.heartbeat(job.name, Date.now() - started, null);
     } catch (err) {
       // A failing job must not take the API down with it.
       this.log.error({ err, job: job.name }, 'job failed');
+      await this.heartbeat(job.name, Date.now() - started,
+        err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Leave a mark, every run, success or failure.
+   *
+   * Without this the only evidence a job existed was a log line nobody reads,
+   * so "has the importer run today?" could not be answered from inside the
+   * product - which is how a stopped lead feed went unnoticed for two days.
+   * A failed heartbeat is logged and swallowed: recording the run must never
+   * be the thing that breaks the run.
+   */
+  private async heartbeat(name: string, ms: number, error: string | null): Promise<void> {
+    try {
+      await this.db.withUser(this.serviceUserId, (q) =>
+        q.query('select crm.record_job_run($1, $2, $3)', [name, ms, error]),
+      );
+    } catch (err) {
+      this.log.warn({ err, job: name }, 'could not record job heartbeat');
     }
   }
 
