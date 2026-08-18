@@ -26,6 +26,12 @@ stopped" must never look the same again.
 **Floor**. It will either say intake is healthy — in which case the sheet
 genuinely has nothing new — or tell you exactly what broke.
 
+The commonest break has its own message: **the sheet is not shared with the
+CRM**. Google refuses to open the spreadsheet, every run reads zero rows, and
+nothing is lost — the leads sit in the sheet until somebody shares it. The
+panel prints the exact address to add as a Viewer, with a Copy button. Once
+shared, the next import pulls the entire backlog in one go.
+
 ## Four new products
 
 **What changed.** Swing Advisory, Trader Advisory, Pro Advisory and Grow+ are

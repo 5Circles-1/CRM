@@ -534,6 +534,7 @@ function labelLeak(t) {
  * page, naming the fix.
  */
 const INTAKE_WHY = {
+  not_shared: ['The sheet is not shared with the CRM', 'Google is refusing to open the spreadsheet, so every run reads zero rows — nothing is lost, the leads are still sitting in the sheet. Open the sheet → Share → add the CRM\'s service account address below as a Viewer. The next import pulls the whole backlog.'],
   not_connected: ['No sheet connected', 'This source has no Google Sheet configured. Add the spreadsheet in Admin → Lead sources, or import a CSV there.'],
   never_run: ['Never imported', 'The sheet is configured but has never synced. The importer needs SERVICE_USER_ID and Google credentials in the API environment.'],
   failing: ['Import failing', 'The last run returned an error — the message is below. A renamed tab or revoked sheet access are the usual causes.'],
@@ -593,6 +594,12 @@ function renderIntake(outlet, intake, me) {
               created ${Number(s.rows_created)}, matched ${Number(s.rows_duplicate)} existing,
               quarantined ${Number(s.rows_quarantined)}` : ''}
           </div>
+          ${s.state === 'not_shared' && intake.service_account_email ? `
+            <div style="margin-top:6px">
+              <b>Share the sheet with:</b>
+              <code class="mono" data-testid="sa-email">${esc(intake.service_account_email)}</code>
+              <button class="btn small" data-copy="${esc(intake.service_account_email)}">Copy</button>
+            </div>` : ''}
           ${s.error_text ? `<div class="hint mono" style="color:var(--bad)">${esc(s.error_text)}</div>` : ''}
         </div>`;
       }).join('')}
@@ -626,6 +633,12 @@ function renderIntake(outlet, intake, me) {
       </details>
     </div>`);
   outlet.appendChild(panel);
+
+  panel.querySelectorAll('[data-copy]').forEach((b) =>
+    b.addEventListener('click', () => {
+      navigator.clipboard?.writeText(b.dataset.copy);
+      toast('Address copied — paste it into the sheet’s Share box as a Viewer.');
+    }));
 
   panel.querySelector('#sync-now')?.addEventListener('click', async (e) => {
     e.target.disabled = true;

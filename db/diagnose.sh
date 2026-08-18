@@ -23,7 +23,11 @@
 set -u
 DB="${CRM_DB:-crm}"
 
-psql_q() { sudo -u postgres psql -d "$DB" -X -q "$@" 2>&1; }
+# No pagers anywhere. psql pipes into `less` by default, which swallowed the
+# whole report in a screen nobody could scroll - the output has to land in the
+# terminal scrollback so it can be read and pasted.
+export PAGER=cat SYSTEMD_PAGER=cat
+psql_q() { sudo -u postgres psql -d "$DB" -X -q -P pager=off "$@" 2>&1; }
 rule()   { printf '\n=== %s ===\n' "$1"; }
 
 echo "5 Circles CRM - lead intake diagnosis"
@@ -52,11 +56,30 @@ echo "(no lines above means the importer never logged anything at all)"
 rule "4. LAST IMPORT RUNS"
 psql_q -c "select r.started_at at time zone 'Asia/Kolkata' as ist_time,
                   s.name as source, r.rows_seen, r.rows_created,
-                  r.rows_duplicate as matched_existing, r.rows_quarantined as rejected,
-                  coalesce(left(r.error_text, 90), '-') as error
+                  r.rows_duplicate as matched, r.rows_quarantined as rejected,
+                  coalesce(left(r.error_text, 40), '-') as error
              from crm.ingestion_runs r
              join crm.lead_sources s on s.id = r.source_id
             order by r.started_at desc limit 10;"
+
+rule "4b. THE FULL ERROR TEXT (truncated above)"
+psql_q -c "select count(*) as runs, min(started_at)::date as since, error_text
+             from crm.ingestion_runs
+            where error_text is not null and started_at > now() - interval '7 days'
+            group by error_text order by 1 desc limit 5;"
+
+# The single most common cause of a permission error, and the one thing needed
+# to fix it. The address is an identifier, not a secret - the private key in
+# the same file is never touched.
+rule "4c. THE CRM'S GOOGLE ADDRESS (share the sheet with this)"
+SA_FILE="${GOOGLE_APPLICATION_CREDENTIALS:-/opt/crm/api/google-sa.json}"
+if [ -r "$SA_FILE" ]; then
+  grep -o '"client_email"[^,]*' "$SA_FILE" | head -1
+else
+  grep -o '"client_email":"[^"]*"' /opt/crm/api/.env 2>/dev/null | head -1 \
+    || echo "  could not read a credentials file at $SA_FILE"
+fi
+echo "  -> open the Google Sheet, press Share, add that address as a Viewer"
 
 rule "5. WHY ROWS WERE REJECTED (last 4 days)"
 psql_q -c "select coalesce(reject_reason, '(accepted)') as reason, count(*)

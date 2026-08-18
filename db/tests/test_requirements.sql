@@ -1889,6 +1889,32 @@ begin
   update crm.settings set value = '120'::jsonb where key = 'intake.silence_alert_minutes';
 end $$;
 
+-- The outage that cost two days: the importer runs, Google refuses to open
+-- the sheet, every run reads zero rows. That must not read as a generic
+-- failure - the fix is a Share click, nowhere near the CRM.
+do $$
+declare
+  v_src uuid := '33333333-0000-0000-0000-000000000001';
+begin
+  update crm.lead_sources set spreadsheet_id = '1TestSheet', worksheet_name = 'Sheet1'
+   where id = v_src;
+  insert into crm.ingestion_runs (source_id, started_at, finished_at, rows_seen,
+                                  rows_created, rows_duplicate, rows_quarantined, error_text)
+  values (v_src, now(), now(), 0, 0, 0, 0, 'The caller does not have permission');
+end $$;
+
+select crm_test.check(
+  'INT', 'a sheet the service account cannot open is named "not_shared", not a vague failure',
+  (select state = 'not_shared' from crm.v_intake_health
+    where source_id = '33333333-0000-0000-0000-000000000001'),
+  (select state from crm.v_intake_health
+    where source_id = '33333333-0000-0000-0000-000000000001'));
+
+select crm_test.check(
+  'INT', 'and zero rows seen proves nothing was lost - the leads are still in the sheet',
+  (select rows_seen = 0 and rows_created = 0 from crm.v_intake_health
+    where source_id = '33333333-0000-0000-0000-000000000001'), null);
+
 -- The heartbeat: "when did the engine last run" must have an answer.
 select crm.record_job_run('test_job', 12, null);
 select crm_test.check(

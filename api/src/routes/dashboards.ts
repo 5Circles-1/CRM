@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { logLeadAccess } from '../http/context.ts';
 import { badRequest } from '../http/errors.ts';
+import { serviceAccountEmail } from '../ingest/service-account.ts';
 
 /**
  * Requirement 2: dashboards for caller and counsellor performance.
@@ -235,7 +236,9 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         `select * from crm.v_intake_health
           order by (state <> 'healthy') desc, is_active desc, source_name`,
       );
-      return { ...(summary ?? {}), sources };
+      // So the screen can print the exact address a sheet must be shared with
+      // instead of sending somebody to read a credentials file over SSH.
+      return { ...(summary ?? {}), sources, service_account_email: serviceAccountEmail() };
     });
   });
 
