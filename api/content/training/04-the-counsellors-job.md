@@ -67,11 +67,19 @@ is entered the same way — a new deal joins the same person; only the same
 product twice is refused. Typos are fixed with **Edit** on the row, and every
 correction is written into the client's history with old and new values.
 
-## The ten-minute rule, read as a signal
+## Untouched leads, read as a signal
 
-When the sweep reassigns a caller's untouched leads repeatedly, that is not a
-system problem, it is a coaching signal. Look at **Floor → Lead flow**: it
-shows exactly who is being passed over and why.
+Leads are never swept between callers any more — an untouched lead stays with
+its caller and shows as waiting on **Fresh leads** and **Floor → Lead flow**.
+A caller whose untouched count keeps growing is not a system problem, it is a
+coaching signal, and moving the lead is now your call: **Transfer** it by hand
+if it genuinely needs another voice.
+
+Leads your callers could not reach twice arrive on your own pipeline to tap —
+at most {{setting:escalation.counsellor_daily_cap}} a day, so the hand-ups are
+a workable list rather than a flood. Past the cap they stay with the caller,
+badged **📵 Not answered ×2**, and the "Not answered — reassign?" queue on the
+Floor still lists the worst of them for a manual decision.
 
 ## Watching your callers, honestly
 

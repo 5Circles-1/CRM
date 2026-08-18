@@ -352,9 +352,23 @@ exception when check_violation then
   perform crm_test.check('R8', 'transfers are capped at 2 per lead', true, null);
 end $$;
 
--- The automatic side of requirement 8: a lead nobody has touched moves on its
--- own. This is not the supervisory rule relaxed - it only ever fires on leads
--- with no contact at all, where nobody is choosing to keep them.
+-- The automatic sweep SHIPS DISABLED (0049): the floor's rule is that a lead
+-- stays with its caller until a counsellor moves it by hand. First prove the
+-- default, then switch the engine on for these tests so its logic stays
+-- covered for the day the rule is ever reversed.
+select crm_test.check(
+  'R8', 'the untouched-lead sweep is off by default - leads stay with their caller',
+  (select value = '0'::jsonb from crm.settings
+    where key = 'sla.untouched_reassign_minutes'), null);
+
+select crm_test.check(
+  'R8', 'cross-team moves are off by default - leads stay with their team',
+  (select value = '0'::jsonb from crm.settings
+    where key = 'escalation.cross_team_days'), null);
+
+update crm.settings set value = '10'::jsonb
+ where key = 'sla.untouched_reassign_minutes';
+
 insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
                        next_action_at, assigned_at)
 -- Backdated three days, not eleven minutes: the sweep clock now counts only
@@ -405,6 +419,10 @@ values (:SRC, 'Being Worked', '+919555000002', :A1, crm.team_of(:A1, current_dat
 select crm_test.check(
   'R8', 'a lead already being worked is never swept away',
   (select caller_id = :A1 from crm.leads where full_name = 'Being Worked'), null);
+
+-- Back to the shipped state: the sweep stays off.
+update crm.settings set value = '0'::jsonb
+ where key = 'sla.untouched_reassign_minutes';
 
 -- R9: the alert list is filtered by RLS, not by a WHERE clause in the API.
 select crm_test.check(
@@ -929,8 +947,74 @@ select crm_test.check(
   (select status = 'working' and pool is null and next_action_at > now()
      from crm.leads where full_name = 'Escalate Me'), null);
 
+-- The counsellor hand-up is bounded: at most escalation.counsellor_daily_cap
+-- leads may escalate to one counsellor per day. Past the cap the lead STAYS
+-- with its caller - clearly identifiable, offered again on the next failed
+-- attempt - so the counsellor gets a workable list, never a flood.
+select crm_test.check(
+  'R10', 'the counsellor hand-up ships with a daily cap of 15',
+  (select value = '15'::jsonb from crm.settings
+    where key = 'escalation.counsellor_daily_cap'), null);
+
+-- Shrink the cap to what this counsellor has already received today, so the
+-- next escalation attempt finds no room.
+update crm.settings s
+   set value = to_jsonb(coalesce((
+         select count(*) from crm.lead_events e
+          where e.event_type = 'escalated_to_counsellor'
+            and e.occurred_at >= (crm.ist_date(now()))::timestamp at time zone 'Asia/Kolkata'
+            and (e.payload->>'counsellor_id')::uuid = :CNS_A::uuid), 0))
+ where s.key = 'escalation.counsellor_daily_cap';
+
+do $$
+declare
+  v_lead uuid;
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, assigned_at)
+  values (v_src, 'Capped Lead', '+919555100091', v_a1,
+          crm.team_of(v_a1, current_date), 'working', now(), now())
+  returning id into v_lead;
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, v_a1, 'not_answered', 0);
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, v_a1, 'not_answered', 0);
+end $$;
+
+select crm_test.check(
+  'R10', 'past the daily cap the lead stays with its caller instead of escalating',
+  (select escalation_stage = 'caller' and caller_id = :A1
+     from crm.leads where full_name = 'Capped Lead'), null);
+
+select crm_test.check(
+  'R10', 'the capped lead is identifiable: not answered twice in a row',
+  (select na_streak = 2 from crm.leads where full_name = 'Capped Lead'), null);
+
+-- Room returns; the next failed attempt hands the same lead up.
+update crm.settings set value = '15'::jsonb
+ where key = 'escalation.counsellor_daily_cap';
+
+do $$
+declare v_lead uuid; v_a1 uuid := '22222222-0000-0000-0000-000000000001';
+begin
+  select id into v_lead from crm.leads where full_name = 'Capped Lead';
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, v_a1, 'not_answered', 0);
+end $$;
+
+select crm_test.check(
+  'R10', 'once the counsellor has room again the next failed attempt escalates',
+  (select escalation_stage = 'counsellor' and counsellor_id = :CNS_A
+     from crm.leads where full_name = 'Capped Lead'), null);
+
 -- Cross-team move: a lead nobody has worked for long enough goes to the other
 -- team as a fresh, unassigned lead, and notifies that team's counsellor.
+-- SHIPS DISABLED (0049) - switched on here so the engine stays covered.
+update crm.settings set value = '18'::jsonb
+ where key = 'escalation.cross_team_days';
+
 do $$
 declare
   v_lead uuid;
@@ -959,6 +1043,14 @@ select crm_test.check(
   (select count(*) >= 1 from crm.notifications n
      join crm.leads l on l.id = n.lead_id
     where l.full_name = 'Stale Lead' and n.kind = 'cross_team_in'), null);
+
+-- Back to the shipped state: leads do not change teams on their own.
+update crm.settings set value = '0'::jsonb
+ where key = 'escalation.cross_team_days';
+
+select crm_test.check(
+  'R10', 'with cross-team moves off, the mover is a no-op',
+  (select crm.escalate_stuck_leads() = 0), null);
 
 -- Per-lead reminder: muting silences the nag; a custom time raises exactly one.
 do $$
@@ -2230,10 +2322,19 @@ select crm_test.check(
 -- =============================================================================
 
 select crm_test.check(
-  'POP', 'only customer appointments are configured to interrupt',
-  (select value = '["callback_due","callback_soon"]'::jsonb
+  'POP', 'only times a person chose interrupt: the client''s callback and the owner''s own reminder',
+  (select value = '["callback_due","custom_reminder"]'::jsonb
      from crm.settings where key = 'alerts.popup_kinds'),
   (select value::text from crm.settings where key = 'alerts.popup_kinds'));
+
+select crm_test.check(
+  'POP', 'reminders pop once - the repeat nag is off by default',
+  (select value = '0'::jsonb from crm.settings where key = 'alerts.repeat_minutes'),
+  (select value::text from crm.settings where key = 'alerts.repeat_minutes'));
+
+select crm_test.check(
+  'POP', 'the reminder chime ships on, and is a setting ops can silence',
+  (select value = 'true'::jsonb from crm.settings where key = 'alerts.chime'), null);
 
 select crm_test.check(
   'POP', 'the noisy kinds no longer interrupt, but are still raised as alerts',

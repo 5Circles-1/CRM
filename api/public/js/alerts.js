@@ -20,11 +20,15 @@ import { esc, h } from './util.js';
  * Admin -> Settings without a deploy.
  */
 let pollMs = 20_000;
-let popupKinds = new Set(['callback_due', 'callback_soon', 'reassigned_in']);
-// How often an unresolved CRITICAL reminder pops again. A callback that fell
-// due at 11:00 and is still pending at 11:10 is not old news - it is more
-// urgent than it was, and one dismissed popup should not be the last of it.
-let repeatMs = 10 * 60_000;
+// Only appointments a person chose interrupt: the callback the client asked
+// for, and the reminder the lead's owner set for themselves. Everything else
+// waits quietly in the bell - the floor asked for the popups to stop.
+let popupKinds = new Set(['callback_due', 'custom_reminder']);
+// 0 = a reminder pops ONCE and then waits in the bell. The old ten-minute
+// re-pop trained everyone to dismiss without reading, which is how the popup
+// that actually mattered got clicked away.
+let repeatMs = 0;
+let chimeOn = true;
 
 async function loadAlertSettings() {
   try {
@@ -34,10 +38,46 @@ async function loadAlertSettings() {
     if (Array.isArray(cfg['alerts.popup_kinds'])) popupKinds = new Set(cfg['alerts.popup_kinds']);
     const rep = Number(cfg['alerts.repeat_minutes']);
     if (Number.isFinite(rep)) repeatMs = rep > 0 ? rep * 60_000 : 0;
+    if (cfg['alerts.chime'] !== undefined) chimeOn = cfg['alerts.chime'] === true;
   } catch {
     // Defaults above are deliberately sane, so a failed read leaves the bell
     // working rather than failing shut.
   }
+}
+
+/* ---- the bell sound -------------------------------------------------------
+ * One soft two-note chime when a reminder pops - the floor asked for a bell,
+ * not a siren. Browsers keep audio suspended until the person has interacted
+ * with the page, so the context is primed on the first click and a chime that
+ * cannot sound is skipped silently rather than erroring.
+ */
+let audioCtx = null;
+
+function primeAudio() {
+  if (!chimeOn || audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext ?? window.webkitAudioContext)();
+  } catch { audioCtx = null; }
+}
+document.addEventListener('pointerdown', primeAudio, { once: true });
+
+function chime() {
+  if (!chimeOn || !audioCtx || audioCtx.state !== 'running') return;
+  try {
+    const t0 = audioCtx.currentTime;
+    for (const [freq, at] of [[880, 0], [1174.7, 0.18]]) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0 + at);
+      gain.gain.exponentialRampToValueAtTime(0.12, t0 + at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.9);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t0 + at);
+      osc.stop(t0 + at + 1);
+    }
+  } catch { /* a failed chime is never worth an error */ }
 }
 
 /** Alert key -> when it last popped, so re-polling does not re-interrupt early. */
@@ -76,18 +116,47 @@ function lateLabel(a) {
  * The interrupting reminder. Anchored bottom-right rather than a modal: a modal
  * would steal the keyboard from someone typing call notes, which is exactly
  * when a callback alert is most likely to fire.
+ *
+ * At most two cards on screen at once. A wall of popups is exactly the
+ * disturbance the floor complained about, and past two the information is
+ * "several reminders are due", which one summary card says better. Every card
+ * dismisses itself - nothing squats on the screen; the bell keeps the list.
  */
-function popup(alert) {
+const MAX_POPUPS = 2;
+
+function popupHost() {
   let host = document.getElementById('alert-popups');
   if (!host) {
     host = h('<div id="alert-popups" class="alert-popups"></div>');
     document.body.appendChild(host);
   }
+  return host;
+}
+
+function popup(alert) {
+  const host = popupHost();
+
+  if (host.querySelectorAll('.alert-pop:not(.alert-pop-more)').length >= MAX_POPUPS) {
+    let more = host.querySelector('.alert-pop-more');
+    if (!more) {
+      more = h(`
+        <div class="alert-pop warning alert-pop-more">
+          <div class="alert-pop-head"><b>More reminders waiting</b>
+            <button class="alert-pop-x" aria-label="Dismiss">×</button></div>
+          <div class="alert-pop-body"><a href="#/reminders">Open the Alerts tab →</a></div>
+        </div>`);
+      more.querySelector('.alert-pop-x').addEventListener('click', () => more.remove());
+      more.querySelector('a').addEventListener('click', () => more.remove());
+      host.appendChild(more);
+      setTimeout(() => more.remove(), 30_000);
+    }
+    return;
+  }
 
   const card = h(`
     <div class="alert-pop ${esc(alert.severity)}">
       <div class="alert-pop-head">
-        <b>${esc(LABEL[alert.kind] ?? alert.title)}</b>
+        <b>🔔 ${esc(LABEL[alert.kind] ?? alert.title)}</b>
         <button class="alert-pop-x" aria-label="Dismiss">×</button>
       </div>
       <div class="alert-pop-body">
@@ -101,9 +170,9 @@ function popup(alert) {
   card.querySelector('a').addEventListener('click', () => card.remove());
   host.appendChild(card);
 
-  // Critical alerts stay until dismissed. A missed callback that quietly faded
-  // after eight seconds would be worse than not showing it at all.
-  if (alert.severity !== 'critical') setTimeout(() => card.remove(), 12_000);
+  // Self-dismissing, criticals included: the card is the nudge, the bell is
+  // the record. A popup that stays until dismissed becomes furniture.
+  setTimeout(() => card.remove(), alert.severity === 'critical' ? 45_000 : 12_000);
 }
 
 /**
@@ -202,13 +271,13 @@ async function poll(firstRun) {
     if (!openKeys.has(key)) announced.delete(key);
   }
 
+  let popped = 0;
   for (const a of latest.alerts) {
     const key = KEY(a);
     const lastPopped = announced.get(key);
-    // Critical alerts nag on a cadence until dealt with; everything else
-    // interrupts once. A reminder that can be dismissed for good is a
-    // reminder that gets dismissed reflexively - but only the critical kind
-    // earns the repeat, or the floor tunes all of it out.
+    // Each alert interrupts once. The repeat cadence is a setting and ships
+    // OFF (alerts.repeat_minutes = 0): a reminder that keeps reappearing gets
+    // dismissed reflexively, and then ignored when it matters.
     const due =
       lastPopped === undefined ||
       (a.severity === 'critical' && repeatMs > 0 && now - lastPopped >= repeatMs);
@@ -216,8 +285,13 @@ async function poll(firstRun) {
     announced.set(key, now);
     // On the first poll after a page load, fill the map without popping: a
     // caller who refreshes should not be buried under every alert at once.
-    if (!firstRun && popupKinds.has(a.kind)) popup(a);
+    if (!firstRun && popupKinds.has(a.kind)) {
+      popup(a);
+      popped += 1;
+    }
   }
+  // One chime per batch, however many cards it brought - a bell, not a siren.
+  if (popped > 0) chime();
 }
 
 export async function startAlerts() {

@@ -166,6 +166,36 @@ label.f > input:focus, label.f > select:focus, label.f > textarea:focus {
 }
 .section-h .count { color: var(--muted); font-weight: 500; }
 
+/* ---- the lead's own pipeline: the journey strip on the lead page ---- */
+.journey {
+  display: flex; align-items: flex-start;
+  margin-top: 14px; padding: 4px 0 2px; overflow-x: auto;
+}
+.j-step {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  flex: 1; min-width: 92px; position: relative; padding: 0 6px;
+}
+.j-dot {
+  width: 26px; height: 26px; border-radius: 999px; z-index: 1;
+  background: var(--panel); border: 2px solid var(--line); color: var(--muted);
+  font-size: 13px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.j-step.done .j-dot { background: var(--ok); border-color: var(--ok); color: #fff; }
+.j-step.now  .j-dot { background: var(--brand); border-color: var(--brand); color: #fff; box-shadow: 0 0 0 4px var(--info-bg); }
+.j-step.bad  .j-dot { background: var(--bad); border-color: var(--bad); color: #fff; }
+.j-step::before {
+  content: ""; position: absolute; top: 12px; left: -50%; width: 100%; height: 2px;
+  background: var(--line);
+}
+.j-step:first-child::before { display: none; }
+.j-step.done::before, .j-step.now::before { background: var(--ok); }
+.j-label { margin-top: 6px; font-size: 12.5px; font-weight: 700; }
+.j-sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; max-width: 130px; }
+
+/* Star rating, wherever a person's score is shown as a rating. */
+.stars { color: #eda100; letter-spacing: 2px; font-size: 15px; white-space: nowrap; }
+
 .banner {
   border-radius: var(--radius); padding: 14px 18px; margin-bottom: 18px;
   font-weight: 600; border: 1px solid transparent;

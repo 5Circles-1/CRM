@@ -1250,10 +1250,13 @@ describe('a tab name that only differs by invisible characters still resolves', 
   });
 });
 
-describe('an untouched lead moves to another caller', () => {
+describe('the untouched-lead sweeper (ships disabled, logic still covered)', () => {
   it('moves it after the deadline, and off the first caller entirely', async () => {
-    // Requirement 9 in practice: a lead sitting on someone who has not started
-    // it is a pipeline leak, and the counsellor is not watching a stopwatch.
+    // The sweep ships OFF (0049): leads stay with their caller. These tests
+    // switch it on so the engine stays correct for the day that is reversed,
+    // and the last test in the block returns it to the shipped state.
+    fixtureSql(`update crm.settings set value = '10'::jsonb
+                 where key = 'sla.untouched_reassign_minutes';`);
     const leadId = makeLeadFor(USERS.callerA1, 'Untouched');
     fixtureSql(`update crm.leads set assigned_at = now() - interval '3 days',
                        first_touched_at = null, attempt_count = 0, status = 'new'
@@ -1314,10 +1317,22 @@ describe('an untouched lead moves to another caller', () => {
                  where id = '${leadId}';`);
     const moved = fixtureSql(`select crm.reassign_untouched_leads();`).trim();
     assert.equal(moved, '0');
+    // Zero IS the shipped state now - leave it there.
     await h.app.inject({
       method: 'PUT', url: '/admin/settings/sla.untouched_reassign_minutes',
-      headers: auth(admin), payload: { value: 10 },
+      headers: auth(admin), payload: { value: 0 },
     });
+  });
+
+  it('ships disabled: leads stay with their caller by default', async () => {
+    const off = fixtureSql(
+      `select value::text from crm.settings where key = 'sla.untouched_reassign_minutes';`,
+    ).trim();
+    assert.equal(off, '0', 'the sweep must be off unless an admin turns it on');
+    const crossTeam = fixtureSql(
+      `select value::text from crm.settings where key = 'escalation.cross_team_days';`,
+    ).trim();
+    assert.equal(crossTeam, '0', 'cross-team moves must be off unless an admin turns them on');
   });
 });
 
@@ -1686,19 +1701,19 @@ describe('alerts are separable by kind', () => {
     assert.ok(kinds.includes('new_lead'), `expected new_lead, got ${kinds.join(',')}`);
   });
 
-  it('only customer appointments interrupt, but nothing is silenced from the bell', async () => {
-    // This rule changed deliberately. Eight kinds used to interrupt, which on
-    // a busy floor is a popup every few minutes and trains people to dismiss
-    // without reading - so a real callback gets clicked away. Now only the two
-    // appointment kinds pop. Everything else still reaches the bell and the
-    // Alerts tab in full, which is the distinction that matters: being nagged
-    // about a lead and losing a lead are different failures.
+  it('only times a person chose interrupt, but nothing is silenced from the bell', async () => {
+    // This rule tightened twice, both times on the floor's complaint. Eight
+    // kinds used to interrupt; then two; now exactly the two a HUMAN scheduled:
+    // the callback the client asked for, and the reminder the lead's owner set
+    // for themselves. Everything else still reaches the bell and the Alerts
+    // tab in full, which is the distinction that matters: being nagged about
+    // a lead and losing a lead are different failures.
     const a1 = await login(h.app, EMAILS.callerA1);
     const cfg = await h.app.inject({ method: 'GET', url: '/meta/ui-settings', headers: auth(a1) });
     const popups = cfg.json()['alerts.popup_kinds'];
 
-    assert.deepEqual([...popups].sort(), ['callback_due', 'callback_soon']);
-    for (const k of ['follow_up_due', 'action_overdue', 'new_lead', 'retap_due']) {
+    assert.deepEqual([...popups].sort(), ['callback_due', 'custom_reminder']);
+    for (const k of ['follow_up_due', 'action_overdue', 'new_lead', 'retap_due', 'callback_soon']) {
       assert.ok(!popups.includes(k), `${k} must not interrupt`);
     }
 
@@ -1900,7 +1915,9 @@ describe('overall standings', () => {
     const a1 = await login(h.app, EMAILS.callerA1);
     const res = await h.app.inject({ method: 'GET', url: '/meta/ui-settings', headers: auth(a1) });
     const cfg = res.json();
-    assert.ok(Number(cfg['alerts.repeat_minutes']) > 0, 'critical reminders repeat by default');
+    assert.equal(Number(cfg['alerts.repeat_minutes']), 0,
+      'reminders pop once - the repeat nag ships off');
+    assert.equal(cfg['alerts.chime'], true, 'the single soft chime ships on');
     assert.ok(Number(cfg['ui.refresh_seconds']) >= 5, 'live screens know their cadence');
   });
 });
@@ -2033,6 +2050,62 @@ describe('escalation ladder and pools (API)', () => {
     assert.equal(r.statusCode, 200);
     assert.equal(r.json().status, 'working');
     assert.equal(r.json().pool, null);
+  });
+
+  it('keeps the lead with its caller once the counsellor daily cap is reached', async () => {
+    // The cap turns "give the counsellors the unreachable leads" into a
+    // workable number (15/day shipped). Shrink it to what counsellor A has
+    // already received today, so the next hand-up finds no room.
+    fixtureSql(`update crm.settings s
+                   set value = to_jsonb(coalesce((
+                         select count(*) from crm.lead_events e
+                          where e.event_type = 'escalated_to_counsellor'
+                            and e.occurred_at >= (crm.ist_date(now()))::timestamp at time zone 'Asia/Kolkata'
+                            and (e.payload->>'counsellor_id')::uuid = '${USERS.counsellorA}'), 0))
+                 where s.key = 'escalation.counsellor_daily_cap';`);
+
+    const leadId = makeLeadFor(USERS.callerA1, 'API Capped');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    for (let i = 0; i < 2; i += 1) {
+      await h.app.inject({
+        method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+        payload: { disposition: 'not_answered', durationSeconds: 0 },
+      });
+    }
+
+    const stage = fixtureSql(
+      `select escalation_stage || ' ' || na_streak from crm.leads where id='${leadId}';`,
+    ).trim();
+    assert.equal(stage, 'caller 2',
+      'past the cap the lead stays with its caller, identifiable by its streak');
+
+    const mine = await h.app.inject({ method: 'GET', url: '/me/pipeline', headers: auth(a1) });
+    assert.ok(mine.json().leads.some((l: { lead_id: string }) => l.lead_id === leadId),
+      'and it is still on the caller pipeline, not lost');
+
+    // Restore the shipped cap; the next failed attempt hands the lead up.
+    fixtureSql(`update crm.settings set value='15'::jsonb
+                 where key='escalation.counsellor_daily_cap';`);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'not_answered', durationSeconds: 0 },
+    });
+    const after = fixtureSql(
+      `select escalation_stage from crm.leads where id='${leadId}';`,
+    ).trim();
+    assert.equal(after, 'counsellor', 'with room again, the next failed attempt escalates');
+  });
+
+  it('lists not-answered-twice leads through the na filter, badge-ready', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'API NA Twice');
+    fixtureSql(`update crm.leads set na_streak = 2, attempt_count = 2,
+                 first_touched_at = now() where id='${leadId}';`);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/leads?na=2plus', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    const mine = res.json().leads.find((l: { id: string }) => l.id === leadId);
+    assert.ok(mine, 'the twice-unanswered lead is one filter away');
+    assert.ok(Number(mine.na_streak) >= 2, 'and carries the streak the badge shows');
   });
 });
 
@@ -3251,7 +3324,7 @@ describe('training academy', () => {
 
   it('substitutes the live configuration, so training cannot quote a stale rule', async () => {
     fixtureSql(`update crm.settings set value = '7'::jsonb
-                 where key = 'sla.untouched_reassign_minutes';`);
+                 where key = 'sla.immediate_first_touch_minutes';`);
     const a1 = await login(h.app, EMAILS.callerA1);
     const res = await h.app.inject({
       method: 'GET', url: '/training/how-leads-are-distributed', headers: auth(a1),
@@ -3261,12 +3334,13 @@ describe('training academy', () => {
     assert.ok(!body.includes('{{setting:'), 'no placeholder survives to the page');
     assert.match(body, /7\s+working minutes/, 'it quotes the value that is actually configured');
 
-    fixtureSql(`update crm.settings set value = '10'::jsonb
-                 where key = 'sla.untouched_reassign_minutes';`);
+    // Back to the configured 30-minute window, and the page follows along.
+    fixtureSql(`update crm.settings set value = '30'::jsonb
+                 where key = 'sla.immediate_first_touch_minutes';`);
     const after = await h.app.inject({
       method: 'GET', url: '/training/how-leads-are-distributed', headers: auth(a1),
     });
-    assert.match(after.json().body, /10\s+working minutes/, 'change the setting, the page follows');
+    assert.match(after.json().body, /30\s+working minutes/, 'change the setting, the page follows');
   });
 
   it('acknowledgement is signed against the exact text read', async () => {

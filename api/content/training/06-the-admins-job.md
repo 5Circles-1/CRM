@@ -42,7 +42,8 @@ target is an ops action, not a deployment.
 |---|---|---|
 | `dial.daily_target_per_caller` | {{setting:dial.daily_target_per_caller}} | The dial target on every caller's brief |
 | `sla.immediate_first_touch_minutes` | {{setting:sla.immediate_first_touch_minutes}} | How long an immediate lead may go untouched |
-| `sla.untouched_reassign_minutes` | {{setting:sla.untouched_reassign_minutes}} | The ten-minute rule |
+| `sla.untouched_reassign_minutes` | {{setting:sla.untouched_reassign_minutes}} | The retired sweep — 0 keeps leads with their caller |
+| `escalation.counsellor_daily_cap` | {{setting:escalation.counsellor_daily_cap}} | Most caller→counsellor hand-ups per counsellor per day |
 | `distribution.ace_share_pct` | {{setting:distribution.ace_share_pct}} | ACE's guaranteed share of fresh leads |
 | `distribution.max_catchup_leads` | {{setting:distribution.max_catchup_leads}} | Catch-up cap for someone returning |
 | `lead.max_transfers` | {{setting:lead.max_transfers}} | Transfers before a lead goes to nurture |

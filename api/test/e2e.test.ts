@@ -252,6 +252,42 @@ it('caller: the re-tap filters narrow the lead list', async () => {
   await signOut();
 });
 
+it('caller: a lead page shows its own pipeline, and Back restores the list as it was', async () => {
+  await signIn(EMAILS.callerA1);
+  await page.goto(`${base}/ui/#/leads`);
+  await page.waitForSelector('#presets', { timeout: 20000 });
+
+  // Work from a real search, the way the floor uses Find lead. Phone search
+  // matches the tail of the number, so ask the database for one A1 owns.
+  const tail = fixtureSql(`
+    select right(phone_e164, 6) from crm.leads
+     where caller_id = '${USERS.callerA1}'
+       and status not in ('won', 'lost', 'invalid')
+     order by created_at limit 1;`).trim();
+  await page.fill('[data-testid=lead-search]', tail);
+  await page.waitForSelector('#results a[href^="#/lead/"]', { timeout: 20000 });
+
+  await page.locator('#results a[href^="#/lead/"]').first().click();
+
+  // Every lead carries its own pipeline - the journey strip - from day one;
+  // the first call fills it in.
+  await page.waitForSelector('[data-testid=lead-journey]', { timeout: 20000 });
+  const journey = await page.locator('[data-testid=lead-journey]').innerText();
+  assert.match(journey, /1st call/i, 'the journey names its stages');
+  assert.match(journey, /Lead in/i, 'and starts where the lead started');
+  await page.screenshot({ path: path.join(SHOTS, '8-lead-journey.png'), fullPage: true });
+
+  // Back returns to the SAME list - search and results intact - never to the
+  // main page. This was the floor's complaint about Find lead.
+  await page.click('[data-testid=back-btn]');
+  await page.waitForSelector('#presets', { timeout: 20000 });
+  assert.equal(await page.inputValue('[data-testid=lead-search]'), tail,
+    'the search text must survive the round trip');
+  await page.waitForSelector('#results a[href^="#/lead/"]', { timeout: 20000 });
+
+  await signOut();
+});
+
 it('caller: reads a training module, answers the check, and acknowledges it', async () => {
   await signIn(EMAILS.callerA1);
   // A first-login tour may be showing; it must never block the app.

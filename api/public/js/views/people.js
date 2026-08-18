@@ -1,5 +1,5 @@
 import { get } from '../api.js';
-import { esc, fmtINR, fmtTalk, h } from '../util.js';
+import { esc, fmtINR, fmtTalk, h, starsHtml } from '../util.js';
 import { barChart, donutChart, lineChart, statTile } from '../charts.js';
 
 /**
@@ -50,12 +50,18 @@ export async function render(outlet, me) {
 
   const draw = async () => {
     outlet.innerHTML = '<div class="spin"></div>';
-    const [rows, daily, mine] = await Promise.all([
+    const [rows, daily, mine, overall] = await Promise.all([
       get(`/performance?days=${days}&sort=${sort}`),
       get(`/performance/daily?days=${days}`),
       get(`/outcomes?days=${days}&userId=${me.id}`),
+      get(`/performance/overall?days=${days}`).catch(() => []),
     ]);
     outlet.innerHTML = '';
+
+    // The rating the floor asked for: overall points (0-100) as stars.
+    const pointsFor = Object.fromEntries(
+      (Array.isArray(overall) ? overall : []).map((o) => [o.user_id, o.overall_points]),
+    );
 
     const team = rows.reduce((a, r) => {
       for (const k of ['dials', 'connects', 'interested', 'not_interested', 'walked_in', 'deals', 'talk_seconds']) {
@@ -152,7 +158,7 @@ export async function render(outlet, me) {
         ${rows.length === 0 ? '<div class="empty">No calls or deals in this window yet.</div>' : `
         <div style="overflow-x:auto">
         <table class="table"><thead><tr>
-          <th>Person</th><th>Role</th>
+          <th>Person</th><th>Rating</th><th>Role</th>
           ${COLUMNS.map((c) => `<th class="num">${esc(c.label)}</th>`).join('')}
           <th class="num">Talk time</th><th class="num">Connect %</th>
           <th class="num">Interest %</th><th class="num">Conversion %</th><th class="num">Revenue</th>
@@ -160,6 +166,10 @@ export async function render(outlet, me) {
         ${rows.map((r) => `
           <tr>
             <td><b>${esc(r.full_name)}</b></td>
+            <td>${starsHtml(pointsFor[r.user_id],
+                  pointsFor[r.user_id] !== undefined
+                    ? `${Number(pointsFor[r.user_id]).toFixed(0)} / 100 overall points in this window`
+                    : '') || '<span class="hint">—</span>'}</td>
             <td>${esc(r.role)}</td>
             ${COLUMNS.map((c) => `<td class="num">${Number(r[c.key] ?? 0)}</td>`).join('')}
             <td class="num">${esc(fmtTalk(r.talk_seconds))}</td>

@@ -26,25 +26,14 @@ export const JOBS: Job[] = [
     sql: 'select crm.assign_pending_leads(500)',
     shiftHoursOnly: true,
   },
-  {
-    name: 'reassign_untouched_leads',
-    // Every minute, because the whole point is a ten-minute promise. Checking
-    // every five would make the real deadline anywhere from 10 to 15 minutes.
-    everyMs: 60_000,
-    sql: 'select crm.reassign_untouched_leads(200)',
-    shiftHoursOnly: true,
-  },
+  // The untouched-lead sweeper and the cross-team mover are no longer
+  // scheduled: the floor's rule (0049) is that a lead stays with its caller
+  // until a counsellor transfers it by hand. The engine functions remain in
+  // the database, gated on their settings, in case that rule is ever reversed.
   {
     name: 'expire_missed_callbacks',
     everyMs: 5 * 60_000,
     sql: 'select crm.expire_missed_callbacks()',
-  },
-  {
-    name: 'escalate_stuck_leads',
-    // Hourly is plenty for a days-long deadline, and it keeps the cross-team
-    // moves batched rather than trickling one lead across all day.
-    everyMs: 60 * 60_000,
-    sql: 'select crm.escalate_stuck_leads(200)',
   },
   {
     name: 'detect_bulk_access',

@@ -66,6 +66,19 @@ Do not undo these without understanding why they exist.
   would own anything. Enforced inside `crm.transfer_lead`, not in the UI.
   Capped at `lead.max_transfers` (2), then the lead goes to nurture.
 
+- **Leads do not move between callers on their own** (0049, owner decision).
+  The untouched-lead sweeper and the cross-team mover ship disabled
+  (`sla.untouched_reassign_minutes` = 0, `escalation.cross_team_days` = 0) and
+  are no longer scheduled; the functions remain, gated on those settings. The
+  one automatic hand-up left is caller → counsellor after two no-connect
+  attempts, bounded by `escalation.counsellor_daily_cap` (15/day) — past the
+  cap the lead stays with its caller wearing a visible "Not answered ×N" badge.
+
+- **Popups interrupt only for appointments a person chose** — the callback a
+  client asked for and the reminder the lead's owner set (`alerts.popup_kinds`),
+  once each (`alerts.repeat_minutes` = 0), with one soft chime (`alerts.chime`).
+  Everything else waits in the bell and the Alerts tab. Nothing is dropped.
+
 - **Score components that had nothing to measure are excluded from both the
   points earned and the weight available**, and the total is rescaled over what
   applied. Awarding full marks for an empty component rewards idleness — before
