@@ -152,7 +152,9 @@ async function users(body, me) {
         ${me.role === 'admin' ? '<button class="btn primary" id="new-user">New user</button>' : ''}
       </div>
       <table class="table"><thead><tr>
-        <th>Name</th><th>Email</th><th>Role</th><th>Team</th><th>SIM</th><th>Status</th><th></th>
+        <th>Name</th><th>Email</th><th>Role</th><th>Team</th>
+        <th title="ACE holds the guaranteed share of fresh leads. Ranked daily from the leaderboard; a pin overrides it.">Tier</th>
+        <th>SIM</th><th>Status</th><th></th>
       </tr></thead><tbody>
       ${list.map((u) => `
         <tr>
@@ -163,15 +165,28 @@ async function users(body, me) {
           <td>${esc(u.team_name ?? '—')}
               ${u.is_active && u.role === 'caller' && !u.team_name
                 ? '<span class="badge b-bad" title="Distribution walks the teams, so a caller in no team never receives a lead">no team — gets no leads</span>' : ''}</td>
+          <td>${u.role !== 'caller' ? '<span class="hint">—</span>'
+            : u.tier === 'ace'
+              ? `<span class="badge b-warn" title="Gets the guaranteed share of fresh leads${u.tier_pinned ? ' (pinned)' : ' (ranked daily)'}">⭐ ACE</span>`
+            : u.tier === 'restricted'
+              ? '<span class="badge b-bad" title="Receives no fresh leads">restricted</span>'
+              : '<span class="badge b-mute">standard</span>'}
+            ${u.tier_pinned ? '<span class="hint" title="An admin pinned this; the daily ranking will not change it until the pin expires">📌</span>' : ''}</td>
           <td class="mono">${esc(u.dialing_msisdn ?? '—')}</td>
           <td>${u.is_active ? '<span class="badge b-ok">active</span>' : '<span class="badge b-mute">deactivated</span>'}</td>
           <td class="right">${me.role !== 'admin' ? '' : u.is_active
-            ? `<button class="btn small u-avatar" data-id="${esc(u.id)}">${u.avatar_url ? 'Change icon' : 'Set icon'}</button>
+            ? `${u.role === 'caller' ? `<button class="btn small u-tier" data-id="${esc(u.id)}">Tier</button>` : ''}
+               <button class="btn small u-avatar" data-id="${esc(u.id)}">${u.avatar_url ? 'Change icon' : 'Set icon'}</button>
                <button class="btn small u-pwd" data-id="${esc(u.id)}">Reset password</button>
                <button class="btn small danger u-deact" data-id="${esc(u.id)}">Deactivate</button>`
             : `<button class="btn small u-react" data-id="${esc(u.id)}">Reactivate</button>`}</td>
         </tr>`).join('')}
       </tbody></table>
+      <div class="hint" style="margin-top:8px">
+        ⭐ ACE is picked automatically every day: the team's best caller on the leaderboard over the
+        last week holds the guaranteed share of fresh leads (Admin → Settings → distribution.ace_share_pct).
+        Pin a tier only to override the ranking — pins need a reason and can expire.
+      </div>
     </div>`);
   body.appendChild(panel);
 
@@ -213,6 +228,69 @@ async function users(body, me) {
     }
 
     if (e.target.classList.contains('u-pwd')) passwordModal(id, () => users(body, me));
+    if (e.target.classList.contains('u-tier')) tierModal(list.find((u) => u.id === id), () => users(body, me));
+  });
+}
+
+/**
+ * The tier override. The daily ranking owns ACE by default; this is the human
+ * hand on the dial - pin somebody up or down with a reason (audited), or hand
+ * the seat back to the ranking.
+ */
+function tierModal(user, onDone) {
+  if (!user) return;
+  const bodyEl = h(`
+    <div>
+      <p class="hint mt0">Now: <b>${esc(user.tier ?? 'standard')}</b>${user.tier_pinned
+        ? ` — pinned${user.tier_pin_reason ? `: “${esc(user.tier_pin_reason)}”` : ''}`
+        : ' — set by the daily ranking'}</p>
+      <label class="f">What should decide their tier?
+        <select name="mode">
+          <option value="auto">The daily ranking (recommended)</option>
+          <option value="ace">Pin ⭐ ACE — guaranteed share of fresh leads</option>
+          <option value="standard">Pin STANDARD</option>
+          <option value="restricted">Pin RESTRICTED — no fresh leads</option>
+        </select>
+      </label>
+      <div id="pin-fields" style="display:none">
+        <label class="f">Reason <span class="hint">required — this is audited under your name</span>
+          <input name="reason" maxlength="300" placeholder="e.g. best converter this month">
+        </label>
+        <label class="f">Pin until <span class="hint">optional — after this it returns to the ranking</span>
+          <input name="expires" type="date">
+        </label>
+      </div>
+    </div>`);
+  const footer = h('<div><button class="btn primary" data-testid="tier-save">Save tier</button></div>');
+  const { close } = openModal(`Tier for ${user.full_name}`, bodyEl, footer);
+
+  const modeSel = bodyEl.querySelector('[name=mode]');
+  const pinFields = bodyEl.querySelector('#pin-fields');
+  modeSel.addEventListener('change', () => {
+    pinFields.style.display = modeSel.value === 'auto' ? 'none' : '';
+  });
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    const mode = modeSel.value;
+    try {
+      if (mode === 'auto') {
+        await put(`/admin/users/${user.id}/tier`, { mode: 'auto' });
+        toast('Back with the daily ranking.');
+      } else {
+        const reason = bodyEl.querySelector('[name=reason]').value.trim();
+        if (reason.length < 3) { toast('A pin needs a reason — it is audited.', 'err'); return; }
+        const expires = bodyEl.querySelector('[name=expires]').value;
+        await put(`/admin/users/${user.id}/tier`, {
+          mode: 'pin', tier: mode, reason,
+          expiresAt: expires ? new Date(`${expires}T23:59:59`).toISOString() : null,
+        });
+        toast(`Pinned ${mode.toUpperCase()}.`);
+      }
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   });
 }
 

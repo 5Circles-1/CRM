@@ -2203,6 +2203,62 @@ describe('lead location and the admin archive (API)', () => {
   });
 });
 
+describe('performance tiers: ranked daily, pinnable by the admin (API)', () => {
+  it('serves every caller\'s tier alongside the user list', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/admin/users', headers: auth(cs) });
+    assert.equal(res.statusCode, 200);
+    const callers = res.json().filter((u: { role: string }) => u.role === 'caller');
+    assert.ok(callers.length >= 4);
+    for (const c of callers) {
+      assert.ok(['ace', 'standard', 'restricted'].includes(c.tier),
+        `caller tier must be real, got ${c.tier}`);
+    }
+  });
+
+  it('lets the admin pin a tier with a reason, and hand it back to the ranking', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const denied = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerB2}/tier`, headers: auth(a1),
+      payload: { mode: 'pin', tier: 'ace', reason: 'myself, obviously' },
+    });
+    assert.equal(denied.statusCode, 403, 'a caller cannot set tiers');
+
+    const admin = await login(h.app, EMAILS.admin);
+    const pin = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerB2}/tier`, headers: auth(admin),
+      payload: { mode: 'pin', tier: 'restricted', reason: 'test: quality hold' },
+    });
+    assert.equal(pin.statusCode, 200);
+    assert.equal(pin.json().tier, 'restricted');
+
+    const listed = await h.app.inject({ method: 'GET', url: '/admin/users', headers: auth(admin) });
+    const b2 = listed.json().find((u: { id: string }) => u.id === USERS.callerB2);
+    assert.equal(b2.tier, 'restricted');
+    assert.equal(b2.tier_pinned, true, 'the pin shows as a pin');
+
+    // Back to the ranking: standard immediately, not restricted-for-15-more-minutes.
+    const auto = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerB2}/tier`, headers: auth(admin),
+      payload: { mode: 'auto' },
+    });
+    assert.equal(auto.statusCode, 200);
+    const after = await h.app.inject({ method: 'GET', url: '/admin/users', headers: auth(admin) });
+    const b2After = after.json().find((u: { id: string }) => u.id === USERS.callerB2);
+    assert.equal(b2After.tier, 'standard');
+    assert.equal(b2After.tier_pinned, false);
+  });
+
+  it('a pin without a reason is refused - tier changes are audited decisions', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerB2}/tier`, headers: auth(admin),
+      payload: { mode: 'pin', tier: 'ace', reason: '' },
+    });
+    assert.equal(res.statusCode, 400);
+  });
+});
+
 describe('team chat (API)', () => {
   it('lets an admin broadcast to the whole floor, and everyone reads it', async () => {
     const admin = await login(h.app, EMAILS.admin);
