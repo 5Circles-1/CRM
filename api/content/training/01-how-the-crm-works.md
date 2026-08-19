@@ -32,7 +32,7 @@ so an auto-logout never inflates or steals your hours.
 | **Ticker strip** | Collected, fresh leads, walk-ins, conversions and who is on the floor — today, with the change against yesterday. |
 | **Today banner** | Your own numbers: dials against target, untouched, overdue. Managers see the floor total. Dismiss it and it stays gone until tomorrow. |
 | **Shift timer** | Hours logged today out of 9. Press **Start shift** when you sit down. |
-| **🔔 Bell** | Everything waiting on you, as a quiet list: overdue follow-ups, callbacks due, new leads. Nothing pops up except a callback the client asked for or a reminder you set yourself — those ring once, with a soft chime, and wait here. |
+| **🔔 Bell** | Only what a person scheduled: a callback the client asked for, or a reminder you set yourself — each rings once with a soft chime and waits here. Zero is the healthy state. Your follow-up work lives in **My Pipeline**, never-called leads in **Fresh leads**; the Alerts tab can show the full work list behind one click. |
 | **◐** | Switches between light and dark. Remembered on this browser. |
 
 ## The tabs

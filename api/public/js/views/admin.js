@@ -21,15 +21,41 @@ export async function render(outlet, me) {
   outlet.appendChild(body);
 
   const draw = { settings, users, ingest, products, data, quarantine, alerts };
-  tabs.addEventListener('click', (e) => {
-    const tab = e.target?.dataset?.tab;
-    if (!tab) return;
+
+  /**
+   * One tab at a time, and the LAST click wins.
+   *
+   * Each tab renders into its own detached container and is swapped in only if
+   * it is still the tab the user asked for. Without that guard a slow render
+   * lands on top of a newer one: opening Admin and immediately pressing Data
+   * showed Data, then Settings wiped it when its fetch came back - which reads
+   * as "the button does not work".
+   */
+  let seq = 0;
+  const show = (tab) => {
+    const mine = (seq += 1);
     tabs.querySelectorAll('.btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
     body.innerHTML = '<div class="spin"></div>';
-    draw[tab](body, me);
+    const pane = document.createElement('div');
+    return Promise.resolve(draw[tab](pane, me))
+      .then(() => {
+        if (mine !== seq) return; // a newer tab won; throw this render away
+        body.replaceChildren(pane);
+      })
+      .catch((err) => {
+        if (mine !== seq) return;
+        body.replaceChildren(
+          h(`<div class="panel"><div class="empty">${esc(err.message)}</div></div>`),
+        );
+      });
+  };
+
+  tabs.addEventListener('click', (e) => {
+    const tab = e.target?.dataset?.tab;
+    if (tab) show(tab);
   });
 
-  await settings(body, me);
+  await show('settings');
 }
 
 /* ---------------- settings ---------------- */

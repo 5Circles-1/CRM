@@ -342,8 +342,9 @@ it('admin: the Data tab parks old leads behind a two-step button', async () => {
 
   await signIn(EMAILS.admin);
   await page.goto(`${base}/ui/#/admin`);
+  // Clicked immediately, on purpose: this is the race that used to lose the
+  // tab - Settings' fetch landing late and wiping whatever the user picked.
   await page.click('button[data-tab="data"]');
-
   await page.waitForSelector('[data-testid=archive-check]');
   await page.fill('[name=cutoff]', '2026-08-15');
   await page.click('[data-testid=archive-check]');

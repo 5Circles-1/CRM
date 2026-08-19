@@ -55,10 +55,14 @@ function minutesToTomorrowMorning() {
 export async function render(outlet, me) {
   let openGroup = null;
   let ownerFilter = '';
+  // 'bell' = what actually rings: the client's callback, your own reminder,
+  // a real emergency. 'work' = every open item the engines track, one
+  // deliberate click away - never the default, never the badge.
+  let scope = 'bell';
 
   const draw = async () => {
     outlet.innerHTML = '<div class="spin"></div>';
-    const data = await get('/me/alerts');
+    const data = await get(`/me/alerts${scope === 'work' ? '?scope=work' : ''}`);
     outlet.innerHTML = '';
 
     // This list is RLS-scoped, not personal: a counsellor sees their team's
@@ -90,8 +94,13 @@ export async function render(outlet, me) {
         <div class="row spread wrap">
           <div>
             <h2 class="mt0">Alerts <small>${data.count} open${data.critical ? ` · ${data.critical} critical` : ''}</small></h2>
-            <div class="hint">Everything waiting on you, grouped by what is wrong.
-              Tap a name to open the lead; reschedule only when you genuinely cannot get to it today.</div>
+            <div class="hint">${scope === 'bell'
+              ? 'Only what a person scheduled rings here — client callbacks, your own reminders, and real emergencies. Zero is the healthy state.'
+              : 'Every open item the system tracks, grouped by what is wrong. This list never rings — it is here to be worked through.'}</div>
+          </div>
+          <div class="chips" style="margin:0">
+            <button class="chip ${scope === 'bell' ? 'on' : ''}" data-scope="bell">Ringing now</button>
+            <button class="chip ${scope === 'work' ? 'on' : ''}" data-scope="work">All waiting work</button>
           </div>
         </div>
         ${data.count === 0 ? '' : `
@@ -110,11 +119,27 @@ export async function render(outlet, me) {
           </div>` : ''}`}
       </div>`));
 
+    const wireScope = () => {
+      outlet.querySelectorAll('[data-scope]').forEach((b) =>
+        b.addEventListener('click', () => {
+          if (scope === b.dataset.scope) return;
+          scope = b.dataset.scope;
+          openGroup = null;
+          draw();
+        }));
+    };
+
     if (data.count === 0) {
       outlet.appendChild(h(`
         <div class="panel"><div class="empty">
-          Nothing needs you right now. The bell is empty — that is the target at the end of every day.
+          ${scope === 'bell'
+            ? `Nothing is ringing — the bell is at zero, which is exactly right.
+               Follow-up work lives in <a href="#/day">My Pipeline</a>, never-called
+               leads in <a href="#/fresh">Fresh leads</a>, and the quiet ones in
+               <a href="#/retap">Re-tap</a>.`
+            : 'Nothing open anywhere. A clean floor.'}
         </div></div>`));
+      wireScope();
       return;
     }
 
@@ -167,6 +192,8 @@ export async function render(outlet, me) {
           person to open it can see the promise was moved and by whom.
         </div>
       </div>`));
+
+    wireScope();
 
     outlet.querySelectorAll('[data-group]').forEach((b) =>
       b.addEventListener('click', () => { openGroup = b.dataset.group; draw(); }));

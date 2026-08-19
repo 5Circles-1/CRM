@@ -585,24 +585,42 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * Everything demanding this person's attention, newest deadline first.
+   * The bell, and behind it the whole work list.
    *
-   * No ownership filter here on purpose - RLS decides what a caller can see and
-   * what a counsellor can see, so this one endpoint serves both without the
-   * route needing to know the difference.
+   * Two scopes, one endpoint. The default - 'bell' - is what rings and what
+   * the badge counts: ONLY the kinds in alerts.bell_kinds, which ship as the
+   * times a person chose (the client's callback, the owner's own reminder)
+   * plus the intake emergency. That is what takes the badge to zero at the
+   * end of a clean day. 'work' is everything - the full RLS-scoped list the
+   * Alerts tab offers behind one deliberate click, unchanged, so nothing an
+   * engine raises is ever unreachable.
+   *
+   * No ownership filter here on purpose - RLS decides what a caller can see
+   * and what a counsellor can see, so this one endpoint serves both without
+   * the route needing to know the difference.
    */
   app.get('/me/alerts', async (req) => {
     const user = req.requireUser();
+    const { scope } = z
+      .object({ scope: z.enum(['bell', 'work']).default('bell') })
+      .parse(req.query);
+
     return req.tx(async (q) => {
-      // The lead-derived alerts, plus unread notifications (cross-team arrivals)
-      // folded in so the same bell and the same popup cover both. A notification
-      // carries no lead due-time, so its "age" is how long it has gone unread.
-      // owner_name matters because this list is NOT always your own work: RLS
-      // scopes it, so a counsellor sees their team's alerts and an admin sees
-      // the floor's. Without a name on the row, "59 first calls overdue" is
-      // unactionable - you cannot tell whose they are or who to talk to.
+      // Lead-derived alerts plus unread notifications folded in, so the same
+      // bell and the same popup cover both. A notification carries no lead
+      // due-time, so its "age" is how long it has gone unread. owner_name
+      // matters because this list is NOT always your own work: a counsellor
+      // sees their team's alerts and an admin the floor's - without a name,
+      // "59 first calls overdue" is unactionable.
       const alerts = await q.many(
-        `select * from (
+        `with allowed as (
+           select coalesce(
+             (select array(select jsonb_array_elements_text(value))
+                from crm.settings where key = 'alerts.bell_kinds'),
+             array['callback_due','callback_soon','custom_reminder','intake_stalled']
+           ) as kinds
+         )
+         select a.* from (
            select a.kind, a.severity, a.lead_id, a.lead_name, a.phone_e164, a.due_at,
                   a.title, a.callback_id,
                   round(extract(epoch from (now() - a.due_at)) / 60)::int as minutes_late,
@@ -612,7 +630,9 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
              from crm.v_my_alerts a
              left join crm.users ou on ou.id = a.user_id
            union all
-           select n.kind, 'warning', n.lead_id, l.full_name, l.phone_e164,
+           select n.kind,
+                  case when n.kind = 'intake_stalled' then 'critical' else 'warning' end,
+                  n.lead_id, l.full_name, l.phone_e164,
                   n.created_at, n.title, null,
                   round(extract(epoch from (now() - n.created_at)) / 60)::int,
                   n.id, n.user_id, nu.full_name
@@ -620,11 +640,12 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
              left join crm.leads l on l.id = n.lead_id
              left join crm.users nu on nu.id = n.user_id
             where n.read_at is null and n.user_id = $1
-         ) a
+         ) a, allowed
+          where ($2::text = 'work' or a.kind = any (allowed.kinds))
           order by case severity when 'critical' then 0 when 'warning' then 1 else 2 end,
                    due_at asc
           limit 200`,
-        [user.id],
+        [user.id, scope],
       );
       return {
         count: alerts.length,
