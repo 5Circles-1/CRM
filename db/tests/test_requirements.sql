@@ -456,6 +456,25 @@ select crm_test.check(
   crm.add_working_minutes('2026-08-08 09:00:00+05:30', 1020)
     = '2026-08-10 18:30:00+05:30'::timestamptz, null);
 
+-- Adding zero working minutes must not move the moment. Fixed timestamps, not
+-- now(): this exact bug only showed itself between midnight and 09:30, so a
+-- relative test would have passed all afternoon and lied every morning.
+-- 2026-08-19 is a Wednesday; 06:24 IST is before the floor opens.
+select crm_test.check(
+  'R5', 'zero working minutes is identity, even before the floor opens',
+  crm.add_working_minutes('2026-08-19 06:24:00+05:30', 0)
+    = '2026-08-19 06:24:00+05:30'::timestamptz, null);
+
+select crm_test.check(
+  'R5', 'zero working minutes is identity on a Sunday too',
+  crm.add_working_minutes('2026-08-09 11:00:00+05:30', 0)
+    = '2026-08-09 11:00:00+05:30'::timestamptz, null);
+
+select crm_test.check(
+  'R5', 'but a real allowance from before opening still starts at 09:30',
+  crm.add_working_minutes('2026-08-19 06:24:00+05:30', 30)
+    = '2026-08-19 10:00:00+05:30'::timestamptz, null);
+
 select crm_test.check(
   'R5', 'a new lead''s first-touch deadline lands inside working hours',
   (select extract(dow from first_touch_due_at at time zone 'Asia/Kolkata') <> 0
@@ -2335,6 +2354,12 @@ select crm_test.check(
 select crm_test.check(
   'POP', 'the reminder chime ships on, and is a setting ops can silence',
   (select value = 'true'::jsonb from crm.settings where key = 'alerts.chime'), null);
+
+select crm_test.check(
+  'POP', 'the bell counts only human-set reminders and the intake emergency',
+  (select value = '["callback_due","callback_soon","custom_reminder","intake_stalled"]'::jsonb
+     from crm.settings where key = 'alerts.bell_kinds'),
+  (select value::text from crm.settings where key = 'alerts.bell_kinds'));
 
 select crm_test.check(
   'POP', 'the noisy kinds no longer interrupt, but are still raised as alerts',

@@ -77,7 +77,11 @@ Do not undo these without understanding why they exist.
 - **Popups interrupt only for appointments a person chose** — the callback a
   client asked for and the reminder the lead's owner set (`alerts.popup_kinds`),
   once each (`alerts.repeat_minutes` = 0), with one soft chime (`alerts.chime`).
-  Everything else waits in the bell and the Alerts tab. Nothing is dropped.
+  The bell badge counts the same appointments plus the intake emergency
+  (`alerts.bell_kinds`) — zero is its healthy state. The full engine-raised
+  work list is never dropped: `/me/alerts?scope=work` serves it, the Alerts
+  tab offers it behind one click, and overdue work keeps its home in the
+  pipeline buckets.
 
 - **Score components that had nothing to measure are excluded from both the
   points earned and the weight available**, and the total is rescaled over what

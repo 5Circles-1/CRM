@@ -1347,7 +1347,9 @@ describe('alerts tell a caller what needs them', () => {
                        first_touched_at = null, status = 'new' where id = '${otherLead}';`);
 
     const a1 = await login(h.app, EMAILS.callerA1);
-    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    // scope=work is the full list; the default bell scope carries only what a
+    // person scheduled and is covered by its own test below.
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
     assert.equal(res.statusCode, 200);
 
     const ids = res.json().alerts.map((a: { lead_id: string }) => a.lead_id);
@@ -1358,7 +1360,7 @@ describe('alerts tell a caller what needs them', () => {
 
   it('marks how late each one is, so the list can be ordered by urgency', async () => {
     const a1 = await login(h.app, EMAILS.callerA1);
-    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
     const breach = res.json().alerts.find((a: { kind: string }) => a.kind === 'sla_breach');
     assert.ok(breach, 'expected a breach alert');
     assert.ok(Number(breach.minutes_late) >= 4, `expected a positive lateness, got ${breach.minutes_late}`);
@@ -1679,7 +1681,7 @@ describe('alerts are separable by kind', () => {
                  where id = '${lateId}';`);
 
     const a1 = await login(h.app, EMAILS.callerA1);
-    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
     const byLead = Object.fromEntries(
       res.json().alerts.map((a: { lead_id: string; kind: string }) => [a.lead_id, a.kind]),
     );
@@ -1694,11 +1696,34 @@ describe('alerts are separable by kind', () => {
                        first_touch_due_at = now() + interval '5 minutes', status = 'new'
                  where id = '${leadId}';`);
     const a1 = await login(h.app, EMAILS.callerA1);
-    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
     const kinds = res.json().alerts
       .filter((a: { lead_id: string }) => a.lead_id === leadId)
       .map((a: { kind: string }) => a.kind);
     assert.ok(kinds.includes('new_lead'), `expected new_lead, got ${kinds.join(',')}`);
+  });
+
+  it('the bell itself counts only what a person scheduled - the badge can reach zero', async () => {
+    // The floor's complaint: 99+ forever, because the badge counted the whole
+    // work list. The work list has its own screens; the bell rings for the
+    // callback a client asked for, the reminder an owner set, and a real
+    // emergency - nothing else.
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const bell = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const allowed = new Set(['callback_due', 'callback_soon', 'custom_reminder', 'intake_stalled']);
+    for (const a of bell.json().alerts as Array<{ kind: string }>) {
+      assert.ok(allowed.has(a.kind), `${a.kind} must not count in the bell`);
+    }
+
+    // The same moment, the full list still carries the quiet work - nothing
+    // was suppressed, it just stopped ringing.
+    const work = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
+    const workKinds = new Set(work.json().alerts.map((a: { kind: string }) => a.kind));
+    assert.ok(
+      [...workKinds].some((k) => !allowed.has(k as string)),
+      'the work scope must still carry the non-ringing kinds',
+    );
+    assert.ok(work.json().count >= bell.json().count, 'work is a superset of the bell');
   });
 
   it('only times a person chose interrupt, but nothing is silenced from the bell', async () => {
@@ -1717,8 +1742,9 @@ describe('alerts are separable by kind', () => {
       assert.ok(!popups.includes(k), `${k} must not interrupt`);
     }
 
-    // ...and the quiet kinds are still delivered, just without a popup.
-    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    // ...and the quiet kinds are still delivered in the work scope, just
+    // without a popup and without counting in the bell.
+    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
     const kinds = new Set(alerts.json().alerts.map((a: { kind: string }) => a.kind));
     assert.ok(
       [...kinds].some((k) => !popups.includes(k)),
@@ -2035,10 +2061,10 @@ describe('escalation ladder and pools (API)', () => {
     assert.ok(pool.json().leads.some((l: { lead_id: string }) => l.lead_id === leadId),
       'the unreachable lead is parked in the re-tap pool');
 
-    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(cs) });
+    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(cs) });
     assert.ok(!alerts.json().alerts.some(
       (a: { lead_id: string; kind: string }) => a.lead_id === leadId && a.kind.includes('overdue')),
-      'a re-tap lead never nags as overdue');
+      'a re-tap lead never nags as overdue, even in the full work list');
   });
 
   it('lets someone claim a parked lead back into live work', async () => {
@@ -2116,7 +2142,7 @@ describe('per-lead reminders (API)', () => {
                  first_touched_at = now() - interval '3 hours', attempt_count = 1
                where id='${leadId}';`);
     const a1 = await login(h.app, EMAILS.callerA1);
-    const before = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const before = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
     assert.ok(before.json().alerts.some((a: { lead_id: string }) => a.lead_id === leadId),
       'an overdue lead alerts before muting');
 
@@ -2127,7 +2153,7 @@ describe('per-lead reminders (API)', () => {
     assert.equal(put.statusCode, 200);
     assert.equal(put.json().reminder_muted, true);
 
-    const after = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const after = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
     assert.ok(!after.json().alerts.some((a: { lead_id: string }) => a.lead_id === leadId),
       'and is silent after muting');
   });
@@ -2654,7 +2680,7 @@ describe('repeated no-answers go quiet', () => {
     `);
 
     const a1 = await login(h.app, EMAILS.callerA1);
-    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const alerts = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
     const kindsFor = (id: string) => alerts.json().alerts
       .filter((x: { lead_id: string }) => x.lead_id === id)
       .map((x: { kind: string }) => x.kind);
@@ -2871,7 +2897,7 @@ describe('alerts say whose lead each one is', () => {
        where id = '${leadId}';
     `);
     const cs = await login(h.app, EMAILS.counsellorA);
-    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(cs) });
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(cs) });
     assert.equal(res.statusCode, 200);
 
     const row = res.json().alerts.find((a: { lead_id: string }) => a.lead_id === leadId);
@@ -2889,7 +2915,7 @@ describe('alerts say whose lead each one is', () => {
        where id = '${leadId}';
     `);
     const a1 = await login(h.app, EMAILS.callerA1);
-    const res = await h.app.inject({ method: 'GET', url: '/me/alerts', headers: auth(a1) });
+    const res = await h.app.inject({ method: 'GET', url: '/me/alerts?scope=work', headers: auth(a1) });
     const row = res.json().alerts.find(
       (a: { lead_id: string; kind: string }) => a.lead_id === leadId && a.kind === 'sla_breach',
     );
