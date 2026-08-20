@@ -1968,11 +1968,31 @@ select crm_test.check(
     where sheet_configured and last_synced_at is null),
   (select string_agg(source_name || '=' || state, ', ') from crm.v_intake_health));
 
+-- The false alarm that fired every hour for days: 'Manual entry' (0039) is
+-- where every hand-typed lead lands. It has no sheet on purpose - runAll()
+-- reads only sources with a spreadsheet_id - so it is not a source that has
+-- stopped importing, and an outage nobody can clear is how a real one comes
+-- to hide behind a badge of seventeen.
+select crm_test.check(
+  'INT', 'a source with no sheet reads as hand entry, not as a broken importer',
+  (select state = 'manual' from crm.v_intake_health
+    where source_id = '33333333-0000-0000-0000-000000000003'),
+  (select state from crm.v_intake_health
+    where source_id = '33333333-0000-0000-0000-000000000003'));
+
+select crm_test.check(
+  'INT', 'and the floor-wide fault count is exactly the sheet sources in trouble',
+  (select v.sources_unhealthy = (select count(*) from crm.v_intake_health
+                                  where sheet_configured and state not in ('healthy', 'off'))
+     from crm.v_intake_summary v),
+  (select string_agg(source_name || '=' || state, ', ') from crm.v_intake_health));
+
 -- The watchdog: no leads for hours while the floor is open must reach an
 -- admin. The alarm is time-gated, so this only asserts during shift hours.
 do $$
 declare
   v_sent int;
+  v_src  text;
   v_admin uuid := '22222222-0000-0000-0000-00000000000a';
 begin
   if not crm.is_shift_time(now()) then
@@ -1996,6 +2016,31 @@ begin
   -- ...but it must not spam: a second run inside the hour stays quiet.
   perform crm_test.check('INT', 'the alarm nags hourly, never every tick',
                          crm.check_lead_intake() = 0, null);
+
+  -- "Lead intake problem: 1 source(s) not importing" named nothing, so it
+  -- sent every reader hunting. The body must say which source and why.
+  select source_name into v_src from crm.v_intake_health
+   where state not in ('healthy', 'off', 'manual') order by source_name limit 1;
+  if v_src is not null then
+    perform crm_test.check('INT', 'the alarm names the source and the reason, not a count',
+      exists (select 1 from crm.notifications
+               where kind = 'intake_stalled' and body like '%' || v_src || '%'),
+      (select body from crm.notifications
+        where kind = 'intake_stalled' order by created_at desc limit 1));
+  end if;
+
+  -- Past the hourly gate now, but the first alarm is still unread. A second
+  -- identical copy tells nobody anything and buries the callback under it.
+  update crm.notifications set created_at = now() - interval '2 hours'
+   where kind = 'intake_stalled';
+  perform crm_test.check('INT', 'an alarm nobody has read yet is never duplicated',
+                         crm.check_lead_intake() = 0, null);
+
+  -- Read and still broken is the case the nag exists for: it must nag.
+  update crm.notifications set read_at = now(), created_at = now() - interval '2 hours'
+   where kind = 'intake_stalled';
+  perform crm_test.check('INT', 'and once it has been read, an unfixed problem nags again',
+                         crm.check_lead_intake() > 0, null);
 
   update crm.settings set value = '120'::jsonb where key = 'intake.silence_alert_minutes';
 end $$;

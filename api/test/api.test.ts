@@ -3041,6 +3041,16 @@ describe('lead intake health', () => {
     // least one has genuinely synced and must not be reported as broken.
     const synced = body.sources.filter((s: { last_synced_at: string | null }) => s.last_synced_at);
     assert.ok(synced.length >= 1, 'the sources imported in this suite show a sync time');
+
+    // A source with no sheet is hand entry or a pasted CSV - the importer
+    // never reads it. Calling that "not importing" raised an hourly outage
+    // the floor could not clear, which is how a real one learns to hide.
+    const sheetless = body.sources.filter((s: { sheet_configured: boolean }) => !s.sheet_configured);
+    assert.ok(sheetless.length >= 1, 'the seed has a hand-entry source');
+    assert.ok(
+      sheetless.every((s: { state: string }) => s.state === 'manual' || s.state === 'off'),
+      'a sheet-less source reads as manual, never as a fault',
+    );
   });
 
   it('refuses a sync from someone who does not run the floor, and says so plainly when the importer is absent', async () => {

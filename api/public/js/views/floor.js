@@ -536,6 +536,7 @@ function labelLeak(t) {
 const INTAKE_WHY = {
   not_shared: ['The sheet is not shared with the CRM', 'Google is refusing to open the spreadsheet, so every run reads zero rows — nothing is lost, the leads are still sitting in the sheet. Open the sheet → Share → add the CRM\'s service account address below as a Viewer. The next import pulls the whole backlog.'],
   not_connected: ['No sheet connected', 'This source has no Google Sheet configured. Add the spreadsheet in Admin → Lead sources, or import a CSV there.'],
+  manual: ['Hand entry only', 'Leads reach this source by being typed in or pasted as a CSV — the importer never reads it, so it is not waiting on anything.'],
   never_run: ['Never imported', 'The sheet is configured but has never synced. The importer needs SERVICE_USER_ID and Google credentials in the API environment.'],
   failing: ['Import failing', 'The last run returned an error — the message is below. A renamed tab or revoked sheet access are the usual causes.'],
   stale: ['Import has stalled', 'The last successful sync is older than it should be. The importer may have stopped, or the server may have been restarted without credentials.'],
@@ -545,7 +546,10 @@ const INTAKE_WHY = {
 
 function renderIntake(outlet, intake, me) {
   const sources = intake.sources ?? [];
-  const bad = sources.filter((s) => !['healthy', 'off'].includes(s.state));
+  // 'manual' and 'off' are not faults: a hand-entry source has no sheet by
+  // design, and shouting about it every hour is what taught the floor to
+  // ignore the bell.
+  const bad = sources.filter((s) => !['healthy', 'off', 'manual'].includes(s.state));
   const quiet = Number(intake.minutes_since_lead ?? 0) > 120;
   const enginesDead = intake.jobs_never_ran === true;
   const canAct = me.role === 'admin' || me.role === 'ops';
@@ -622,7 +626,9 @@ function renderIntake(outlet, intake, me) {
             <td>${esc(s.source_name)}</td>
             <td>${s.state === 'healthy'
               ? '<span class="badge b-ok">healthy</span>'
-              : `<span class="badge b-bad">${esc(String(s.state).replace(/_/g, ' '))}</span>`}</td>
+              : ['off', 'manual'].includes(s.state)
+                ? `<span class="badge b-mute">${esc(s.state === 'manual' ? 'hand entry' : 'off')}</span>`
+                : `<span class="badge b-bad">${esc(String(s.state).replace(/_/g, ' '))}</span>`}</td>
             <td>${s.last_synced_at ? esc(fmtDT(s.last_synced_at)) : '<span class="hint">never</span>'}</td>
             <td class="num">${s.rows_seen ?? '—'}</td>
             <td class="num">${s.rows_created ?? '—'}</td>
