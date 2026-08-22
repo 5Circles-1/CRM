@@ -32,10 +32,13 @@ let h: TestHarness;
 before(async () => {
   rebuildTestDatabase();
   h = await startHarness();
-  // Put every caller on the floor so distribution has somewhere to send leads.
+  // Put every caller AND counsellor on the floor: distribution needs somewhere
+  // to send leads, and since absence cover the escalation ladder hands up only
+  // to a counsellor who is actually on shift.
   fixtureSql(`
     insert into crm.attendance_sessions (user_id, started_at)
-    select id, now() - interval '1 hour' from crm.users where role = 'caller';
+    select id, now() - interval '1 hour' from crm.users
+     where role in ('caller', 'counsellor');
   `);
 });
 
@@ -2803,6 +2806,43 @@ describe('manual leads and the payment punch-in', () => {
     assert.equal(res.statusCode, 403);
   });
 
+  it('the one exception: a caller logs the inbound call they answered, and keeps it', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const followupAt = new Date(Date.now() + 24 * 3600_000).toISOString();
+    const res = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(a1),
+      payload: { fullName: 'Rang The Office', phone: '9822001007',
+                 kind: 'inbound', followupAt, note: 'asked about pricing' },
+    });
+    assert.equal(res.statusCode, 201);
+    const lead = res.json();
+    assert.equal(lead.caller_id, USERS.callerA1, 'the receiver keeps what they answered');
+    assert.equal(lead.priority, 'immediate', 'an inbound call is never a lead worked later');
+
+    // The promised date rings: it is a pending callback, not just a note.
+    const day = await h.app.inject({ method: 'GET', url: `/leads/${lead.id}`, headers: auth(a1) });
+    assert.equal(day.statusCode, 200);
+    assert.ok(
+      day.json().callbacks.some((c: { status: string }) => c.status === 'pending'),
+      'the follow-up the client heard is a pending callback',
+    );
+
+    // ...but they cannot route it to a colleague,
+    const routed = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(a1),
+      payload: { fullName: 'Routed Away', phone: '9822001008',
+                 kind: 'inbound', followupAt, assignTo: USERS.callerA2 },
+    });
+    assert.equal(routed.statusCode, 403);
+
+    // ...and the date the client was promised is not optional.
+    const undated = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(a1),
+      payload: { fullName: 'No Date', phone: '9822001009', kind: 'inbound' },
+    });
+    assert.equal(undated.statusCode, 409);
+  });
+
   it('the punch-in searches open deals and spreads the amount across instalments', async () => {
     const lead = makeLeadFor(USERS.callerA1, 'Punch Payer');
     fixtureSql(`
@@ -3041,6 +3081,16 @@ describe('lead intake health', () => {
     // least one has genuinely synced and must not be reported as broken.
     const synced = body.sources.filter((s: { last_synced_at: string | null }) => s.last_synced_at);
     assert.ok(synced.length >= 1, 'the sources imported in this suite show a sync time');
+
+    // A source with no sheet is hand entry or a pasted CSV - the importer
+    // never reads it. Calling that "not importing" raised an hourly outage
+    // the floor could not clear, which is how a real one learns to hide.
+    const sheetless = body.sources.filter((s: { sheet_configured: boolean }) => !s.sheet_configured);
+    assert.ok(sheetless.length >= 1, 'the seed has a hand-entry source');
+    assert.ok(
+      sheetless.every((s: { state: string }) => s.state === 'manual' || s.state === 'off'),
+      'a sheet-less source reads as manual, never as a fault',
+    );
   });
 
   it('refuses a sync from someone who does not run the floor, and says so plainly when the importer is absent', async () => {
@@ -3058,6 +3108,25 @@ describe('lead intake health', () => {
     });
     assert.equal(res.statusCode, 400);
     assert.match(res.json().message, /not configured on this server/);
+  });
+
+  it('tells the floor how many leads each team received this month', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/leads-month', headers: auth(cs) });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.ok(Array.isArray(body.teams) && body.teams.length >= 2, 'one row per team');
+    assert.equal(typeof body.total, 'number');
+    assert.equal(
+      body.total,
+      body.teams.reduce((n: number, t: { leads_month: number }) => n + Number(t.leads_month), 0),
+      'the total is the sum of the team rows',
+    );
+
+    // The month counter is floor management, not a caller screen.
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const denied = await h.app.inject({ method: 'GET', url: '/dashboards/leads-month', headers: auth(a1) });
+    assert.equal(denied.statusCode, 403);
   });
 
   it('offers the four new advisory products for sale', async () => {

@@ -208,10 +208,11 @@ export async function render(outlet, me) {
     }
   };
 
-  if (['counsellor', 'admin', 'ops'].includes(me?.role)) {
+  if (['counsellor', 'admin', 'ops', 'caller'].includes(me?.role)) {
     const slot = panel.querySelector('#addlead-slot');
-    const btn = h('<button class="btn primary small">Add lead</button>');
-    btn.addEventListener('click', () => addLeadModal((lead) => {
+    const btn = h(`<button class="btn primary small">${
+      me?.role === 'caller' ? '📞 Log inbound call' : 'Add lead'}</button>`);
+    btn.addEventListener('click', () => addLeadModal(me, (lead) => {
       location.hash = `#/lead/${lead.id}`;
     }));
     slot.appendChild(btn);

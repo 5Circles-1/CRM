@@ -34,8 +34,9 @@ const TROPHIES = [
  */
 const WAIT_WHY = (w) => ({
   nobody_on_shift:
-    `nobody on this team has started a shift (${w.callers} caller${w.callers === 1 ? '' : 's'} on the team). `
-    + 'They hand out the moment one of them presses Start shift.',
+    `nobody on this team has started a shift (${w.callers} caller${w.callers === 1 ? '' : 's'} on the team), `
+    + 'and the team lead is off the floor too — leads flow to the team lead automatically when the '
+    + 'callers are absent. They hand out the moment anyone on the team presses Start shift.',
   all_on_floor_restricted:
     `everyone on the floor from this team is RESTRICTED, so no fresh leads may go to them. `
     + 'Un-restrict someone in Admin, or get a STANDARD caller on the floor.',
@@ -51,7 +52,7 @@ const WAIT_WHY = (w) => ({
 
 export async function render(outlet, me) {
   const [floor, immediate, leakage, candidates, targets, qualified, negotiation, today,
-         overallToday, avatars, leadFlow, followups, intake] = await Promise.all([
+         overallToday, avatars, leadFlow, followups, intake, month] = await Promise.all([
     get('/dashboards/floor'),
     get('/queues/immediate'),
     get('/dashboards/leakage'),
@@ -65,6 +66,7 @@ export async function render(outlet, me) {
     get('/dashboards/lead-flow').catch(() => null),
     get('/dashboards/followups').catch(() => []),
     get('/dashboards/intake').catch(() => null),
+    get('/dashboards/leads-month').catch(() => null),
   ]);
 
   outlet.innerHTML = '';
@@ -75,6 +77,7 @@ export async function render(outlet, me) {
   // looked merely quiet. Nothing is more urgent than "the leads are not
   // coming in", so nothing sits above it.
   if (intake) renderIntake(outlet, intake, me);
+  if (month) renderMonth(outlet, month);
 
   // --- the leaderboard: overall standings first, then who is winning what ---
   let boardDays = 1;
@@ -536,6 +539,7 @@ function labelLeak(t) {
 const INTAKE_WHY = {
   not_shared: ['The sheet is not shared with the CRM', 'Google is refusing to open the spreadsheet, so every run reads zero rows — nothing is lost, the leads are still sitting in the sheet. Open the sheet → Share → add the CRM\'s service account address below as a Viewer. The next import pulls the whole backlog.'],
   not_connected: ['No sheet connected', 'This source has no Google Sheet configured. Add the spreadsheet in Admin → Lead sources, or import a CSV there.'],
+  manual: ['Hand entry only', 'Leads reach this source by being typed in or pasted as a CSV — the importer never reads it, so it is not waiting on anything.'],
   never_run: ['Never imported', 'The sheet is configured but has never synced. The importer needs SERVICE_USER_ID and Google credentials in the API environment.'],
   failing: ['Import failing', 'The last run returned an error — the message is below. A renamed tab or revoked sheet access are the usual causes.'],
   stale: ['Import has stalled', 'The last successful sync is older than it should be. The importer may have stopped, or the server may have been restarted without credentials.'],
@@ -543,9 +547,39 @@ const INTAKE_WHY = {
   off: ['Switched off', 'This source is inactive, so it is not imported.'],
 };
 
+/**
+ * The month counter: how many leads each team has received this month, in
+ * one line. The owner's question — "how many did we get, in total, this
+ * month" — should never need a report built to answer it.
+ */
+function renderMonth(outlet, month) {
+  const teams = month.teams ?? [];
+  outlet.appendChild(h(`
+    <div class="panel" style="margin-bottom:16px" data-testid="month-leads">
+      <div class="row spread wrap">
+        <h2 class="mt0">Leads received in ${esc(month.month)}
+          <small>${Number(month.total)} total${Number(month.inbound_total) > 0
+            ? ` · ${Number(month.inbound_total)} inbound 📞` : ''}</small></h2>
+      </div>
+      <div class="row wrap" style="gap:18px">
+        ${teams.map((t) => `
+          <div>
+            <div class="hint">${esc(t.team_name)}</div>
+            <div style="font-size:1.6em;font-weight:700">${Number(t.leads_month)}</div>
+            <div class="hint">${Number(t.leads_today)} today${Number(t.inbound_month) > 0
+              ? ` · ${Number(t.inbound_month)} inbound` : ''}${Number(t.won_month) > 0
+              ? ` · ${Number(t.won_month)} won` : ''}</div>
+          </div>`).join('')}
+      </div>
+    </div>`));
+}
+
 function renderIntake(outlet, intake, me) {
   const sources = intake.sources ?? [];
-  const bad = sources.filter((s) => !['healthy', 'off'].includes(s.state));
+  // 'manual' and 'off' are not faults: a hand-entry source has no sheet by
+  // design, and shouting about it every hour is what taught the floor to
+  // ignore the bell.
+  const bad = sources.filter((s) => !['healthy', 'off', 'manual'].includes(s.state));
   const quiet = Number(intake.minutes_since_lead ?? 0) > 120;
   const enginesDead = intake.jobs_never_ran === true;
   const canAct = me.role === 'admin' || me.role === 'ops';
@@ -622,7 +656,9 @@ function renderIntake(outlet, intake, me) {
             <td>${esc(s.source_name)}</td>
             <td>${s.state === 'healthy'
               ? '<span class="badge b-ok">healthy</span>'
-              : `<span class="badge b-bad">${esc(String(s.state).replace(/_/g, ' '))}</span>`}</td>
+              : ['off', 'manual'].includes(s.state)
+                ? `<span class="badge b-mute">${esc(s.state === 'manual' ? 'hand entry' : 'off')}</span>`
+                : `<span class="badge b-bad">${esc(String(s.state).replace(/_/g, ' '))}</span>`}</td>
             <td>${s.last_synced_at ? esc(fmtDT(s.last_synced_at)) : '<span class="hint">never</span>'}</td>
             <td class="num">${s.rows_seen ?? '—'}</td>
             <td class="num">${s.rows_created ?? '—'}</td>

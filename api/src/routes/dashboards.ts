@@ -254,6 +254,28 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     return { ran: summaries.length, summaries };
   });
 
+  /**
+   * Leads received per team this month - the owner's month counter. Total,
+   * how many were inbound calls, how many already won, and today's slice.
+   */
+  app.get('/dashboards/leads-month', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    return req.tx(async (q) => {
+      const teams = await q.many<{ leads_month: number; inbound_month: number; won_month: number }>(
+        `select * from crm.v_month_team_leads
+          order by team_name nulls last`,
+      );
+      return {
+        month: new Intl.DateTimeFormat('en-IN', {
+          timeZone: 'Asia/Kolkata', month: 'long', year: 'numeric',
+        }).format(new Date()),
+        teams,
+        total: teams.reduce((n, t) => n + Number(t.leads_month), 0),
+        inbound_total: teams.reduce((n, t) => n + Number(t.inbound_month), 0),
+      };
+    });
+  });
+
   /** Run the held-lead sweep now, rather than waiting for the next minute. */
   app.post('/dashboards/lead-flow/assign-now', async (req) => {
     req.requireRole('admin', 'ops');
