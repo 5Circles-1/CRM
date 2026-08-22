@@ -631,7 +631,9 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
              left join crm.users ou on ou.id = a.user_id
            union all
            select n.kind,
-                  case when n.kind = 'intake_stalled' then 'critical' else 'warning' end,
+                  case when n.kind = 'intake_stalled' then 'critical'
+                       when n.kind = 'intake_recovered' then 'info'
+                       else 'warning' end,
                   n.lead_id, l.full_name, l.phone_e164,
                   n.created_at, n.title, null,
                   round(extract(epoch from (now() - n.created_at)) / 60)::int,

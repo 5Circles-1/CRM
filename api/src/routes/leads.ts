@@ -210,7 +210,11 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
    * RLS inside the same transaction; this handler only shapes the request.
    */
   app.post('/leads/manual', async (req, reply) => {
-    req.requireRole('admin', 'ops', 'counsellor');
+    // Callers are allowed through to SQL, which permits them exactly one
+    // thing: logging an inbound call they answered, to themselves. Every
+    // other combination is refused inside crm.add_manual_lead, so the
+    // fairness guarantee lives in one place.
+    req.requireRole('admin', 'ops', 'counsellor', 'caller');
     const body = z
       .object({
         fullName: z.string().min(1).max(120),
@@ -219,15 +223,21 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
         priority: z.enum(['normal', 'immediate']).default('normal'),
         assignTo: uuid.nullable().optional(),
         note: z.string().max(300).optional(),
+        // 'inbound' = the client called us. Highest quality on the floor:
+        // always immediate, born first-touched, and the follow-up date the
+        // client was promised is mandatory and becomes a ringing callback.
+        kind: z.enum(['manual', 'inbound']).default('manual'),
+        followupAt: z.coerce.date().optional(),
       })
       .parse(req.body);
 
     const row = await req.tx(async (q) => {
       const created = await q.one<{ lead_id: string }>(
-        `select crm.add_manual_lead($1, $2, $3, $4::crm.lead_priority, $5, $6) as lead_id`,
+        `select crm.add_manual_lead($1, $2, $3, $4::crm.lead_priority, $5, $6, $7, $8) as lead_id`,
         [
           body.fullName.trim(), body.phone.trim(), body.city?.trim() || null,
           body.priority, body.assignTo ?? null, body.note?.trim() || null,
+          body.kind, body.followupAt ?? null,
         ],
       );
       return q.one(

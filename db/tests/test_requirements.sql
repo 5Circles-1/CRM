@@ -899,6 +899,10 @@ select crm_test.check(
   'R10', 'the team counsellor is resolvable',
   (select crm.team_counsellor(crm.team_of(:A1, current_date)) = :CNS_A), null);
 
+-- Escalation hands up only to a counsellor who is on the floor (absence
+-- cover, owner decision) - so the team lead starts their shift first.
+insert into crm.attendance_sessions (user_id, started_at) values (:CNS_A, now());
+
 -- Two no-connect attempts by a caller escalate the lead to the counsellor.
 do $$
 declare
@@ -1027,6 +1031,32 @@ select crm_test.check(
   'R10', 'once the counsellor has room again the next failed attempt escalates',
   (select escalation_stage = 'counsellor' and counsellor_id = :CNS_A
      from crm.leads where full_name = 'Capped Lead'), null);
+
+-- The other direction of absence cover: with the counsellor OFF the floor,
+-- the same two failed attempts do NOT hand up - the lead stays with its
+-- caller, who keeps its retry schedule. Their part flows down, not into an
+-- empty queue.
+update crm.attendance_sessions set ended_at = now()
+ where user_id = :CNS_A and ended_at is null;
+
+do $$
+declare v_lead uuid; v_a1 uuid := '22222222-0000-0000-0000-000000000001';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, assigned_at)
+  values ('33333333-0000-0000-0000-000000000001', 'Nobody Home', '+919555100093',
+          v_a1, crm.team_of(v_a1, current_date), 'working', now(), now())
+  returning id into v_lead;
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, v_a1, 'not_answered', 0);
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, v_a1, 'not_answered', 0);
+end $$;
+
+select crm_test.check(
+  'R10', 'with the counsellor off the floor the lead stays with its caller',
+  (select escalation_stage = 'caller' and counsellor_id is null and caller_id = :A1
+     from crm.leads where full_name = 'Nobody Home'), null);
 
 -- Cross-team move: a lead nobody has worked for long enough goes to the other
 -- team as a fresh, unassigned lead, and notifies that team's counsellor.
@@ -2098,6 +2128,220 @@ select crm_test.check(
   (select string_agg(name, ', ') from crm.products where is_active));
 
 -- =============================================================================
+-- INB: inbound calls - the highest-quality lead, logged by whoever answered,
+-- never skippable. The client called US; the follow-up date they were
+-- promised must ring.
+-- =============================================================================
+
+-- A caller logs the inbound call they answered. It is theirs, immediate,
+-- born first-touched, and the promised date is a pending callback.
+select set_config('app.user_id', :A1, false) as _ \gset
+select crm.add_manual_lead('Inbound By Caller', '9899200001', 'Kanpur', 'normal',
+                           null, 'asked about Grow+', 'inbound',
+                           now() + interval '1 day') as _inb1 \gset
+
+select crm_test.check(
+  'INB', 'a caller logs an inbound call and it is theirs, at immediate priority',
+  (select caller_id = :A1 and priority = 'immediate'
+     from crm.leads where id = :'_inb1'), null);
+
+select crm_test.check(
+  'INB', 'an inbound lead is born first-touched - the client was already spoken to',
+  (select first_touched_at is not null from crm.leads where id = :'_inb1'), null);
+
+select crm_test.check(
+  'INB', 'it comes from its own Inbound call source, so no report buries it',
+  (select s.name = 'Inbound call' from crm.leads l
+     join crm.lead_sources s on s.id = l.source_id where l.id = :'_inb1'), null);
+
+select crm_test.check(
+  'INB', 'the promised follow-up is a pending callback - the kind that rings',
+  (select count(*) = 1 from crm.callbacks
+    where lead_id = :'_inb1' and status = 'pending'
+      and assigned_to = :A1 and scheduled_at > now()), null);
+
+-- The fairness guarantee is intact: an inbound call is the ONLY lead a
+-- caller may create, and only to themselves.
+do $$
+begin
+  begin
+    perform crm.add_manual_lead('Self Serve', '9899200002');
+    raise exception 'test broken: a caller created a plain manual lead';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform crm.add_manual_lead('Routed Away', '9899200003', null, 'normal',
+                                '22222222-0000-0000-0000-000000000002', null,
+                                'inbound', now() + interval '1 day');
+    raise exception 'test broken: a caller routed an inbound call to a colleague';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform crm.add_manual_lead('No Date', '9899200004', null, 'normal',
+                                null, null, 'inbound', null);
+    raise exception 'test broken: an inbound call without a follow-up date was accepted';
+  exception when check_violation then null;
+  end;
+end $$;
+
+select crm_test.check(
+  'INB', 'a caller still cannot create a plain manual lead, route an inbound call away, or skip the date',
+  not exists (select 1 from crm.leads
+               where full_name in ('Self Serve', 'Routed Away', 'No Date')), null);
+
+-- The counsellor who answered keeps it in their own queue.
+select set_config('app.user_id', :CNS_A, false) as _ \gset
+select crm.add_manual_lead('Inbound By Lead', '9899200005', null, 'normal',
+                           :CNS_A, 'asked for the counsellor', 'inbound',
+                           now() + interval '2 hours') as _inb2 \gset
+
+select crm_test.check(
+  'INB', 'a counsellor keeps the inbound call they answered, in their own queue',
+  (select counsellor_id = :CNS_A and escalation_stage = 'counsellor'
+     from crm.leads where id = :'_inb2'), null);
+
+select crm_test.check(
+  'INB', 'and it sits in their pipeline like any owned lead',
+  (select queue_owner_id = :CNS_A from crm.v_my_pipeline
+    where lead_id = :'_inb2'), null);
+
+select set_config('app.user_id', '', false) as _ \gset
+
+-- =============================================================================
+-- CVR: absence cover. Callers all absent -> the team lead takes the fresh
+-- lead. Team lead also absent -> the lead parks visibly. Owned leads never
+-- move on their own.
+-- =============================================================================
+
+-- Everyone off the floor except Team A's counsellor.
+update crm.attendance_sessions set ended_at = now() where ended_at is null;
+insert into crm.attendance_sessions (user_id, started_at) values (:CNS_A, now());
+
+insert into crm.leads (source_id, full_name, phone_e164, team_id)
+values ('33333333-0000-0000-0000-000000000002', 'Covered Fresh', '+919899200011',
+        crm.team_of(:A1, current_date));
+select crm.assign_lead((select id from crm.leads where full_name = 'Covered Fresh')) as _cvr \gset
+
+select crm_test.check(
+  'CVR', 'with every caller absent a fresh lead goes to the on-floor team lead',
+  (select counsellor_id = :CNS_A and escalation_stage = 'counsellor'
+     and caller_id is null and status = 'working'
+     from crm.leads where full_name = 'Covered Fresh'), null);
+
+select crm_test.check(
+  'CVR', 'the cover is recorded as its own distribution strategy',
+  (select strategy = 'covered_by_team_lead' from crm.distribution_events
+    where lead_id = (select id from crm.leads where full_name = 'Covered Fresh')
+    order by decided_at desc limit 1), null);
+
+select crm_test.check(
+  'CVR', 'a covered lead is owned - it no longer counts as waiting for a caller',
+  not exists (select 1 from crm.v_lead_flow_waiting w
+               where w.team_id = crm.team_of(:A1, current_date)), null);
+
+-- A caller returning must NOT pull the lead back off the leader.
+insert into crm.attendance_sessions (user_id, started_at) values (:A1, now());
+select crm.assign_pending_leads(50) as _ \gset
+
+select crm_test.check(
+  'CVR', 'a returning caller does not take a covered lead back - owned is owned',
+  (select counsellor_id = :CNS_A and caller_id is null
+     from crm.leads where full_name = 'Covered Fresh'), null);
+
+-- Team lead absent too: the lead parks, visibly, rather than landing on an
+-- empty chair.
+update crm.attendance_sessions set ended_at = now() where ended_at is null;
+
+insert into crm.leads (source_id, full_name, phone_e164, team_id)
+values ('33333333-0000-0000-0000-000000000002', 'Parked Fresh', '+919899200012',
+        crm.team_of(:A1, current_date));
+
+select crm_test.check(
+  'CVR', 'with the whole team absent - leader included - the lead parks',
+  (select crm.assign_lead(id) is null
+     from crm.leads where full_name = 'Parked Fresh'), null);
+
+select crm_test.check(
+  'CVR', 'and the waiting list names the hold',
+  (select w.waiting >= 1 and w.reason = 'nobody_on_shift'
+     from crm.v_lead_flow_waiting w
+    where w.team_id = crm.team_of(:A1, current_date)), null);
+
+-- Restore the floor for the sections that follow.
+insert into crm.attendance_sessions (user_id, started_at) values
+  (:A1, now()), (:A2, now()), (:B1, now()), (:B2, now());
+select crm.assign_pending_leads(50) as _ \gset
+
+-- =============================================================================
+-- MTH: the month counter - "how many leads did each team receive this month"
+-- is a screen, not a report request.
+-- =============================================================================
+
+select crm_test.check(
+  'MTH', 'every active team reports a month total',
+  (select count(*) >= 2 from crm.v_month_team_leads where team_id is not null), null);
+
+select crm_test.check(
+  'MTH', 'the month total counts every lead the team received this month',
+  (select m.leads_month = (select count(*) from crm.leads l
+                            where l.team_id = m.team_id
+                              and date_trunc('month', crm.ist_date(l.created_at))
+                                  = date_trunc('month', crm.ist_date(now())))
+     from crm.v_month_team_leads m
+    where m.team_id = crm.team_of(:A1, current_date)), null);
+
+select crm_test.check(
+  'MTH', 'inbound calls are counted apart, because their quality is watched',
+  (select sum(inbound_month) >= 2 from crm.v_month_team_leads),
+  (select sum(inbound_month)::text from crm.v_month_team_leads));
+
+-- =============================================================================
+-- INT (continued): the alarm stands itself down. When intake is healthy
+-- again the unread alarms resolve and the all-clear is announced - an
+-- intake alarm on the bell is always a live problem, never history.
+-- =============================================================================
+
+do $$
+declare
+  v_admin uuid := '22222222-0000-0000-0000-00000000000a';
+begin
+  -- An outage's worth of unread alarms...
+  insert into crm.notifications (user_id, kind, title, body)
+  values (v_admin, 'intake_stalled', 'Leads have stopped arriving', 'stale alarm');
+  -- ...and then intake is healthy: the sheet synced moments ago and a lead
+  -- just arrived.
+  update crm.lead_sources set last_synced_at = now()
+   where id = '33333333-0000-0000-0000-000000000001';
+  insert into crm.ingestion_runs (source_id, started_at, finished_at, rows_seen,
+                                  rows_created, rows_duplicate, rows_quarantined)
+  values ('33333333-0000-0000-0000-000000000001', now(), now(), 3, 3, 0, 0);
+  -- Parked from birth: this row exists to move newest_lead_at, and must not
+  -- wander into distribution and shift the team-rotation cursor under the
+  -- later sections.
+  insert into crm.leads (source_id, full_name, phone_e164, status, next_action_at)
+  values ('33333333-0000-0000-0000-000000000001', 'Healthy Pulse', '+919899200021',
+          'nurture', null);
+
+  perform crm.check_lead_intake();
+end $$;
+
+select crm_test.check(
+  'INT', 'when intake recovers, every unread alarm is resolved automatically',
+  not exists (select 1 from crm.notifications
+               where kind = 'intake_stalled' and read_at is null), null);
+
+select crm_test.check(
+  'INT', 'and the all-clear is announced, so the resolution is as visible as the problem',
+  exists (select 1 from crm.notifications
+           where kind = 'intake_recovered'
+             and user_id = '22222222-0000-0000-0000-00000000000a'), null);
+
+select crm_test.check(
+  'INT', 'the all-clear reaches the bell like the alarm did',
+  (select value @> '["intake_recovered"]'::jsonb
+     from crm.settings where key = 'alerts.bell_kinds'), null);
+
+-- =============================================================================
 -- HRS: hours are earned on the day they belong to. A forgotten End shift
 -- inflated "time logged" across absent days and blocked the next Start shift,
 -- which is exactly how 6/10 attendance came with a 15-hour daily average.
@@ -2401,8 +2645,8 @@ select crm_test.check(
   (select value = 'true'::jsonb from crm.settings where key = 'alerts.chime'), null);
 
 select crm_test.check(
-  'POP', 'the bell counts only human-set reminders and the intake emergency',
-  (select value = '["callback_due","callback_soon","custom_reminder","intake_stalled"]'::jsonb
+  'POP', 'the bell counts only human-set reminders, the intake emergency and its all-clear',
+  (select value = '["callback_due","callback_soon","custom_reminder","intake_stalled","intake_recovered"]'::jsonb
      from crm.settings where key = 'alerts.bell_kinds'),
   (select value::text from crm.settings where key = 'alerts.bell_kinds'));
 

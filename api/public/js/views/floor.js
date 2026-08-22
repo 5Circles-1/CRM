@@ -34,8 +34,9 @@ const TROPHIES = [
  */
 const WAIT_WHY = (w) => ({
   nobody_on_shift:
-    `nobody on this team has started a shift (${w.callers} caller${w.callers === 1 ? '' : 's'} on the team). `
-    + 'They hand out the moment one of them presses Start shift.',
+    `nobody on this team has started a shift (${w.callers} caller${w.callers === 1 ? '' : 's'} on the team), `
+    + 'and the team lead is off the floor too — leads flow to the team lead automatically when the '
+    + 'callers are absent. They hand out the moment anyone on the team presses Start shift.',
   all_on_floor_restricted:
     `everyone on the floor from this team is RESTRICTED, so no fresh leads may go to them. `
     + 'Un-restrict someone in Admin, or get a STANDARD caller on the floor.',
@@ -51,7 +52,7 @@ const WAIT_WHY = (w) => ({
 
 export async function render(outlet, me) {
   const [floor, immediate, leakage, candidates, targets, qualified, negotiation, today,
-         overallToday, avatars, leadFlow, followups, intake] = await Promise.all([
+         overallToday, avatars, leadFlow, followups, intake, month] = await Promise.all([
     get('/dashboards/floor'),
     get('/queues/immediate'),
     get('/dashboards/leakage'),
@@ -65,6 +66,7 @@ export async function render(outlet, me) {
     get('/dashboards/lead-flow').catch(() => null),
     get('/dashboards/followups').catch(() => []),
     get('/dashboards/intake').catch(() => null),
+    get('/dashboards/leads-month').catch(() => null),
   ]);
 
   outlet.innerHTML = '';
@@ -75,6 +77,7 @@ export async function render(outlet, me) {
   // looked merely quiet. Nothing is more urgent than "the leads are not
   // coming in", so nothing sits above it.
   if (intake) renderIntake(outlet, intake, me);
+  if (month) renderMonth(outlet, month);
 
   // --- the leaderboard: overall standings first, then who is winning what ---
   let boardDays = 1;
@@ -543,6 +546,33 @@ const INTAKE_WHY = {
   all_rejected: ['Every row rejected', 'Rows are arriving but all of them are being quarantined — usually the phone column was renamed in the sheet. Fix the mapping in Admin → Lead sources; nothing is lost, quarantined rows can be replayed.'],
   off: ['Switched off', 'This source is inactive, so it is not imported.'],
 };
+
+/**
+ * The month counter: how many leads each team has received this month, in
+ * one line. The owner's question — "how many did we get, in total, this
+ * month" — should never need a report built to answer it.
+ */
+function renderMonth(outlet, month) {
+  const teams = month.teams ?? [];
+  outlet.appendChild(h(`
+    <div class="panel" style="margin-bottom:16px" data-testid="month-leads">
+      <div class="row spread wrap">
+        <h2 class="mt0">Leads received in ${esc(month.month)}
+          <small>${Number(month.total)} total${Number(month.inbound_total) > 0
+            ? ` · ${Number(month.inbound_total)} inbound 📞` : ''}</small></h2>
+      </div>
+      <div class="row wrap" style="gap:18px">
+        ${teams.map((t) => `
+          <div>
+            <div class="hint">${esc(t.team_name)}</div>
+            <div style="font-size:1.6em;font-weight:700">${Number(t.leads_month)}</div>
+            <div class="hint">${Number(t.leads_today)} today${Number(t.inbound_month) > 0
+              ? ` · ${Number(t.inbound_month)} inbound` : ''}${Number(t.won_month) > 0
+              ? ` · ${Number(t.won_month)} won` : ''}</div>
+          </div>`).join('')}
+      </div>
+    </div>`));
+}
 
 function renderIntake(outlet, intake, me) {
   const sources = intake.sources ?? [];

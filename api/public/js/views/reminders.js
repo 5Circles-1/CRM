@@ -32,6 +32,8 @@ const GROUPS = [
   ['cross_team_in', 'From the other team', 'Escalated across teams and now yours.'],
   ['new_lead', 'New leads', 'Fresh, never contacted.'],
   ['retap_due', 'Ready to re-tap', 'Gone quiet after repeated no-answers. Worked as a batch from the Re-tap tab.'],
+  ['intake_stalled', 'Leads stopped arriving', 'The intake watchdog. It clears itself the moment leads flow again — an alarm here is a live problem, not history.'],
+  ['intake_recovered', 'Intake recovered', 'The all-clear: leads are arriving again. The alarms above were resolved automatically.'],
   ['daily_brief_morning', 'Morning brief', 'Your numbers for the day ahead.'],
   ['daily_brief_midday', 'Pace check', 'Where you stand against what the month needs.'],
   ['daily_brief_evening', 'End of day', 'What closed, and what carries into tomorrow.'],
@@ -183,7 +185,8 @@ export async function render(outlet, me) {
                 ${SNOOZE.map(([lbl, mins]) => `
                   <button class="btn small" data-snooze="${esc(a.lead_id)}" data-mins="${mins}"
                           title="Move the next action, and record that you did">${lbl}</button>`).join('')}
-              ` : `<button class="btn small" data-read="${esc(a.notification_id)}">Mark read</button>`}
+              ` : `<button class="btn small" data-read="${esc(a.notification_id)}">${
+                a.kind === 'intake_stalled' ? 'Problem resolved — clear it' : 'Mark read'}</button>`}
             </td>
           </tr>`).join('')}
         </tbody></table></div>

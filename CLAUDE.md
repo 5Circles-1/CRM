@@ -66,6 +66,18 @@ Do not undo these without understanding why they exist.
   would own anything. Enforced inside `crm.transfer_lead`, not in the UI.
   Capped at `lead.max_transfers` (2), then the lead goes to nurture.
 
+- **Absence is covered forward, never sideways** (0056, owner decision). A
+  fresh lead whose team has no caller on the floor goes to the team lead
+  (counsellor) if they are on the floor; otherwise it parks visibly. The
+  escalation ladder hands up only to an on-floor counsellor — an absent
+  counsellor's share stays with the callers. Owned leads never move because
+  of an absence: only new work routes around an empty chair.
+
+- **An inbound call is the one lead a caller may create** (0055), and only to
+  themselves — the fairness engine is untouched. Always immediate priority,
+  born first-touched, and its mandatory follow-up date is a pending callback,
+  so missing it rings.
+
 - **Leads do not move between callers on their own** (0049, owner decision).
   The untouched-lead sweeper and the cross-team mover ship disabled
   (`sla.untouched_reassign_minutes` = 0, `escalation.cross_team_days` = 0) and
@@ -78,7 +90,10 @@ Do not undo these without understanding why they exist.
   client asked for and the reminder the lead's owner set (`alerts.popup_kinds`),
   once each (`alerts.repeat_minutes` = 0), with one soft chime (`alerts.chime`).
   The bell badge counts the same appointments plus the intake emergency
-  (`alerts.bell_kinds`) — zero is its healthy state. The full engine-raised
+  (`alerts.bell_kinds`) — zero is its healthy state. The intake alarm names
+  the failing source, never duplicates while unread, and stands itself down
+  with an `intake_recovered` all-clear the moment intake is healthy again
+  (0054, 0058) — an intake alarm on the bell is always a live problem. The full engine-raised
   work list is never dropped: `/me/alerts?scope=work` serves it, the Alerts
   tab offers it behind one click, and overdue work keeps its home in the
   pipeline buckets.
