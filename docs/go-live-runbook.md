@@ -350,6 +350,12 @@ patches; glance at `sudo journalctl -u crm --since yesterday | grep -i error`.
 ```bash
 sudo /opt/crm/deploy/update.sh
 ```
+Or no command at all: the repository ships a **Deploy to the floor** button
+(GitHub → Actions tab), which also fires automatically on every merge to the
+main branch. One-time setup — add two repository secrets under Settings →
+Secrets and variables → Actions: `DEPLOY_HOST` (the server address) and
+`DEPLOY_SSH_KEY` (the private key you already ssh in with). Until those
+exist, merges just note that auto-deploy is off; nothing fails.
 It pulls, reinstalls dependencies only if the lockfile changed, applies any
 new migrations (each recorded, never re-run), restarts, and proves the
 service came back. The manual form — for the first update on a server that

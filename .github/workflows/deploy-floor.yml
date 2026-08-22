@@ -1,0 +1,62 @@
+# Deploy to the floor - one click, or automatic on every merge.
+#
+# The server has always been updated by hand: ssh in, run
+# /opt/crm/deploy/update.sh. That works, but it means the person who merges
+# is not always the person who can deploy, and the floor waits. This makes
+# GitHub do the ssh-ing.
+#
+# ONE-TIME SETUP (repo Settings -> Secrets and variables -> Actions):
+#   Secret  DEPLOY_HOST     the server address, e.g. crm.yourcompany.in
+#   Secret  DEPLOY_SSH_KEY  the PRIVATE key you already ssh to the server with
+#                           (the whole file, -----BEGIN ... END-----)
+#   Variable DEPLOY_USER    optional, default root
+#   Variable DEPLOY_PORT    optional, default 22
+#
+# Until the secrets exist, merges simply note that auto-deploy is off - they
+# never fail the build. update.sh itself stays the safety: fast-forward-only
+# pull, migrations recorded and never re-run, service restart proven.
+name: Deploy to the floor
+
+on:
+  # The button: Actions tab -> "Deploy to the floor" -> Run workflow.
+  workflow_dispatch:
+  # And automatically, the moment anything lands on the live branch.
+  push:
+    branches: [claude/quirky-tesla-ijsvkz]
+
+# Never two updates racing each other on the server.
+concurrency:
+  group: deploy-floor
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run update.sh on the server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER || 'root' }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_SSH_KEY" ]; then
+            if [ "$EVENT" = "push" ]; then
+              echo "::notice::Auto-deploy is not configured (add DEPLOY_HOST and DEPLOY_SSH_KEY in Settings -> Secrets and variables -> Actions). Update the server by hand: sudo /opt/crm/deploy/update.sh"
+              exit 0
+            fi
+            echo "::error::Add repository secrets DEPLOY_HOST and DEPLOY_SSH_KEY first (Settings -> Secrets and variables -> Actions), then run this again."
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # root runs the script directly; a non-root deploy user needs
+          # passwordless sudo for exactly this script and nothing else.
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" \
+              -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+              "$DEPLOY_USER@$DEPLOY_HOST" \
+              'if [ "$(id -u)" = 0 ]; then /opt/crm/deploy/update.sh; else sudo -n /opt/crm/deploy/update.sh; fi'
