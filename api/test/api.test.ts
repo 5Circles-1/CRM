@@ -1387,6 +1387,39 @@ describe('re-tap filters', () => {
     assert.ok(ids.includes(leadId));
   });
 
+  it('one chip covers the whole unreachable family: busy, switched off, incoming unavailable', async () => {
+    const busyLead = makeLeadFor(USERS.callerA1, 'Was Busy');
+    const offLead = makeLeadFor(USERS.callerA1, 'Was Switched Off');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const next = new Date(Date.now() + 3.6e6).toISOString();
+    await h.app.inject({
+      method: 'POST', url: `/leads/${busyLead}/calls`, headers: auth(a1),
+      payload: { disposition: 'busy', durationSeconds: 0, nextActionAt: next },
+    });
+    await h.app.inject({
+      method: 'POST', url: `/leads/${offLead}/calls`, headers: auth(a1),
+      payload: { disposition: 'switched_off', durationSeconds: 0, nextActionAt: next },
+    });
+
+    // The bug this pins down: the "Busy or switched off" list showed only the
+    // busy third of the unreachable family.
+    const res = await h.app.inject({
+      method: 'GET',
+      url: '/leads?lastDisposition=busy,switched_off,incoming_unavailable',
+      headers: auth(a1),
+    });
+    assert.equal(res.statusCode, 200);
+    const ids = res.json().leads.map((l: { id: string }) => l.id);
+    assert.ok(ids.includes(busyLead), 'the busy lead is on the list');
+    assert.ok(ids.includes(offLead), 'and so is the switched-off one');
+
+    // A made-up outcome is refused, never silently ignored.
+    const bad = await h.app.inject({
+      method: 'GET', url: '/leads?lastDisposition=busy,nonsense', headers: auth(a1),
+    });
+    assert.equal(bad.statusCode, 400);
+  });
+
   it('does not return a lead whose latest call was something else', async () => {
     const leadId = makeLeadFor(USERS.callerA1, 'Then Answered');
     const a1 = await login(h.app, EMAILS.callerA1);
@@ -2016,7 +2049,10 @@ describe('attendance till date', () => {
     const summary = await h.app.inject({
       method: 'GET', url: '/me/attendance/summary', headers: auth(m),
     });
-    assert.equal(Number(summary.json().days_present), 2, 'both days count as present');
+    // Present means worked: the stale one-minute day stays on record but is
+    // not attendance - only today, being worked right now, counts.
+    assert.equal(Number(summary.json().days_present), 1,
+      'the forgotten one-minute day is not a present day');
     assert.ok(Number(summary.json().total_minutes) < 24 * 60,
       'and the total is hours actually worked, not elapsed calendar time');
 

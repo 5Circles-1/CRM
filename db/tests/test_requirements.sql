@@ -2393,6 +2393,30 @@ select crm_test.check(
   (select count(distinct business_date) = 2 from crm.attendance_sessions
     where user_id = '22222222-0000-0000-0000-00000000000c'), null);
 
+-- Present means worked (0059). The founder now has two days on record:
+-- yesterday, a forgotten tap the stale-closer trimmed to one honest minute,
+-- and today, a live session. Only today is attendance - a percentage that
+-- one press of Start shift can farm is not a percentage worth reading.
+select crm_test.check(
+  'HRS', 'a one-minute stale day is on record but is NOT a present day',
+  (select days_present = 1 and currently_logged_in from crm.v_attendance_summary
+    where user_id = '22222222-0000-0000-0000-00000000000c'),
+  (select days_present::text || ' present' from crm.v_attendance_summary
+    where user_id = '22222222-0000-0000-0000-00000000000c'));
+
+select crm_test.check(
+  'HRS', 'and the tap-day is held against nobody: the denominator holds the same bar',
+  (select attendance_pct = 100.0 from crm.v_attendance_summary
+    where user_id = '22222222-0000-0000-0000-00000000000c'),
+  (select attendance_pct::text || '% over ' || floor_days_since_joining || ' floor day(s)'
+     from crm.v_attendance_summary
+    where user_id = '22222222-0000-0000-0000-00000000000c'));
+
+select crm_test.check(
+  'HRS', 'the minimum is a setting, like every other tunable number',
+  (select value = '60'::jsonb from crm.settings
+    where key = 'attendance.min_present_minutes'), null);
+
 -- =============================================================================
 -- DUP: one human, one live lead. The floor found the same person in both
 -- teams' books; the schema now makes that impossible rather than unlikely.

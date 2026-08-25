@@ -34,6 +34,23 @@ const dispositionSchema = z.enum(
   DISPOSITIONS.map((d) => d.value) as [string, ...string[]],
 );
 
+/**
+ * One outcome, or a comma-separated group of them. "Busy or switched off"
+ * is one list in the floor's head - busy, switched off, incoming
+ * unavailable - and filtering on a single value silently showed only the
+ * busy third of it.
+ */
+const DISPOSITION_VALUES = new Set(DISPOSITIONS.map((d) => d.value));
+const dispositionListSchema = z
+  .string()
+  .refine(
+    (s) => {
+      const parts = s.split(',').map((p) => p.trim()).filter(Boolean);
+      return parts.length > 0 && parts.every((p) => DISPOSITION_VALUES.has(p));
+    },
+    { message: 'unknown outcome in lastDisposition' },
+  );
+
 /** Dispositions that close a lead, and so need no follow-up action. */
 const TERMINAL = new Set(DISPOSITIONS.filter((d) => d.terminal).map((d) => d.value));
 
@@ -260,7 +277,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
         // Re-tap filters. "Show me everyone who did not answer" and "show me
         // everyone who asked to be called back" are the two lists a caller
         // actually works from, and neither was reachable before.
-        lastDisposition: dispositionSchema.optional(),
+        lastDisposition: dispositionListSchema.optional(),
         due: z.enum(['overdue', 'today', 'untouched', 'contacted']).optional(),
         whatsapp: z.enum(['sent', 'not_sent']).optional(),
         // Which follow-up round the lead is on. The old Excel had a column per
@@ -292,7 +309,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
                  or (regexp_replace($1, '[^0-9]', '', 'g') <> ''
                      and phone_e164 like '%' || regexp_replace($1, '[^0-9]', '', 'g')))
             and ($2::text is null or status = $2::crm.lead_status)
-            and ($5::text is null or last_disposition = $5::crm.disposition)
+            and ($5::text is null or last_disposition = any(string_to_array($5, ',')::crm.disposition[]))
             and ($6::text is null or case $6
                    when 'overdue'   then next_action_at < now()
                    when 'today'     then crm.ist_date(next_action_at) = crm.ist_date(now())

@@ -20,7 +20,7 @@ const PRESETS = [
   { label: 'Asked for a callback', filters: { lastDisposition: 'callback_requested' } },
   { label: 'Will call us back', filters: { lastDisposition: 'will_call_back_self' } },
   { label: 'Will visit', filters: { lastDisposition: 'will_visit' } },
-  { label: 'Busy or switched off', filters: { lastDisposition: 'busy' } },
+  { label: 'Busy / switched off / unreachable', filters: { lastDisposition: 'busy,switched_off,incoming_unavailable' } },
   { label: 'Overdue now', filters: { due: 'overdue' } },
   { label: 'Never contacted', filters: { due: 'untouched' } },
   { label: 'No WhatsApp yet', filters: { whatsapp: 'not_sent' } },
@@ -104,6 +104,7 @@ export async function render(outlet, me) {
         <label class="f">Last outcome
           <select name="lastDisposition">
             <option value="">Any outcome</option>
+            <option value="busy,switched_off,incoming_unavailable">Unreachable — busy, switched off or unavailable</option>
             ${dispositions.map((d) => `<option value="${esc(d.value)}">${esc(d.label)}</option>`).join('')}
           </select>
         </label>
