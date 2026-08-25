@@ -2239,6 +2239,19 @@ select crm_test.check(
   not exists (select 1 from crm.v_lead_flow_waiting w
                where w.team_id = crm.team_of(:A1, current_date)), null);
 
+-- The floor-wide banner must agree with its own breakdown (the 81-vs-14
+-- contradiction): the summary counts waiting by the same rule, and the
+-- covered leads get their own honest count instead of being shouted about.
+select crm_test.check(
+  'CVR', 'the banner headline counts waiting by the same rule as the breakdown',
+  (select s.unassigned = (select count(*) from crm.leads
+                           where caller_id is null and counsellor_id is null
+                             and status in ('new', 'working'))
+      and s.covered >= 1
+     from crm.v_lead_flow_summary s),
+  (select 'unassigned=' || s.unassigned || ' covered=' || s.covered
+     from crm.v_lead_flow_summary s));
+
 -- A caller returning must NOT pull the lead back off the leader.
 insert into crm.attendance_sessions (user_id, started_at) values (:A1, now());
 select crm.assign_pending_leads(50) as _ \gset

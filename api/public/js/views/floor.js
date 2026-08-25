@@ -289,8 +289,17 @@ export async function render(outlet, me) {
                   ${esc(WAIT_WHY(w))}
                 </div>`).join('') || 'Held at team level; they hand out automatically.'}
             </div>
+            ${Number(leadFlow.covered) > 0 ? `
+            <div class="hint" style="margin-top:6px">
+              Not counted above: ${Number(leadFlow.covered)} lead${Number(leadFlow.covered) === 1 ? ' is' : 's are'}
+              with the team leads, covering for absent callers — owned and being worked, not waiting.
+            </div>` : ''}
             ${me.role === 'admin' || me.role === 'ops'
               ? '<button class="btn small" id="assign-now" style="margin-top:8px">Hand out now</button>' : ''}
+          </div>` : Number(leadFlow.covered) > 0 ? `
+          <div class="hint" style="margin-bottom:10px">
+            ${Number(leadFlow.covered)} lead${Number(leadFlow.covered) === 1 ? ' is' : 's are'} with the team leads,
+            covering for absent callers — owned and being worked, not waiting.
           </div>` : ''}
         <table class="table"><thead><tr>
           <th>Caller</th><th>Team</th><th>Status</th><th class="num">Today</th>
