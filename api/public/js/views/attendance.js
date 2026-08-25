@@ -31,15 +31,21 @@ export async function render(outlet, me) {
       Number(summary.attendance_pct) >= 90 ? 'good' : Number(summary.attendance_pct) < 75 ? 'bad' : ''));
     tiles.appendChild(statTile('Time logged till date', minsLabel(summary.total_minutes),
       `average ${minsLabel(summary.avg_minutes_per_day)} per day`));
-    tiles.appendChild(statTile('Full 9h days', Number(summary.full_days),
+    tiles.appendChild(statTile('Full days', Number(summary.full_days),
       `${Number(summary.late_days)} late arrival${Number(summary.late_days) === 1 ? '' : 's'}`));
     outlet.appendChild(tiles);
   }
 
+  // The daily target comes from settings (attendance.expected_minutes), so
+  // the heading must read the data, not hard-code "9h" while the rows
+  // compare against something else.
+  const expectedMins = Number(team?.[0]?.expected_minutes ?? mine?.[0]?.expected_minutes ?? 540);
+  const expectedLabel = minsLabel(expectedMins);
+
   if (isLead && team) {
     outlet.appendChild(h(`
       <div class="panel">
-        <h2>Floor today <small>expected 9h (09:30–18:30 IST)</small></h2>
+        <h2>Floor today <small>expected ${esc(expectedLabel)} on the floor (shift 09:30–18:30 IST)</small></h2>
         ${team.length === 0 ? '<div class="empty">Nobody has logged in yet today.</div>' : `
         <table class="table" data-testid="attendance-today"><thead><tr>
           <th>Person</th><th>First login</th><th class="num">Logged</th><th class="num">Shortfall</th><th>Status</th>
@@ -52,7 +58,7 @@ export async function render(outlet, me) {
             <td class="num">${Number(r.shortfall_minutes) > 0 ? esc(minsLabel(r.shortfall_minutes)) : '—'}</td>
             <td>${r.currently_logged_in
               ? '<span class="badge b-ok">on floor</span>'
-              : r.met_hours ? '<span class="badge b-ok">met 9h</span>' : '<span class="badge b-mute">off floor</span>'}</td>
+              : r.met_hours ? '<span class="badge b-ok">target met</span>' : '<span class="badge b-mute">off floor</span>'}</td>
           </tr>`).join('')}
         </tbody></table>`}
       </div>`));
@@ -68,11 +74,24 @@ export async function render(outlet, me) {
         <table class="table"><thead><tr>
           <th>Person</th><th>Since</th><th class="num">Days present</th>
           <th class="num">Attendance</th><th class="num">Time logged</th>
-          <th class="num">Avg / day</th><th class="num">Full 9h days</th>
+          <th class="num">Avg / day</th><th class="num">Full days</th>
           <th class="num">Late days</th>
         </tr></thead><tbody>
         ${floorSummary.map((r) => {
           const pct = r.attendance_pct === null ? null : Number(r.attendance_pct);
+          // Only the people who work floor shifts are judged. An admin or
+          // mentor row shows its number quietly instead of a permanent red
+          // flag for a shift they were never expected to hold.
+          const judged = ['caller', 'counsellor'].includes(r.role);
+          // Green means genuinely there: showing up daily AND logging real
+          // hours. Present every day at 3h a day is amber, never green.
+          const hoursOk = Number(r.avg_minutes_per_day) >= 0.75 * expectedMins;
+          const pctBadge = pct === null ? '—'
+            : !judged ? `<span class="badge b-mute" title="not held to floor attendance">${pct}%</span>`
+            : pct >= 90 && hoursOk ? `<span class="badge b-ok">${pct}%</span>`
+            : pct < 75 ? `<span class="badge b-bad">${pct}%</span>`
+            : `<span class="badge b-warn"${pct >= 90 && !hoursOk
+                ? ' title="present most days, but the hours are short"' : ''}>${pct}%</span>`;
           return `
           <tr>
             <td>${avatarHtml(r.full_name, avatars[r.user_id], 22)} ${esc(r.full_name)}
@@ -80,10 +99,7 @@ export async function render(outlet, me) {
                 ${r.currently_logged_in ? '<span class="badge b-ok">on floor</span>' : ''}</td>
             <td>${esc(fmtDate(r.first_day))}</td>
             <td class="num">${Number(r.days_present)} / ${Number(r.floor_days_since_joining)}</td>
-            <td class="num">${pct === null ? '—'
-              : pct >= 90 ? `<span class="badge b-ok">${pct}%</span>`
-              : pct < 75 ? `<span class="badge b-bad">${pct}%</span>`
-              : `<span class="badge b-warn">${pct}%</span>`}</td>
+            <td class="num">${pctBadge}</td>
             <td class="num">${esc(minsLabel(r.total_minutes))}</td>
             <td class="num">${esc(minsLabel(r.avg_minutes_per_day))}</td>
             <td class="num">${Number(r.full_days)}</td>
@@ -94,7 +110,9 @@ export async function render(outlet, me) {
         </tbody></table></div>
         <div class="hint" style="margin-top:8px">
           “Days present” counts against floor days since that person's first recorded day,
-          so Sundays and holidays are never held against anyone.
+          so Sundays and holidays are never held against anyone. A day counts as present
+          only when real time was logged — tapping Start shift alone is not attendance —
+          and green needs the hours, not just the presence.
         </div>
       </div>`));
   }
@@ -104,7 +122,7 @@ export async function render(outlet, me) {
       <h2>My last 30 days</h2>
       ${mine.length === 0 ? '<div class="empty">No attendance recorded yet — use “Start shift” in the top bar.</div>' : `
       <table class="table"><thead><tr>
-        <th>Date</th><th>First login</th><th class="num">Sessions</th><th class="num">Logged</th><th>9h met</th>
+        <th>Date</th><th>First login</th><th class="num">Sessions</th><th class="num">Logged</th><th>Target met</th>
       </tr></thead><tbody>
       ${mine.map((r) => `
         <tr>
