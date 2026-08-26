@@ -759,6 +759,7 @@ describe('deals and collections', () => {
     const row = (due.json() as Array<Record<string, unknown>>).find((r) => r.instalment_id === firstInstalment);
     assert.ok(row, 'the open instalment must appear in the dues queue');
     assert.equal(row!.confidence, 'high', 'the open promise rides along');
+    assert.ok(row!.team_name, 'every due row names its team, so the admin can split the book');
   });
 
   it('records a payment, settles the instalment and the promise', async () => {
@@ -2840,6 +2841,28 @@ describe('manual leads and the payment punch-in', () => {
       payload: { fullName: 'Self Serve', phone: '9822001003' },
     });
     assert.equal(res.statusCode, 403);
+  });
+
+  it('an admin logs an inbound call and routes it to a team lead, or to fair distribution', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const followupAt = new Date(Date.now() + 24 * 3600_000).toISOString();
+
+    const toLead = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(admin),
+      payload: { fullName: 'Rang Reception', phone: '9822001017',
+                 kind: 'inbound', followupAt, assignTo: USERS.counsellorA },
+    });
+    assert.equal(toLead.statusCode, 201);
+    assert.equal(toLead.json().priority, 'immediate');
+
+    // No target picked: fair distribution, never an error - this is the
+    // path the admin's own modal takes by default.
+    const fair = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(admin),
+      payload: { fullName: 'Rang Reception Two', phone: '9822001018',
+                 kind: 'inbound', followupAt },
+    });
+    assert.equal(fair.statusCode, 201);
   });
 
   it('the one exception: a caller logs the inbound call they answered, and keeps it', async () => {
