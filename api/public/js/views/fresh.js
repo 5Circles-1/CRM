@@ -83,9 +83,10 @@ export async function render(outlet, me) {
                 <button class="chip ${scope === 'all' ? 'on' : ''}" data-scope="all">Whole floor</button>
               </div>` : ''}
             ${['counsellor', 'admin', 'ops'].includes(me.role)
-              ? '<button class="btn primary small" id="add-lead">Add lead</button>'
+              ? `<button class="btn small" id="add-inbound">📞 Inbound call</button>
+                 <button class="btn primary small" id="add-lead">Add lead</button>`
               : me.role === 'caller'
-                ? '<button class="btn primary small" id="add-lead">📞 Log inbound call</button>' : ''}
+                ? '<button class="btn primary small" id="add-inbound">📞 Log inbound call</button>' : ''}
           </div>
         </div>
         <div class="chips" style="margin:10px 0 14px">
@@ -127,6 +128,7 @@ export async function render(outlet, me) {
       </div>`));
 
     outlet.querySelector('#add-lead')?.addEventListener('click', () => addLeadModal(me, () => draw()));
+    outlet.querySelector('#add-inbound')?.addEventListener('click', () => addLeadModal(me, () => draw(), 'inbound'));
     outlet.querySelectorAll('[data-flag]').forEach((b) =>
       b.addEventListener('click', () => { flag = b.dataset.flag; draw(); }));
     outlet.querySelectorAll('[data-scope]').forEach((b) =>

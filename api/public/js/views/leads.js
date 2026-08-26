@@ -211,12 +211,19 @@ export async function render(outlet, me) {
 
   if (['counsellor', 'admin', 'ops', 'caller'].includes(me?.role)) {
     const slot = panel.querySelector('#addlead-slot');
-    const btn = h(`<button class="btn primary small">${
-      me?.role === 'caller' ? '📞 Log inbound call' : 'Add lead'}</button>`);
-    btn.addEventListener('click', () => addLeadModal(me, (lead) => {
-      location.hash = `#/lead/${lead.id}`;
-    }));
-    slot.appendChild(btn);
+    const openLead = (lead) => { location.hash = `#/lead/${lead.id}`; };
+    const inbound = h('<button class="btn small">📞 Inbound call</button>');
+    inbound.addEventListener('click', () => addLeadModal(me, openLead, 'inbound'));
+    slot?.appendChild(inbound);
+    if (me?.role === 'caller') {
+      // The one lead a caller may create; their button says exactly that.
+      inbound.classList.add('primary');
+      inbound.textContent = '📞 Log inbound call';
+    } else {
+      const btn = h('<button class="btn primary small">Add lead</button>');
+      btn.addEventListener('click', () => addLeadModal(me, openLead));
+      slot?.appendChild(btn);
+    }
   }
 
   panel.querySelector('#presets').addEventListener('click', (e) => {

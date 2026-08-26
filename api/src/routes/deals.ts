@@ -103,6 +103,7 @@ export async function dealRoutes(app: FastifyInstance): Promise<void> {
         `select i.id as instalment_id, i.seq, i.due_date, i.amount, i.paid_amount, i.status,
                 (i.due_date < crm.ist_date(now())) as is_late,
                 d.id as deal_id, d.booked_amount, d.counsellor_id,
+                d.team_id, t.name as team_name,
                 u.full_name as counsellor_name,
                 l.id as lead_id, l.full_name, l.phone_e164,
                 pr.promised_date, pr.promised_amount, pr.confidence,
@@ -110,6 +111,7 @@ export async function dealRoutes(app: FastifyInstance): Promise<void> {
            from crm.instalments i
            join crm.deals d on d.id = i.deal_id and d.status = 'booked'
            join crm.users u on u.id = d.counsellor_id
+           left join crm.teams t on t.id = d.team_id
            join crm.leads l on l.id = d.lead_id
            left join lateral (
              select p.promised_date, p.promised_amount, p.confidence

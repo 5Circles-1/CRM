@@ -2,7 +2,9 @@ import { get, post } from './api.js';
 import { esc, h, openModal, toast } from './util.js';
 
 /**
- * The add-a-lead modal, shared by Find lead and Fresh leads.
+ * The add-a-lead modal, shared by Find lead and Fresh leads, opened either
+ * as plain hand entry or straight in inbound-call mode by the dedicated
+ * 📞 button every role now has.
  *
  * Two kinds of lead enter here:
  *
@@ -15,30 +17,38 @@ import { esc, h, openModal, toast } from './util.js';
  *   keeps it — they cannot route it elsewhere). Always immediate priority,
  *   and the follow-up date the client was promised is required: it becomes
  *   a pending callback, which is the loudest machinery the CRM has.
+ *   Counsellors default to keeping what they answered; an admin routes it
+ *   to a caller, a team lead, or fair distribution.
  */
-export async function addLeadModal(me, onDone) {
+export async function addLeadModal(me, onDone, initialKind) {
   const isCaller = me?.role === 'caller';
 
-  // The caller list comes from lead flow, which counsellors and admins can
-  // read. A caller cannot (and does not need to): their inbound call is
-  // theirs by rule.
-  const flow = isCaller
-    ? { callers: [] }
-    : await get('/dashboards/lead-flow').catch(() => ({ callers: [] }));
+  // The caller list comes from lead flow; the team-lead list from the entry
+  // options both admins and counsellors can read. A caller needs neither:
+  // their inbound call is theirs by rule.
+  const [flow, options] = isCaller
+    ? [{ callers: [] }, { counsellors: [] }]
+    : await Promise.all([
+        get('/dashboards/lead-flow').catch(() => ({ callers: [] })),
+        get('/advisory/entry-options').catch(() => ({ counsellors: [] })),
+      ]);
   const callers = (flow.callers ?? []).filter((c) => c.is_active);
+  const counsellors = options.counsellors ?? [];
 
-  // Default the follow-up to tomorrow morning 10:00 IST-ish (local clock):
-  // a real, editable suggestion rather than an empty box.
+  // Default the follow-up to tomorrow morning 10:00 (local clock): a real,
+  // editable suggestion rather than an empty box.
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
   tomorrow.setHours(10, 0, 0, 0);
   const followupDefault = new Date(tomorrow.getTime() - tomorrow.getTimezoneOffset() * 60000)
     .toISOString().slice(0, 16);
 
+  let kind = isCaller || initialKind === 'inbound' ? 'inbound' : 'manual';
+
   const bodyEl = h(`
     <div>
       <div class="chips" style="margin-bottom:10px" data-testid="lead-kind">
-        <button class="chip ${isCaller ? '' : 'on'}" data-kind="manual" ${isCaller ? 'disabled' : ''}>Entered by hand</button>
-        <button class="chip ${isCaller ? 'on' : ''}" data-kind="inbound">📞 Inbound call</button>
+        <button class="chip" data-kind="manual" ${isCaller ? 'disabled' : ''}>Entered by hand</button>
+        <button class="chip" data-kind="inbound">📞 Inbound call</button>
       </div>
       <div class="hint" style="margin-bottom:10px" data-kind-hint></div>
       <label class="f">Full name <input name="name" maxlength="120" required></label>
@@ -53,27 +63,44 @@ export async function addLeadModal(me, onDone) {
             <option value="immediate">Immediate — asked to be called now</option>
           </select>
         </label>
-        ${isCaller ? '' : `
-        <label class="f">Give it to
-          <select name="assign">
-            <option value="">Fair distribution (recommended)</option>
-            <option value="${esc(me?.id ?? '')}" data-self>Keep it with me — I took the call</option>
-            ${callers.map((c) => `<option value="${esc(c.user_id)}">${esc(c.full_name)}${
-              c.flow_status === 'receiving' ? '' : ' (off floor)'}</option>`).join('')}
-          </select>
-        </label>`}
+        ${isCaller ? '' : '<label class="f">Give it to <select name="assign"></select></label>'}
       </div>
       <label class="f" data-f="followup" style="display:none">Follow up on — the date the client was told
         <input name="followup" type="datetime-local" value="${followupDefault}">
       </label>
-      <label class="f">Note <input name="note" maxlength="300"
-        placeholder="how they reached us — walk-past, referral…"></label>
+      <label class="f">Note <input name="note" maxlength="300"></label>
     </div>`);
 
-  const footer = h('<div><button class="btn primary">Add lead</button></div>');
-  const { close } = openModal('Add a lead', bodyEl, footer);
+  const footer = h('<div><button class="btn primary"></button></div>');
+  const { close } = openModal(kind === 'inbound' ? 'Log an inbound call' : 'Add a lead', bodyEl, footer);
 
-  let kind = isCaller ? 'inbound' : 'manual';
+  // The target list changes with the kind: a team lead may keep an inbound
+  // call they answered, but a plain hand-entered lead only ever goes to a
+  // caller or to fair distribution.
+  const rebuildAssign = () => {
+    const assign = bodyEl.querySelector('[name=assign]');
+    if (!assign) return;
+    const prev = assign.value;
+    const iAmCounsellor = me?.role === 'counsellor';
+    const opts = [];
+    if (kind === 'inbound' && iAmCounsellor) {
+      opts.push(`<option value="${esc(me.id)}">Keep it with me — I took the call</option>`);
+    }
+    opts.push('<option value="">Fair distribution among the callers</option>');
+    opts.push(...callers.map((c) => `<option value="${esc(c.user_id)}">${esc(c.full_name)}${
+      c.flow_status === 'receiving' ? '' : ' (off floor)'}</option>`));
+    if (kind === 'inbound') {
+      opts.push(...counsellors
+        .filter((c) => c.id !== me?.id)
+        .map((c) => `<option value="${esc(c.id)}">${esc(c.full_name)} — team lead${
+          c.team_name ? ` (${esc(c.team_name)})` : ''}</option>`));
+    }
+    assign.innerHTML = opts.join('');
+    // Keep a still-valid earlier choice; otherwise the kind's own default.
+    if (prev && [...assign.options].some((o) => o.value === prev)) assign.value = prev;
+    else assign.value = kind === 'inbound' && iAmCounsellor ? me.id : '';
+  };
+
   const applyKind = () => {
     bodyEl.querySelectorAll('[data-kind]').forEach((b) =>
       b.classList.toggle('on', b.dataset.kind === kind));
@@ -89,12 +116,7 @@ export async function addLeadModal(me, onDone) {
     note.placeholder = kind === 'inbound'
       ? 'what they asked about, and anything promised on the call'
       : 'how they reached us — walk-past, referral…';
-    // Answering the phone makes the lead yours by default; fair distribution
-    // stays one click away for the receptionist case.
-    const assign = bodyEl.querySelector('[name=assign]');
-    if (assign && kind === 'inbound' && !assign.value) {
-      assign.value = assign.querySelector('[data-self]')?.value ?? '';
-    }
+    rebuildAssign();
     footer.querySelector('button').textContent =
       kind === 'inbound' ? 'Log inbound call' : 'Add lead';
   };

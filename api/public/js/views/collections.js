@@ -8,32 +8,75 @@ import { addClientModal } from './advisory.js';
  * urgent first. The counsellor who closed the deal chases it - that
  * accountability is the highest-leverage rule in the build.
  */
+// The team the admin was looking at, kept for the session so working through
+// one team's book survives a payment being punched in.
+let teamFilter = '';
+
 export async function render(outlet, me) {
-  const rows = await get('/collections/due');
+  const allRows = await get('/collections/due');
   outlet.innerHTML = '';
 
-  const overdue = rows.filter((r) => r.status === 'overdue');
-  const totalDue = rows.reduce((a, r) => a + (Number(r.amount) - Number(r.paid_amount)), 0);
-  const overdueAmt = overdue.reduce((a, r) => a + (Number(r.amount) - Number(r.paid_amount)), 0);
+  // One box per team, plus the whole floor. RLS already scopes a counsellor
+  // to their own team, so the chips only appear when there is genuinely more
+  // than one team's book on screen - the admin's view.
+  const teams = [...new Map(allRows
+    .filter((r) => r.team_name)
+    .map((r) => [r.team_name, true])).keys()].sort();
+  if (teamFilter && !teams.includes(teamFilter)) teamFilter = '';
+  const rows = teamFilter ? allRows.filter((r) => r.team_name === teamFilter) : allRows;
+
+  const sums = (list) => {
+    const od = list.filter((r) => r.status === 'overdue');
+    return {
+      count: list.length,
+      due: list.reduce((a, r) => a + (Number(r.amount) - Number(r.paid_amount)), 0),
+      overdue: od.reduce((a, r) => a + (Number(r.amount) - Number(r.paid_amount)), 0),
+      overdueCount: od.length,
+    };
+  };
+  const t = sums(rows);
 
   outlet.appendChild(h(`
-    <div class="row spread" style="margin-bottom:14px">
-      <div></div>
+    <div class="row spread wrap" style="margin-bottom:14px">
+      ${teams.length > 1 ? `
+      <div class="chips" style="margin:0" data-testid="team-chips">
+        <button class="chip ${teamFilter === '' ? 'on' : ''}" data-team="">Whole floor</button>
+        ${teams.map((name) => `
+          <button class="chip ${teamFilter === name ? 'on' : ''}" data-team="${esc(name)}">${esc(name)}</button>`).join('')}
+      </div>` : '<div></div>'}
       <button class="btn primary" id="punch-in" data-testid="punch-in">Punch in a payment</button>
     </div>
-    <div class="grid cols-3" style="margin-bottom:18px">
-      <div class="stat"><div class="k">Open instalments</div><div class="v">${rows.length}</div></div>
-      <div class="stat"><div class="k">Outstanding</div><div class="v">${fmtINR(totalDue)}</div></div>
+    <div class="grid cols-3" style="margin-bottom:${teams.length > 1 && !teamFilter ? '10px' : '18px'}">
+      <div class="stat"><div class="k">Open instalments${teamFilter ? ` — ${esc(teamFilter)}` : ''}</div><div class="v">${t.count}</div></div>
+      <div class="stat"><div class="k">Outstanding</div><div class="v">${fmtINR(t.due)}</div></div>
       <div class="stat"><div class="k">Overdue</div>
-        <div class="v" style="color:${overdue.length ? 'var(--bad)' : 'inherit'}">${fmtINR(overdueAmt)}</div>
-        <div class="s">${overdue.length} instalment${overdue.length === 1 ? '' : 's'}</div></div>
-    </div>`));
+        <div class="v" style="color:${t.overdueCount ? 'var(--bad)' : 'inherit'}">${fmtINR(t.overdue)}</div>
+        <div class="s">${t.overdueCount} instalment${t.overdueCount === 1 ? '' : 's'}</div></div>
+    </div>
+    ${teams.length > 1 && !teamFilter ? `
+    <div class="row wrap" style="gap:18px;margin-bottom:18px" data-testid="team-split">
+      ${teams.map((name) => {
+        const ts = sums(allRows.filter((r) => r.team_name === name));
+        return `
+        <div>
+          <div class="hint">${esc(name)}</div>
+          <div style="font-weight:700">${fmtINR(ts.due)} outstanding</div>
+          <div class="hint">${ts.count} instalment${ts.count === 1 ? '' : 's'}${ts.overdueCount
+            ? ` · <span style="color:var(--bad)">${fmtINR(ts.overdue)} overdue</span>` : ' · nothing overdue'}</div>
+        </div>`;
+      }).join('')}
+    </div>` : ''}`));
+
+  outlet.querySelectorAll('[data-team]').forEach((b) =>
+    b.addEventListener('click', () => { teamFilter = b.dataset.team; render(outlet, me); }));
 
   outlet.querySelector('#punch-in')?.addEventListener('click', () =>
     punchInModal(me, () => render(outlet, me)));
 
   if (rows.length === 0) {
-    outlet.appendChild(h('<div class="panel"><div class="empty">Nothing outstanding. Every rupee booked has been collected.</div></div>'));
+    outlet.appendChild(h(`<div class="panel"><div class="empty">${teamFilter
+      ? `Nothing outstanding for ${esc(teamFilter)}.`
+      : 'Nothing outstanding. Every rupee booked has been collected.'}</div></div>`));
     return;
   }
 
@@ -42,7 +85,7 @@ export async function render(outlet, me) {
       <h2>Still to collect <small>most urgent first — the closer chases their own deals</small></h2>
       <table class="table" data-testid="dues-table"><thead><tr>
         <th>Due</th><th>Client</th><th>Instalment</th><th class="num">Amount</th>
-        <th>Status</th><th>Promise</th><th>Closer</th><th></th>
+        <th>Status</th><th>Promise</th><th>Closer</th>${teams.length > 1 && !teamFilter ? '<th>Team</th>' : ''}<th></th>
       </tr></thead><tbody>
       ${rows.map((r) => {
         const outstanding = Number(r.amount) - Number(r.paid_amount);
@@ -58,6 +101,7 @@ export async function render(outlet, me) {
             ? `${esc(fmtDate(r.promised_date))} · ${fmtINR(r.promised_amount)} <span class="badge b-mute">${esc(r.confidence)}</span>`
             : '<span class="hint">none</span>'}</td>
           <td>${esc(r.counsellor_name)}</td>
+          ${teams.length > 1 && !teamFilter ? `<td>${esc(r.team_name ?? '—')}</td>` : ''}
           <td class="right row" style="justify-content:flex-end">
             <button class="btn small primary act-pay" data-testid="record-payment">Payment</button>
             <button class="btn small act-promise">Promise</button>
