@@ -1,4 +1,5 @@
 import { get } from '../api.js';
+import { addLeadModal } from '../addlead.js';
 import { agoLabel, esc, fmtDT, h } from '../util.js';
 
 /**
@@ -41,6 +42,29 @@ export async function render(outlet, me) {
     const data = await get(`/me/pipeline${active ? `?bucket=${active}` : ''}`);
     const counts = data.counts ?? {};
     outlet.innerHTML = '';
+
+    // The inbound-call door, on the screen the floor actually sits on all day.
+    //
+    // It has existed since 0055 and been a visible button since the Fresh
+    // leads rework - but only there and on Find lead, and a caller lands on
+    // My Pipeline and stays there. A button on a page nobody opens is the
+    // same as no button, which is exactly what the floor kept reporting.
+    // The client is on the phone NOW; the door has to be where the person
+    // answering already is.
+    outlet.appendChild(h(`
+      <div class="row spread wrap" style="margin-bottom:10px">
+        <div class="hint">
+          The client rang us? Log it here — an inbound call is the warmest lead
+          on the floor and its follow-up date rings when it is due.
+        </div>
+        <button class="btn primary" data-testid="day-inbound" id="day-inbound">
+          📞 Log inbound call
+        </button>
+      </div>`));
+    outlet.querySelector('#day-inbound').addEventListener('click', () =>
+      addLeadModal(me, (lead) => {
+        if (lead?.id) location.hash = `#/lead/${lead.id}`; else draw();
+      }, 'inbound'));
 
     // Tabs, each with its own count. Clicking one filters; clicking it again
     // goes back to everything - a filter you cannot leave is a trap.

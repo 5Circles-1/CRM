@@ -103,6 +103,37 @@ Do not undo these without understanding why they exist.
   applied. Awarding full marks for an empty component rewards idleness — before
   this was fixed, a caller with zero dials out-scored an active one 29 to 26.
 
+- **A day nobody worked is not a bad day — it is not a day** (0061, 0062).
+  `crm.was_present()` is the single definition (real logged time by
+  `attendance.min_present_minutes`, or any dial, or any deal closed), and
+  everything that rates, averages or ranks a person divides by days that pass
+  it. Three things were wrong before, all the same arithmetic:
+  - **The ACE seat.** Each team's best caller holds
+    `distribution.ace_share_pct` (66.7%) of its fresh leads, picked nightly —
+    but on totals a week of leave was identical to a week of doing nothing, so
+    returning from five days off silently cost the floor's best caller two
+    thirds of her leads. `tier.min_dials_to_rank` is now measured at the
+    person's own pace, and a caller with fewer than `tier.min_days_to_rank`
+    (2) measured days is **not judged at all** — they keep the tier they
+    earned, so a returning ACE returns as the ACE. Two ACEs in a team is the
+    deliberate transitional state; they split evenly until the returner has
+    completed days to be ranked on.
+  - **The leaderboard.** `/performance/overall` summed totals over the window,
+    so the board and the ACE pick disagreed — one ranked volume, the other
+    rate. Both now call `crm.rate_standings()`, the one formula, normalised
+    within the floor or within a team. The volume trophies stay on raw totals:
+    "most calls" meaning most calls is a fact, not a ranking, and no leads
+    depend on it.
+  - **The daily score.** Four caller components are always applicable by
+    design, so `crm.snapshot_scores()` wrote a hard 0/100 for an absent day and
+    five days' leave put five zeroes into the seven-day average on the caller's
+    own My Score page. An absent day now gets no snapshot at all, and a zero
+    already recorded for one is cleared.
+
+  The share is on the Floor page (`v_lead_flow.fresh_share_pct`): a share that
+  moves on its own must be visible, or "why did all the leads go to her today?"
+  has no answer on any screen.
+
 - **A connect requires real talk time**, not just a connected disposition
   (`dial.min_talk_seconds_for_connect`, default 30s). Otherwise disposition
   accuracy is fiction and so is every conversion rate built on it.
@@ -188,7 +219,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(54 database assertions, 44 API integration tests, 3 browser E2E flows) and
+(293 database assertions, 270 API integration tests, 10 browser E2E flows) and
 the **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK). The app implements the
 tested `POST /device-logs/sync` contract; the log-call form offers the

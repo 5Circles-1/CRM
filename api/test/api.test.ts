@@ -1928,6 +1928,53 @@ describe('lead flow diagnostics ("why is this caller not getting leads")', () =>
     const res = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(a1) });
     assert.equal(res.statusCode, 403);
   });
+
+  // The share moves on its own - the nightly ranking hands one caller per team
+  // distribution.ace_share_pct of the fresh leads - and until 0061 no screen
+  // said so. "Why did all the leads go to her today?" has to be answerable
+  // from this panel, or it gets answered by reading a migration file.
+  it('names each caller\u2019s actual share of the fresh leads, and who holds the ACE seat', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const before = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(cs) });
+    const even = before.json().callers
+      .filter((c: { team_id: string | null }) => c.team_id !== null)
+      .find((c: { user_id: string }) => c.user_id === USERS.callerA1);
+    assert.equal(Number(even.fresh_share_pct), 50, 'two equals on the floor split their team evenly');
+    assert.equal(even.tier, 'standard');
+
+    fixtureSql(`insert into crm.performance_tiers (user_id, tier)
+                values ('${USERS.callerA1}', 'ace')
+                on conflict (user_id) do update set tier = 'ace', pinned_by = null,
+                  pin_reason = null, pin_expires_at = null;`);
+
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(cs) });
+    const callers = res.json().callers;
+    const a1 = callers.find((c: { user_id: string }) => c.user_id === USERS.callerA1);
+    const a2 = callers.find((c: { user_id: string }) => c.user_id === USERS.callerA2);
+
+    assert.equal(a1.tier, 'ace');
+    assert.ok(Number(a1.fresh_share_pct) > 60, 'the ACE seat is visibly worth two thirds of the team');
+    assert.ok(Number(a2.fresh_share_pct) < 40, 'and the rest is visibly what everyone else splits');
+    assert.equal(Math.round(Number(a1.fresh_share_pct) + Number(a2.fresh_share_pct)), 100);
+    assert.ok(Number.isInteger(Number(a1.days_present_in_window)),
+      'the days the ranking measured them over travel with the row');
+
+    fixtureSql(`delete from crm.performance_tiers where user_id = '${USERS.callerA1}';`);
+  });
+
+  it('says restricted out loud instead of reporting a caller as receiving nothing', async () => {
+    fixtureSql(`insert into crm.performance_tiers (user_id, tier)
+                values ('${USERS.callerB1}', 'restricted')
+                on conflict (user_id) do update set tier = 'restricted', pinned_by = null,
+                  pin_reason = null, pin_expires_at = null;`);
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(cs) });
+    const b1 = res.json().callers.find((c: { user_id: string }) => c.user_id === USERS.callerB1);
+    assert.equal(b1.flow_status, 'restricted',
+      'a caller barred from fresh leads must not read "receiving leads"');
+    assert.equal(Number(b1.fresh_share_pct), 0);
+    fixtureSql(`delete from crm.performance_tiers where user_id = '${USERS.callerB1}';`);
+  });
 });
 
 describe('follow-up radar', () => {
@@ -1972,6 +2019,73 @@ describe('overall standings', () => {
     // Ordered best first, and the ranks agree with the order.
     const pts = rows.map((r: { overall_points: string }) => Number(r.overall_points));
     assert.deepEqual([...pts].sort((x, y) => y - x), pts, 'sorted by points, best first');
+  });
+
+  // The bug that started 0061/0062: a caller back from five days' leave was
+  // ranked on totals against a colleague's full week, dropped down the board,
+  // and lost the guaranteed fresh-lead share for having been away.
+  //
+  // Stated positively, which is also what makes it testable against a database
+  // full of other tests' calls: the SAME work per day earns the SAME standing,
+  // however many days you were there. B1 worked two days and B2 five, at an
+  // identical pace - so B2's totals are far larger and their points are not.
+  it('gives equal work per day equal standing, however many days were worked', async () => {
+    // Days 0..n-1, today included, so both are measured over the same kind of
+    // day. Three days each side of the fixture against six: identical pace,
+    // wildly different totals.
+    for (const [user, days] of [[USERS.callerB1, 3], [USERS.callerB2, 6]] as const) {
+      fixtureSql(`
+        with made as (
+          insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                                 status, next_action_at)
+          select '33333333-0000-0000-0000-000000000001',
+                 'Rate ' || d || '-' || i,
+                 '+9197' || substr(md5('${user}' || d || i), 1, 8),
+                 '${user}', crm.team_of('${user}', current_date), 'working', now()
+            from generate_series(0, ${days} - 1) d, generate_series(1, 40) i
+          returning id, full_name
+        )
+        insert into crm.call_attempts
+          (lead_id, user_id, started_at, disposition, duration_seconds, is_connect)
+        select m.id, '${user}',
+               -- Clamped to the past: today's slice must not land in the future
+               -- whatever o'clock the suite happens to run at.
+               least(((crm.ist_date(now())
+                       - split_part(substr(m.full_name, 6), '-', 1)::int)::timestamp
+                      + interval '11 hours') at time zone 'Asia/Kolkata',
+                     now() - interval '1 minute'),
+               case when split_part(m.full_name, '-', 2)::int <= 20
+                    then 'connected_interested'::crm.disposition
+                    else 'not_answered'::crm.disposition end,
+               case when split_part(m.full_name, '-', 2)::int <= 20 then 60 else 0 end,
+               split_part(m.full_name, '-', 2)::int <= 20
+          from made m;`);
+    }
+
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'GET', url: '/performance/overall?days=7', headers: auth(admin),
+    });
+    assert.equal(res.statusCode, 200);
+    const rows = res.json();
+    const b1 = rows.find((r: { user_id: string }) => r.user_id === USERS.callerB1);
+    const b2 = rows.find((r: { user_id: string }) => r.user_id === USERS.callerB2);
+    assert.ok(b1 && b2, 'both callers are on the board');
+
+    assert.ok(Number(b2.dials) > Number(b1.dials) * 1.5,
+      'the fixture is the shape of the bug: on raw totals the one who was there more wins easily');
+    assert.ok(Number(b2.days_present) > Number(b1.days_present),
+      'and the board reports the days each number is out of');
+
+    const spread = Math.abs(Number(b1.overall_points) - Number(b2.overall_points));
+    const top = Math.max(Number(b1.overall_points), Number(b2.overall_points));
+    assert.ok(spread <= top * 0.15,
+      `equal work per day must earn near-equal points, not a 2.5x gap: `
+      + `${b1.overall_points} (${b1.days_present}d) vs ${b2.overall_points} (${b2.days_present}d)`);
+
+    // Ordered best first, ranks agreeing with the order, on the same payload.
+    const pts = rows.map((r: { overall_points: string }) => Number(r.overall_points));
+    assert.deepEqual([...pts].sort((x, y) => y - x), pts, 'still sorted by points, best first');
   });
 
   it('serves the browser the reminder and refresh cadence settings', async () => {

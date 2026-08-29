@@ -24,6 +24,14 @@ export async function render(outlet) {
     return;
   }
 
+  // Days off are no longer scored at all — a day nobody worked is not a zero
+  // out of a hundred (0062). So the newest score may belong to the last day
+  // this person actually worked, and the tile has to say which day that is
+  // rather than calling someone else's Tuesday "Today".
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const isToday = String(latest.score_date).slice(0, 10) === todayISO;
+  const headLabel = isToday ? 'Today' : `Last worked — ${fmtDate(latest.score_date)}`;
+
   const delta = latest.change_vs_last_week;
   const deltaText =
     delta === null || delta === undefined ? ''
@@ -32,12 +40,12 @@ export async function render(outlet) {
 
   outlet.appendChild(h(`
     <div class="grid cols-3">
-      <div class="stat"><div class="k">Today</div>
+      <div class="stat"><div class="k">${esc(headLabel)}</div>
         <div class="v" style="font-size:34px" data-testid="score-total">${Number(latest.total).toFixed(0)}</div>
-        <div class="s">${starsHtml(latest.total, 'Your rating today — one star per 20 points')} ${deltaText}</div></div>
+        <div class="s">${starsHtml(latest.total, 'One star per 20 points')} ${deltaText}</div></div>
       <div class="stat"><div class="k">Your 7-day average</div>
         <div class="v">${latest.own_7day_avg ?? '—'}</div>
-        <div class="s">out of 100</div></div>
+        <div class="s">over your last 7 <b>working</b> days — days off are not counted</div></div>
       <div class="stat"><div class="k">Team average today</div>
         <div class="v">${latest.team_avg_that_day ?? '—'}</div>
         <div class="s">you are #${latest.rank_in_team} in the team</div></div>

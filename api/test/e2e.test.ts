@@ -150,6 +150,46 @@ it('caller: sees the day queue and logs a call with a callback', async () => {
   await signOut();
 });
 
+/**
+ * The inbound-call door, from where the person answering the phone is sitting.
+ *
+ * The machinery has existed since 0055 and a button since the Fresh-leads
+ * rework - but only on Fresh leads and Find lead, and a caller lands on My
+ * Pipeline and never leaves it, so the floor kept reporting that inbound
+ * calling "is still not showing". This test is that report: sign in, do not
+ * navigate anywhere, and log an inbound call from the landing screen.
+ */
+it('caller: logs an inbound call from the pipeline they land on, without navigating', async () => {
+  await signIn(EMAILS.callerA1);
+  await page.waitForSelector('[data-testid=day-chips]');
+
+  const inbound = page.locator('[data-testid=day-inbound]');
+  assert.equal(await inbound.count(), 1,
+    'the inbound-call button must be on the screen a caller actually lands on');
+  await inbound.click();
+
+  await page.waitForSelector('.modal [data-testid=lead-kind]');
+  // A caller has exactly one lead-creation door, and it opens on inbound.
+  const heading = await page.locator('.modal header h3').textContent();
+  assert.ok(/inbound/i.test(heading ?? ''), `modal opened as "${heading}"`);
+  assert.ok(await page.locator('.modal [name=followup]').isVisible(),
+    'the promised follow-up date is asked for, because it is what makes it ring');
+
+  const phone = `98${Date.now().toString().slice(-8)}`;
+  await page.fill('.modal [name=name]', 'Inbound E2E Client');
+  await page.fill('.modal [name=phone]', phone);
+  await page.screenshot({ path: path.join(SHOTS, '10-caller-inbound-call.png') });
+  await page.click('.modal footer button');
+
+  // It lands on the new lead, owned by the caller who answered.
+  await page.waitForFunction(`location.hash.startsWith('#/lead/')`);
+  await page.waitForSelector('[data-testid=log-call-btn]');
+  const body = await page.locator('#outlet').textContent();
+  assert.ok(body?.includes('Inbound E2E Client'), 'the logged inbound call opens as a real lead');
+
+  await signOut();
+});
+
 it('counsellor: sees the floor and transfers a Not Answered lead', async () => {
   await signIn(EMAILS.counsellorA);
 
