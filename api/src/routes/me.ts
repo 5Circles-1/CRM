@@ -440,11 +440,19 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
   /**
    * The overall standings: one number per person across every metric.
    *
-   * Each metric is normalised against the best on the floor in the window and
-   * weighted; the weights live in crm.settings (leaderboard.weight_*) so ops
-   * can re-balance what "best overall" means without a deploy. A metric nobody
-   * scored on contributes nothing rather than dividing by zero, and someone
-   * with no activity at all is left off the board rather than shown at 0.
+   * The formula lives in crm.rate_standings(), not here, because the nightly
+   * ACE pick ranks people too and "best" must not mean one thing on this
+   * board and another when the leads are handed out. Weights stay in
+   * crm.settings (leaderboard.weight_*) so ops can re-balance without a
+   * deploy. A metric nobody scored on contributes nothing rather than
+   * dividing by zero, and someone with no activity at all is left off the
+   * board rather than shown at 0.
+   *
+   * Points are computed PER DAY PRESENT. Ranking a caller who worked two
+   * days against a colleague's seven totals means leave itself costs them
+   * places - which is how a caller returning from five days off silently
+   * lost the guaranteed fresh-lead share (0061, 0062). `days_present` rides
+   * along so the board can say what each person's number is out of.
    */
   app.get('/performance/overall', async (req) => {
     req.requireUser();
@@ -454,59 +462,11 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
 
     return req.tx((q) =>
       q.many(
-        `with w as (
-           select crm.setting_num('leaderboard.weight_deals', 25)      as deals,
-                  crm.setting_num('leaderboard.weight_revenue', 25)    as revenue,
-                  crm.setting_num('leaderboard.weight_connects', 15)   as connects,
-                  crm.setting_num('leaderboard.weight_dials', 10)      as dials,
-                  crm.setting_num('leaderboard.weight_interested', 10) as interested,
-                  crm.setting_num('leaderboard.weight_walkins', 10)    as walkins,
-                  crm.setting_num('leaderboard.weight_talk', 5)        as talk
-         ),
-         sums as (
-           select user_id, full_name, role,
-                  sum(dials)::numeric        as dials,
-                  sum(connects)::numeric     as connects,
-                  sum(interested)::numeric   as interested,
-                  sum(walked_in)::numeric    as walked_in,
-                  sum(deals)::numeric        as deals,
-                  sum(revenue)::numeric      as revenue,
-                  sum(talk_seconds)::numeric as talk_seconds
-             from crm.v_person_performance
-            where day > crm.ist_date(now()) - $1::int
-            group by user_id, full_name, role
-           having sum(dials) > 0 or sum(deals) > 0 or sum(walked_in) > 0
-         ),
-         tops as (
-           select max(dials) as dials, max(connects) as connects,
-                  max(interested) as interested, max(walked_in) as walked_in,
-                  max(deals) as deals, max(revenue) as revenue,
-                  max(talk_seconds) as talk_seconds
-             from sums
-         )
-         select s.user_id, s.full_name, s.role,
-                s.dials::int, s.connects::int, s.interested::int, s.walked_in::int,
-                s.deals::int, s.revenue, s.talk_seconds::bigint,
-                round(
-                    coalesce(s.deals        / nullif(t.deals, 0), 0)        * w.deals
-                  + coalesce(s.revenue      / nullif(t.revenue, 0), 0)      * w.revenue
-                  + coalesce(s.connects     / nullif(t.connects, 0), 0)     * w.connects
-                  + coalesce(s.dials        / nullif(t.dials, 0), 0)        * w.dials
-                  + coalesce(s.interested   / nullif(t.interested, 0), 0)   * w.interested
-                  + coalesce(s.walked_in    / nullif(t.walked_in, 0), 0)    * w.walkins
-                  + coalesce(s.talk_seconds / nullif(t.talk_seconds, 0), 0) * w.talk
-                , 1) as overall_points,
-                rank() over (order by
-                    coalesce(s.deals        / nullif(t.deals, 0), 0)        * w.deals
-                  + coalesce(s.revenue      / nullif(t.revenue, 0), 0)      * w.revenue
-                  + coalesce(s.connects     / nullif(t.connects, 0), 0)     * w.connects
-                  + coalesce(s.dials        / nullif(t.dials, 0), 0)        * w.dials
-                  + coalesce(s.interested   / nullif(t.interested, 0), 0)   * w.interested
-                  + coalesce(s.walked_in    / nullif(t.walked_in, 0), 0)    * w.walkins
-                  + coalesce(s.talk_seconds / nullif(t.talk_seconds, 0), 0) * w.talk
-                  desc) as rank
-           from sums s, tops t, w
-          order by overall_points desc, s.full_name`,
+        `select user_id, full_name, role, days_present,
+                dials, connects, interested, walked_in, deals, revenue,
+                talk_seconds, points as overall_points, rank
+           from crm.rate_standings($1::int, 'floor', true,
+                                   array['caller','counsellor'], 1)`,
         [days],
       ),
     );

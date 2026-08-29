@@ -640,11 +640,27 @@ end $$;
 
 select crm.snapshot_scores(crm.ist_date(now())) as users_scored \gset
 
+-- Everyone who WORKED today, and nobody else. A day off is not a zero out of
+-- a hundred - four of the caller components are always applicable by design,
+-- so scoring an absent day would put a hard zero into the person's own
+-- seven-day average for having been on approved leave (0062).
 select crm_test.check(
-  'R7', 'scores are computed for every active caller and counsellor',
-  (select count(*) = 6 from crm.score_snapshots where score_date = crm.ist_date(now())),
+  'R7', 'a score is computed for everyone who was on the floor today',
+  (select count(*) from crm.score_snapshots where score_date = crm.ist_date(now()))
+    = (select count(*) from crm.users u
+        where u.is_active and u.role in ('caller', 'counsellor')
+          and crm.was_present(u.id, crm.ist_date(now()))),
   (select count(*)::text || ' snapshots' from crm.score_snapshots
     where score_date = crm.ist_date(now())));
+
+select crm_test.check(
+  'R7', 'and nobody is scored for a day they were not there',
+  (select count(*) = 0 from crm.score_snapshots s
+    where s.score_date = crm.ist_date(now())
+      and not crm.was_present(s.user_id, s.score_date)),
+  (select count(*)::text || ' absent-day scores' from crm.score_snapshots s
+    where s.score_date = crm.ist_date(now())
+      and not crm.was_present(s.user_id, s.score_date)));
 
 select crm_test.check(
   'R7', 'a caller score carries all seven components for self-reflection',
@@ -863,8 +879,12 @@ select set_config('app.user_id', '22222222-0000-0000-0000-00000000000b', false) 
 
 select crm.snapshot_scores(crm.ist_date(now())) as ops_scored \gset
 select crm_test.check(
-  'R9', 'scheduler identity (ops) can snapshot every score',
-  (:ops_scored = 6), 'scored ' || :ops_scored);
+  'R9', 'scheduler identity (ops) can snapshot every score it should',
+  :ops_scored = (select count(*) from crm.users u
+                  where u.is_active and u.role in ('caller', 'counsellor')
+                    and crm.was_present(u.id, crm.ist_date(now())))
+  and :ops_scored > 0,
+  'scored ' || :ops_scored);
 
 do $$
 begin
@@ -3354,6 +3374,131 @@ select crm_test.check(
 
 update crm.settings set value = 'true'::jsonb where key = 'tier.auto_rank';
 update crm.settings set value = '20'::jsonb where key = 'tier.min_dials_to_rank';
+
+-- =============================================================================
+-- ABSENCE (ABS): a day nobody worked is not a bad day - it is not a day.
+--
+-- The owner, after five days' approved leave cost his best caller two thirds
+-- of her fresh leads: "in case a caller remains absent that should not affect
+-- the ranking, because if they do not log into the CRM they are not receiving
+-- any leads." These assertions are that sentence, in three places: the
+-- definition of presence, the daily score, and the leaderboard.
+-- =============================================================================
+
+-- A quiet day nobody worked. The TIR fixture above covers days 1-5, so day 6
+-- is genuinely empty for everybody.
+select crm_test.check(
+  'ABS', 'a day with no shift, no dial and no deal is not a day present',
+  not crm.was_present(:B2, crm.ist_date(now()) - 6),
+  null);
+
+-- The zero the old behaviour would have written for that day.
+insert into crm.score_snapshots (user_id, score_date, role, team_id, components, total)
+values (:B2, crm.ist_date(now()) - 6, 'caller', crm.team_of(:B2, current_date),
+        '{}'::jsonb, 0);
+
+select crm.snapshot_scores(crm.ist_date(now()) - 6) as _abs_none \gset
+
+select crm_test.check(
+  'ABS', 'a day nobody worked scores nobody',
+  :_abs_none = 0, 'scored ' || :_abs_none);
+
+select crm_test.check(
+  'ABS', 'and a zero already recorded for an absent day is cleared, not kept',
+  (select count(*) = 0 from crm.score_snapshots
+    where user_id = :B2 and score_date = crm.ist_date(now()) - 6),
+  null);
+
+-- A forgotten Start shift is a clerical slip, not a day off: the dial proves
+-- the day. Presence must never depend on remembering to press a button.
+do $$
+declare
+  v_lead uuid;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id,
+                         team_id, status, next_action_at)
+  values ('33333333-0000-0000-0000-000000000001', 'Abs Forgot Shift',
+          '+919555790001', '22222222-0000-0000-0000-000000000004',
+          crm.team_of('22222222-0000-0000-0000-000000000004', current_date),
+          'working', now())
+  returning id into v_lead;
+  insert into crm.call_attempts (lead_id, user_id, started_at, disposition, duration_seconds)
+  values (v_lead, '22222222-0000-0000-0000-000000000004',
+          ((crm.ist_date(now()) - 6)::timestamp + interval '11 hours')
+            at time zone 'Asia/Kolkata',
+          'connected_interested', 75);
+end $$;
+
+select crm_test.check(
+  'ABS', 'a dial with no attendance row still counts as a day worked',
+  crm.was_present(:B2, crm.ist_date(now()) - 6),
+  null);
+
+select crm.snapshot_scores(crm.ist_date(now()) - 6) as _abs_one \gset
+
+select crm_test.check(
+  'ABS', 'and that day is scored, for exactly the person who worked it',
+  :_abs_one = 1
+  and (select count(*) = 1 from crm.score_snapshots
+        where score_date = crm.ist_date(now()) - 6 and user_id = :B2),
+  'scored ' || :_abs_one);
+
+-- The invariant that makes the seven-day average on My Score honest: there is
+-- no zero anywhere in the table for a day its owner was not there.
+select crm_test.check(
+  'ABS', 'no zero score survives anywhere for a day the person was absent',
+  (select count(*) = 0 from crm.score_snapshots s
+    where s.total = 0 and not crm.was_present(s.user_id, s.score_date)),
+  (select count(*)::text || ' left' from crm.score_snapshots s
+    where s.total = 0 and not crm.was_present(s.user_id, s.score_date)));
+
+-- ---------------------------------------------------------------------------
+-- The leaderboard, on the same fixture the ACE pick was tested on: A1 worked
+-- two days well, A2 five days steadily. On TOTALS A2 leads every column and
+-- takes the board; on rates A1 does. Before 0062 the board and the ACE pick
+-- disagreed - one ranked on volume, the other on rate - which is exactly the
+-- drift "one formula everywhere" exists to prevent.
+-- ---------------------------------------------------------------------------
+select crm_test.check(
+  'ABS', 'on raw totals the caller who was merely present more leads - the old bug',
+  (select sum(dials) from crm.v_person_performance
+    where user_id = :A2 and day >= crm.ist_date(now()) - 7 and day < crm.ist_date(now()))
+  > (select sum(dials) from crm.v_person_performance
+      where user_id = :A1 and day >= crm.ist_date(now()) - 7 and day < crm.ist_date(now())),
+  null);
+
+select crm_test.check(
+  'ABS', 'the leaderboard ranks on rate, so leave costs nobody a place',
+  (select points from crm.rate_standings(7, 'floor', false, array['caller'], 1)
+    where user_id = :A1)
+  > (select points from crm.rate_standings(7, 'floor', false, array['caller'], 1)
+      where user_id = :A2),
+  (select string_agg(full_name || ' ' || points || ' (' || days_present || 'd)', ', ')
+     from crm.rate_standings(7, 'floor', false, array['caller'], 1)));
+
+select crm_test.check(
+  'ABS', 'the board says what each number is out of, in days actually worked',
+  (select days_present from crm.rate_standings(7, 'floor', false, array['caller'], 1)
+    where user_id = :A1) = 2
+  and (select days_present from crm.rate_standings(7, 'floor', false, array['caller'], 1)
+        where user_id = :A2) = 5,
+  null);
+
+select crm_test.check(
+  'ABS', 'the board and the ACE pick agree, because they are one formula',
+  (select user_id from crm.rate_standings(7, 'team', false, array['caller'], 2)
+    where team_id = crm.team_of(:A1, current_date) and rank = 1) = :A1
+  and crm.tier_of(:A1) = 'ace',
+  'A1 is ' || crm.tier_of(:A1));
+
+-- A caller the window could not measure is left out of the ranking entirely -
+-- not ranked last. Being ranked last for being on leave is the whole bug.
+select crm_test.check(
+  'ABS', 'someone below the measured-days bar is unranked, never ranked last',
+  not exists (
+    select 1 from crm.rate_standings(7, 'team', false, array['caller'], 6) s
+     where s.user_id = :A1),
+  null);
 
 -- =============================================================================
 -- Results

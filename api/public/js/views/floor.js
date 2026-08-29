@@ -133,6 +133,7 @@ export async function render(outlet, me) {
               ${avatarHtml(p.full_name, avatars[p.user_id], i === 0 ? 64 : 48)}
               <div class="podium-name">${esc(p.full_name)}</div>
               <div class="podium-points">${Number(p.overall_points).toFixed(0)} pts</div>
+              ${boardDays > 1 ? `<div class="podium-basis">over ${Number(p.days_present)} day${Number(p.days_present) === 1 ? '' : 's'} worked</div>` : ''}
             </div>`).join('')}
         </div>`));
       if (overall.length > 3) {
@@ -143,7 +144,8 @@ export async function render(outlet, me) {
               <div class="standing-row">
                 <span class="standing-rank">#${Number(p.rank)}</span>
                 ${avatarHtml(p.full_name, avatars[p.user_id], 26)}
-                <span class="standing-name">${esc(p.full_name)}</span>
+                <span class="standing-name">${esc(p.full_name)}${boardDays > 1
+                  ? ` <small class="standing-basis">${Number(p.days_present)}d</small>` : ''}</span>
                 <span class="standing-track"><span style="width:${Math.max(2, (Number(p.overall_points) / maxPts) * 100)}%"></span></span>
                 <span class="standing-points">${Number(p.overall_points).toFixed(0)}</span>
               </div>`).join('')}
@@ -151,7 +153,9 @@ export async function render(outlet, me) {
       }
       board.appendChild(h(`<div class="hint" style="margin:2px 0 10px">
         Overall points weigh conversions and revenue first, then connects, dials, interest,
-        walk-ins and talk time — the weights are settings under Admin → Settings (leaderboard.*).</div>`));
+        walk-ins and talk time — the weights are settings under Admin → Settings (leaderboard.*).
+        ${boardDays > 1 ? `Points are counted <b>per day worked</b>, so days off cost nobody a place —
+        the trophies below stay on raw totals, because “most calls” means most calls.` : ''}</div>`));
     }
 
     const cards = h('<div class="trophy-grid"></div>');
