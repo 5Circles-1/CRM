@@ -1928,6 +1928,53 @@ describe('lead flow diagnostics ("why is this caller not getting leads")', () =>
     const res = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(a1) });
     assert.equal(res.statusCode, 403);
   });
+
+  // The share moves on its own - the nightly ranking hands one caller per team
+  // distribution.ace_share_pct of the fresh leads - and until 0061 no screen
+  // said so. "Why did all the leads go to her today?" has to be answerable
+  // from this panel, or it gets answered by reading a migration file.
+  it('names each caller\u2019s actual share of the fresh leads, and who holds the ACE seat', async () => {
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const before = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(cs) });
+    const even = before.json().callers
+      .filter((c: { team_id: string | null }) => c.team_id !== null)
+      .find((c: { user_id: string }) => c.user_id === USERS.callerA1);
+    assert.equal(Number(even.fresh_share_pct), 50, 'two equals on the floor split their team evenly');
+    assert.equal(even.tier, 'standard');
+
+    fixtureSql(`insert into crm.performance_tiers (user_id, tier)
+                values ('${USERS.callerA1}', 'ace')
+                on conflict (user_id) do update set tier = 'ace', pinned_by = null,
+                  pin_reason = null, pin_expires_at = null;`);
+
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(cs) });
+    const callers = res.json().callers;
+    const a1 = callers.find((c: { user_id: string }) => c.user_id === USERS.callerA1);
+    const a2 = callers.find((c: { user_id: string }) => c.user_id === USERS.callerA2);
+
+    assert.equal(a1.tier, 'ace');
+    assert.ok(Number(a1.fresh_share_pct) > 60, 'the ACE seat is visibly worth two thirds of the team');
+    assert.ok(Number(a2.fresh_share_pct) < 40, 'and the rest is visibly what everyone else splits');
+    assert.equal(Math.round(Number(a1.fresh_share_pct) + Number(a2.fresh_share_pct)), 100);
+    assert.ok(Number.isInteger(Number(a1.days_present_in_window)),
+      'the days the ranking measured them over travel with the row');
+
+    fixtureSql(`delete from crm.performance_tiers where user_id = '${USERS.callerA1}';`);
+  });
+
+  it('says restricted out loud instead of reporting a caller as receiving nothing', async () => {
+    fixtureSql(`insert into crm.performance_tiers (user_id, tier)
+                values ('${USERS.callerB1}', 'restricted')
+                on conflict (user_id) do update set tier = 'restricted', pinned_by = null,
+                  pin_reason = null, pin_expires_at = null;`);
+    const cs = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/dashboards/lead-flow', headers: auth(cs) });
+    const b1 = res.json().callers.find((c: { user_id: string }) => c.user_id === USERS.callerB1);
+    assert.equal(b1.flow_status, 'restricted',
+      'a caller barred from fresh leads must not read "receiving leads"');
+    assert.equal(Number(b1.fresh_share_pct), 0);
+    fixtureSql(`delete from crm.performance_tiers where user_id = '${USERS.callerB1}';`);
+  });
 });
 
 describe('follow-up radar', () => {

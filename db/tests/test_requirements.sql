@@ -3113,50 +3113,84 @@ select crm_test.check(
   null);
 
 -- =============================================================================
--- TIER (TIR): the daily ACE ranking. The team's best caller over the last
--- completed days gets the guaranteed fresh-lead share; live pins outrank the
--- ranking; expired pins return the seat to it; the switch turns it all off.
+-- TIER (TIR): the daily ACE ranking. Each team's best caller PER DAY PRESENT
+-- over the last completed days gets the guaranteed fresh-lead share; a caller
+-- the ranking could not measure keeps the tier they earned; live pins outrank
+-- the ranking; expired pins return the seat to it; the switch turns it off.
 -- =============================================================================
 
--- A small floor for the test: three dials clears the promotion bar.
+-- A small floor for the test: three dials over the window clears the bar.
 update crm.settings set value = '3'::jsonb where key = 'tier.min_dials_to_rank';
 
--- Yesterday's work: A1 dialled three times with two real conversations;
--- A2 dialled once and got no answer. Yesterday, because the ranking reads
--- completed days only - today's calls from earlier in this file must not
--- move the answer.
+-- The scenario that produced 0061, in data.
+--
+-- A1 was on leave for most of the window and worked TWO days, well: three
+-- dials a day, two real conversations each day.
+-- A2 was there FIVE days and worked steadily but less well: two dials a day,
+-- one conversation each day.
+--
+-- On totals - the old rule - A2 wins easily (10 dials to 6, 5 connects to 4)
+-- and takes two thirds of the team's fresh leads off the better caller, for
+-- no reason but her leave. On rates A1 wins, which is what "the member who
+-- does the best calls" was always supposed to mean.
+--
+-- Completed days only: today's calls from earlier in this file must not move
+-- the answer.
 do $$
 declare
   v_src   uuid := '33333333-0000-0000-0000-000000000001';
   v_a1    uuid := '22222222-0000-0000-0000-000000000001';
   v_a2    uuid := '22222222-0000-0000-0000-000000000002';
   v_team  uuid;
-  v_yday  timestamptz := ((crm.ist_date(now()) - 1)::timestamp + interval '11 hours')
-                           at time zone 'Asia/Kolkata';
   v_lead  uuid;
+  v_at    timestamptz;
+  d       int;
   i       int;
 begin
   v_team := crm.team_of(v_a1, current_date);
-  for i in 1..3 loop
-    insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
-                           status, next_action_at)
-    values (v_src, 'Tier A1 Lead ' || i, '+91955570000' || i, v_a1, v_team,
-            'working', now())
-    returning id into v_lead;
-    insert into crm.call_attempts (lead_id, user_id, started_at, disposition, duration_seconds)
-    values (v_lead, v_a1, v_yday,
-            case when i <= 2 then 'connected_interested'::crm.disposition
-                 else 'not_answered'::crm.disposition end,
-            case when i <= 2 then 60 else 0 end);
+
+  for d in 1..2 loop
+    v_at := ((crm.ist_date(now()) - d)::timestamp + interval '11 hours')
+              at time zone 'Asia/Kolkata';
+    for i in 1..3 loop
+      insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                             status, next_action_at)
+      values (v_src, format('Tier A1 d%s l%s', d, i), format('+9195557%s%s001', d, i),
+              v_a1, v_team, 'working', now())
+      returning id into v_lead;
+      insert into crm.call_attempts (lead_id, user_id, started_at, disposition, duration_seconds)
+      values (v_lead, v_a1, v_at,
+              case when i <= 2 then 'connected_interested'::crm.disposition
+                   else 'not_answered'::crm.disposition end,
+              case when i <= 2 then 60 else 0 end);
+    end loop;
   end loop;
 
-  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
-                         status, next_action_at)
-  values (v_src, 'Tier A2 Lead', '+919555700004', v_a2, v_team, 'working', now())
-  returning id into v_lead;
-  insert into crm.call_attempts (lead_id, user_id, started_at, disposition, duration_seconds)
-  values (v_lead, v_a2, v_yday, 'not_answered', 0);
+  for d in 1..5 loop
+    v_at := ((crm.ist_date(now()) - d)::timestamp + interval '11 hours')
+              at time zone 'Asia/Kolkata';
+    for i in 1..2 loop
+      insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                             status, next_action_at)
+      values (v_src, format('Tier A2 d%s l%s', d, i), format('+9195557%s%s002', d, i),
+              v_a2, v_team, 'working', now())
+      returning id into v_lead;
+      insert into crm.call_attempts (lead_id, user_id, started_at, disposition, duration_seconds)
+      values (v_lead, v_a2, v_at,
+              case when i = 1 then 'connected_interested'::crm.disposition
+                   else 'not_answered'::crm.disposition end,
+              case when i = 1 then 60 else 0 end);
+    end loop;
+  end loop;
 end $$;
+
+select crm_test.check(
+  'TIR', 'days present counts days actually worked, not days on the calendar',
+  crm.days_present(:A1, crm.ist_date(now()) - 7, crm.ist_date(now())) = 2
+  and crm.days_present(:A2, crm.ist_date(now()) - 7, crm.ist_date(now())) = 5,
+  format('A1 %s days, A2 %s days',
+         crm.days_present(:A1, crm.ist_date(now()) - 7, crm.ist_date(now())),
+         crm.days_present(:A2, crm.ist_date(now()) - 7, crm.ist_date(now()))));
 
 select crm.rank_performance_tiers() as _tier1 \gset
 
@@ -3165,12 +3199,109 @@ select crm_test.check(
   :_tier1 >= 2, 'ranked ' || :_tier1);
 
 select crm_test.check(
-  'TIR', 'the team''s best caller of the completed window is ACE',
+  'TIR', 'five days of leave does not cost the best caller the ACE seat',
   crm.tier_of(:A1) = 'ace', 'A1 is ' || crm.tier_of(:A1));
 
 select crm_test.check(
   'TIR', 'and the rest of the team is STANDARD, never restricted, by the ranking',
   crm.tier_of(:A2) = 'standard', 'A2 is ' || crm.tier_of(:A2));
+
+-- The share the engine is actually targeting, on screen. This is the number
+-- whose silent move nobody could see. Earlier sections closed these shifts;
+-- a share only exists for someone the engine can actually reach, so put the
+-- team back on the floor before asking what each of them is targeted for.
+-- Earlier sections opened and closed shifts for these callers (some with an
+-- end stamp in the future), and attendance_sessions forbids overlap. Put a
+-- person back on the floor cleanly: start after everything they already have.
+create or replace function crm_test.put_on_floor(p_user uuid) returns void
+  language plpgsql as $$
+begin
+  if crm.is_on_shift(p_user) then return; end if;
+  insert into crm.attendance_sessions (user_id, started_at)
+  values (p_user, greatest(
+            now(),
+            coalesce((select max(coalesce(s.ended_at, s.started_at))
+                        from crm.attendance_sessions s where s.user_id = p_user),
+                     now())) + interval '1 second');
+end $$;
+
+select crm_test.put_on_floor(:A1), crm_test.put_on_floor(:A2);
+
+select crm_test.check(
+  'TIR', 'the ACE share is visible on lead flow, and adds up across the team',
+  (select fresh_share_pct from crm.v_lead_flow where user_id = :A1) > 60
+  and (select fresh_share_pct from crm.v_lead_flow where user_id = :A2) < 40
+  and (select round(sum(fresh_share_pct)) from crm.v_lead_flow
+        where team_id = crm.team_of(:A1, current_date)) = 100,
+  (select string_agg(full_name || ' ' || fresh_share_pct, ', ') from crm.v_lead_flow
+    where team_id = crm.team_of(:A1, current_date)));
+
+-- Rule 3: a caller the ranking could not measure keeps the tier they earned.
+-- This is the returning ACE's first morning back - no completed day yet.
+do $$
+declare
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_b1   uuid := '22222222-0000-0000-0000-000000000003';
+  v_b2   uuid := '22222222-0000-0000-0000-000000000004';
+  v_team uuid;
+  v_lead uuid;
+  v_at   timestamptz;
+  d      int;
+  i      int;
+begin
+  v_team := crm.team_of(v_b1, current_date);
+  -- B1 earned ACE before her leave, and has ONE day inside the window.
+  insert into crm.performance_tiers (user_id, tier) values (v_b1, 'ace')
+  on conflict (user_id) do update set tier = 'ace', pinned_by = null,
+    pin_reason = null, pin_expires_at = null;
+
+  v_at := ((crm.ist_date(now()) - 1)::timestamp + interval '11 hours')
+            at time zone 'Asia/Kolkata';
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                         status, next_action_at)
+  values (v_src, 'Tier B1 back', '+919555780001', v_b1, v_team, 'working', now())
+  returning id into v_lead;
+  insert into crm.call_attempts (lead_id, user_id, started_at, disposition, duration_seconds)
+  values (v_lead, v_b1, v_at, 'connected_interested', 90);
+
+  -- B2 held the floor for four days while she was away.
+  for d in 1..4 loop
+    v_at := ((crm.ist_date(now()) - d)::timestamp + interval '11 hours')
+              at time zone 'Asia/Kolkata';
+    for i in 1..2 loop
+      insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                             status, next_action_at)
+      values (v_src, format('Tier B2 d%s l%s', d, i), format('+9195557%s%s003', d, i),
+              v_b2, v_team, 'working', now())
+      returning id into v_lead;
+      insert into crm.call_attempts (lead_id, user_id, started_at, disposition, duration_seconds)
+      values (v_lead, v_b2, v_at, 'connected_interested', 60);
+    end loop;
+  end loop;
+end $$;
+
+select crm.rank_performance_tiers() as _tier_b \gset
+
+select crm_test.check(
+  'TIR', 'one measured day is not enough to judge anyone - the tier stands',
+  crm.tier_of(:B1) = 'ace', 'B1 is ' || crm.tier_of(:B1));
+
+select crm_test.check(
+  'TIR', 'the colleague who held the floor is ranked on her own days',
+  crm.tier_of(:B2) = 'ace', 'B2 is ' || crm.tier_of(:B2));
+
+-- Two ACEs is the deliberate transitional state: the returning caller is not
+-- demoted for being away, the incumbent is not demoted for working, and they
+-- split the fresh leads evenly until the returner has completed days to be
+-- judged on. Starving either of them is the failure 0061 exists to end.
+select crm_test.put_on_floor(:B1), crm_test.put_on_floor(:B2);
+
+select crm_test.check(
+  'TIR', 'a returning ACE and the incumbent split the team evenly, not 2:1',
+  (select fresh_share_pct from crm.v_lead_flow where user_id = :B1) = 50.0
+  and (select fresh_share_pct from crm.v_lead_flow where user_id = :B2) = 50.0,
+  (select string_agg(full_name || ' ' || fresh_share_pct, ', ') from crm.v_lead_flow
+    where team_id = crm.team_of(:B1, current_date)));
 
 -- A live pin outranks the ranking.
 insert into crm.performance_tiers (user_id, tier, pinned_by, pin_reason, pin_expires_at)
@@ -3197,7 +3328,24 @@ select crm_test.check(
   and (select pinned_by is null from crm.performance_tiers where user_id = :A1),
   'A1 is ' || crm.tier_of(:A1));
 
--- The off switch.
+-- RESTRICTED gets zero fresh leads, and lead flow finally says so out loud
+-- instead of reporting "receiving leads" to a caller receiving none.
+insert into crm.performance_tiers (user_id, tier, pinned_by, pin_reason, pin_expires_at)
+values (:A2, 'restricted', :ADMIN, 'test: restricted', now() + interval '2 days')
+on conflict (user_id) do update
+   set tier = excluded.tier, pinned_by = excluded.pinned_by,
+       pin_reason = excluded.pin_reason, pin_expires_at = excluded.pin_expires_at;
+
+select crm_test.check(
+  'TIR', 'a restricted caller reads restricted on lead flow, with a zero share',
+  (select flow_status from crm.v_lead_flow where user_id = :A2) = 'restricted'
+  and (select fresh_share_pct from crm.v_lead_flow where user_id = :A2) = 0,
+  (select flow_status || ' ' || fresh_share_pct from crm.v_lead_flow where user_id = :A2));
+
+delete from crm.performance_tiers where user_id = :A2;
+
+-- The off switch. Expired pins are still cleaned - that is 0026's contract,
+-- not the ranking's - but no tier is decided.
 update crm.settings set value = 'false'::jsonb where key = 'tier.auto_rank';
 
 select crm_test.check(

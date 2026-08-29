@@ -1,4 +1,5 @@
 import { get, post } from '../api.js';
+import { addLeadModal } from '../addlead.js';
 import { agoLabel, avatarHtml, badge, esc, fmtDT, fmtINR, fmtTalk, h, minsLabel, toast } from '../util.js';
 
 /**
@@ -70,6 +71,23 @@ export async function render(outlet, me) {
   ]);
 
   outlet.innerHTML = '';
+
+  // The inbound-call door, on the screen the counsellors and the admin land
+  // on. It lived only on Fresh leads and Find lead, which is two clicks away
+  // from where anyone answering a phone actually is.
+  const inboundRow = h(`
+    <div class="row spread wrap" style="margin-bottom:10px">
+      <div class="hint">
+        A client rang the office? Log it here — an inbound call is the warmest
+        lead on the floor, and its follow-up date rings when it is due.
+      </div>
+      <button class="btn primary" data-testid="floor-inbound">📞 Inbound call</button>
+    </div>`);
+  inboundRow.querySelector('button').addEventListener('click', () =>
+    addLeadModal(me, (lead) => {
+      if (lead?.id) location.hash = `#/lead/${lead.id}`;
+    }, 'inbound'));
+  outlet.appendChild(inboundRow);
 
   // --- is the lead pipe alive? straight to the top, before anything else ---
   //
@@ -268,12 +286,29 @@ export async function render(outlet, me) {
       receiving: '<span class="badge b-ok">receiving leads</span>',
       off_shift: '<span class="badge b-warn">off floor — skipped</span>',
       no_team: '<span class="badge b-bad">no team — never picked</span>',
+      restricted: '<span class="badge b-bad">restricted — no fresh leads</span>',
       inactive: '<span class="badge b-mute">deactivated</span>',
     };
     const FLOW_WHY = {
       off_shift: 'Leads only go to callers who pressed “Start shift”. They will start receiving the moment they are on the floor.',
       no_team: 'Distribution walks the teams, so a caller in no team is invisible to it. Add them to a team in Admin → Users.',
+      restricted: 'Their tier is RESTRICTED, so no fresh lead may go to them — transfers and re-tap work still can. Change it in Admin → Users → Tier.',
       inactive: 'Deactivated accounts are excluded everywhere.',
+    };
+    // Why each caller is getting the number of leads they are getting.
+    //
+    // The share moves on its own: the daily ranking picks each team's best
+    // caller and hands them distribution.ace_share_pct of the fresh leads.
+    // That is deliberate — and it was completely invisible, so "why did all
+    // the leads go to her today?" was a question no screen could answer.
+    // The Share column is the answer, straight from the engine's own rule.
+    const shareCell = (c) => {
+      const pct = Number(c.fresh_share_pct ?? 0);
+      if (!c.is_active) return '<span class="hint">—</span>';
+      if (pct === 0) return '<span class="badge b-warn">0%</span>';
+      return `${pct}%${c.tier === 'ace'
+        ? ' <span class="badge b-warn" title="Today\u2019s best caller on the leaderboard holds the guaranteed share of fresh leads. Ranked automatically each night; an admin can pin it.">⭐ ACE</span>'
+        : ''}`;
     };
     const stuck = leadFlow.callers.filter((c) => c.flow_status !== 'receiving' && c.is_active);
     outlet.appendChild(h(`
@@ -302,7 +337,9 @@ export async function render(outlet, me) {
             covering for absent callers — owned and being worked, not waiting.
           </div>` : ''}
         <table class="table"><thead><tr>
-          <th>Caller</th><th>Team</th><th>Status</th><th class="num">Today</th>
+          <th>Caller</th><th>Team</th><th>Status</th>
+          <th class="num" title="Share of this team's fresh leads the engine is targeting for them right now">Share of fresh</th>
+          <th class="num">Today</th>
           <th class="num">Open book</th><th class="num">Passed over today</th><th>Last lead received</th>
         </tr></thead><tbody>
         ${leadFlow.callers.map((c) => `
@@ -310,6 +347,7 @@ export async function render(outlet, me) {
             <td>${avatarHtml(c.full_name, avatars[c.user_id], 22)} ${esc(c.full_name)}</td>
             <td>${esc(c.team_name ?? '—')}</td>
             <td>${FLOW[c.flow_status] ?? esc(c.flow_status)}</td>
+            <td class="num">${shareCell(c)}</td>
             <td class="num">${Number(c.leads_today)}</td>
             <td class="num">${Number(c.open_leads)}</td>
             <td class="num">${Number(c.passed_over_today) > 0
@@ -321,6 +359,15 @@ export async function render(outlet, me) {
           <div class="hint" style="margin-top:8px">
             ${stuck.map((c) => `<div><b>${esc(c.full_name)}</b>: ${esc(FLOW_WHY[c.flow_status] ?? '')}</div>`).join('')}
           </div>`}
+        ${leadFlow.callers.some((c) => c.tier === 'ace' && c.is_active) ? `
+          <div class="hint" style="margin-top:8px">
+            ⭐ <b>ACE</b> is picked automatically each night: each team's best caller
+            <b>per day they actually worked</b> over the last week holds the guaranteed
+            share of that team's fresh leads. Days off are not counted against anyone,
+            and a caller the ranking could not measure keeps the tier they earned —
+            coming back from leave never costs somebody their share.
+            Pin or unpin it in Admin → Users → Tier.
+          </div>` : ''}
       </div>`));
 
     outlet.querySelector('#assign-now')?.addEventListener('click', async (ev) => {
