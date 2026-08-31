@@ -184,10 +184,16 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
           [id],
         ),
         q.many(
+          // LEFT JOIN to the device row for the Callyzer recording. RLS on
+          // device_call_logs decides who gets a row back (owner, admin, and a
+          // counsellor on a matched lead); on top of that the recording is
+          // withheld from callers below - coaching material, not self-review.
           `select ca.id, ca.started_at, ca.duration_seconds, ca.disposition,
-                  ca.is_connect, ca.is_verified, ca.notes, u.full_name as by_name
+                  ca.is_connect, ca.is_verified, ca.notes, u.full_name as by_name,
+                  d.recording_url
              from crm.call_attempts ca
              join crm.users u on u.id = ca.user_id
+             left join crm.device_call_logs d on d.id = ca.device_log_id
             where ca.lead_id = $1 order by ca.started_at desc`,
           [id],
         ),
@@ -211,6 +217,10 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
           [id],
         ),
       ]);
+
+      if (!['counsellor', 'admin'].includes(user.role)) {
+        for (const a of attempts) (a as { recording_url?: string | null }).recording_url = null;
+      }
 
       await logLeadAccess(q, user.id, [id], 'detail', req.ip);
       return { lead, timeline, attempts, callbacks, transfers };

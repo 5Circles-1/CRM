@@ -12,7 +12,7 @@
     "dev": "node --watch --experimental-strip-types src/index.ts",
     "start": "node --experimental-strip-types src/index.ts",
     "ingest": "node --experimental-strip-types src/ingest/cli.ts",
-    "test": "node --experimental-strip-types --test test/api.test.ts",
+    "test": "node --experimental-strip-types --test test/api.test.ts test/callyzer.test.ts",
     "test:e2e": "node --experimental-strip-types --test --test-timeout=180000 test/e2e.test.ts",
     "bootstrap": "node --experimental-strip-types src/tools/bootstrap.ts"
   },

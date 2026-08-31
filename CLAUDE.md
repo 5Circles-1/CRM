@@ -138,6 +138,23 @@ Do not undo these without understanding why they exist.
   (`dial.min_talk_seconds_for_connect`, default 30s). Otherwise disposition
   accuracy is fiction and so is every conversion rate built on it.
 
+- **Callyzer is a sensor, never a second CRM** (0063). It answers one
+  question — did this call really happen, and for how long — as a second
+  writer to `crm.device_call_logs`, namespaced by `source` and a `callyzer:`
+  row-key prefix so the in-house app and Callyzer can never double-count.
+  Its Lead APIs, lead statuses, reminders and lead ids are deliberately not
+  connected: a second system distributing leads would fight the fairness
+  engine, RLS and the `next_action_at` guarantee. The employee mapping IS
+  `users.dialing_msisdn` (one fact, one place); rows that cannot be placed are
+  quarantined whole and re-ingest themselves once the cause is fixed; the
+  account timezone is asserted per row, not assumed, because a wrong zone
+  moves calls across `crm.ist_date()` boundaries. `callyzer.enabled` ships
+  off; the watchdog (`crm.check_callyzer_health`) raises a named bell alarm —
+  a lapsed subscription by name — and stands itself down, like the intake
+  alarm. WhatsApp calls are stored but verify a dial only when
+  `callyzer.count_whatsapp_calls` is on; recordings are coaching material for
+  counsellors and admin, never shown to the caller themselves.
+
 - **Row-level security is the access control, not the API.** The app connects as
   `crm_app` (no BYPASSRLS, not the table owner) and sets `app.user_id` per
   request. A missing `WHERE` clause in a route handler is then a bug that
@@ -219,13 +236,17 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(293 database assertions, 270 API integration tests, 10 browser E2E flows) and
-the **Android call-log companion app** (`android/` — plain Java, zero
-third-party dependencies, compiles to a verified APK). The app implements the
-tested `POST /device-logs/sync` contract; the log-call form offers the
-matching device call and one click makes the attempt `is_verified`.
+(312 database assertions, 289 API tests, 10 browser E2E flows), the
+**Android call-log companion app** (`android/` — plain Java, zero
+third-party dependencies, compiles to a verified APK), and the **Callyzer
+integration** (migration 0063, `api/src/integrations/callyzer/`) — webhook +
+rate-limited scheduled pull feeding the same `device_call_logs` table and the
+same `is_verified` flip as the app. The log-call form offers the matching
+device call and one click makes the attempt `is_verified`.
 
 Not verifiable from this repository: the app running on a physical handset
-(ten-minute test in android/README.md), and anything in the go-live runbook
-that needs a real server. iOS cannot run the companion app (no call-log
-access) — see docs/open-questions.md question 2.
+(ten-minute test in android/README.md), the Callyzer pull against their live
+API (needs a paid API key — ₹150/number/month — and enrolled handsets; the
+contract is tested against their documented v2.2 shapes), and anything in the
+go-live runbook that needs a real server. iOS cannot run the companion app
+(no call-log access) — see docs/open-questions.md question 2.

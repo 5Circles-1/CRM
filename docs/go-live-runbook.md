@@ -299,6 +299,50 @@ single check exercises Meta → Sheet → ingestion → distribution → caller 
 
 ---
 
+## Phase 7b — Connect Callyzer (optional, ~30 minutes + the trial)
+
+Callyzer replaces or backs up the in-house companion app as the call-log
+sensor: same table, same `is_verified` flip. Start on their **15-day free
+trial (5 numbers)** before paying — the API + Webhook add-on is
+**₹150 per number per month** on top of the plan.
+
+0. **Before enrolling any handset**: Callyzer Biz syncs the *whole* personal
+   SIM log and its dashboard shows the admin all of it. Put the written
+   policy in front of the callers and get their consent first. Add each
+   caller's personal contacts to Callyzer's **Exclude Numbers** and set the
+   webhook's *Skip Exclude Numbers* to **No**.
+1. In the Callyzer dashboard, check the **account timezone is IST** — the CRM
+   quarantines rows stamped with any other zone rather than guessing.
+2. Enroll each pilot handset: install **Callyzer Biz**, enter the Device
+   Connect Code, pick the SIM the caller dials from, grant its permissions.
+3. Generate the API token: **Connectors → API & Webhook → API Config →
+   Generate API Access Key**. Configure the webhook in **Webhook Config**:
+   - URL: `https://crm.<your-domain>/integrations/callyzer/webhook?secret=<a long random string>`
+   - Secret: the same string; version **2.2**; Skip Exclude Numbers: **No**.
+4. On the server, in `.env` add (then `sudo systemctl restart crm`):
+   ```bash
+   # CALLYZER_API_KEY=<the access key>
+   # CALLYZER_WEBHOOK_SECRET=<the same random string as in the URL>
+   ```
+5. In **Admin → Settings** set `callyzer.enabled` to `true`.
+6. In **Admin → Users**, make sure every enrolled caller's **Dialing SIM** is
+   the number registered in Callyzer — that column IS the mapping. The
+   **Admin → Ingestion → Callyzer** panel lists any number it cannot place;
+   held calls re-ingest themselves once the SIM is set.
+
+**✓ check:** from an enrolled handset, call your own test lead's number, then
+open the lead and log the call — the form should offer "Phone shows a call…"
+within a sync cycle (~15 minutes, or press **Sync now** on the Callyzer
+panel), and the logged attempt shows the **device** badge. A counsellor
+opening the same lead sees the 🎧 recording link if recordings are on.
+
+Run the trial **in parallel with the companion app for two weeks** — they
+share the table without double-counting — and keep whichever sensor actually
+catches more. If Callyzer's subscription lapses later, the bell alarm names
+it; verification never fails silently.
+
+---
+
 ## Phase 8 — Pilot (two weeks)
 
 Rules of the pilot:

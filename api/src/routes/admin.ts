@@ -221,6 +221,43 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * Set or clear a person's Dialing SIM after creation.
+   *
+   * This number is how device call logs - the in-house app's and Callyzer's
+   * alike - are matched back to a person, so it is the fix for a Callyzer
+   * number showing as unmapped: set it here and the next sync re-ingests the
+   * quarantined calls. Kept as its own small route because it is the ONE
+   * mapping fact; there is deliberately no second table to edit.
+   */
+  app.put('/admin/users/:id/dialing-msisdn', async (req) => {
+    req.requireRole('admin');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z.object({ dialingMsisdn: z.string().max(20).nullable() }).parse(req.body);
+
+    if (body.dialingMsisdn !== null) {
+      const norm = await req.tx((q) =>
+        q.one<{ normalise_phone: string | null }>('select crm.normalise_phone($1) as normalise_phone', [
+          body.dialingMsisdn,
+        ]),
+      );
+      if (!norm?.normalise_phone) {
+        throw badRequest(`"${body.dialingMsisdn}" is not a dialable number`);
+      }
+    }
+
+    const row = await req.tx((q) =>
+      q.one(
+        `update crm.users set dialing_msisdn = crm.normalise_phone($2)
+          where id = $1
+          returning id, full_name, dialing_msisdn`,
+        [id, body.dialingMsisdn],
+      ),
+    );
+    if (!row) throw notFound('no user with that id');
+    return row;
+  });
+
+  /**
    * Set or clear a person's leaderboard icon.
    *
    * The image arrives as a data URL the browser has already downsized, and is

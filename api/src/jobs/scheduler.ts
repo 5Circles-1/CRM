@@ -119,6 +119,14 @@ export const JOBS: Job[] = [
     everyMs: 10 * 60_000,
     sql: 'select crm.check_lead_intake()',
   },
+  {
+    name: 'check_callyzer_health',
+    // Same watchdog, for call verification: a lapsed Callyzer subscription or
+    // a silent sync means every dial from here on reads as unverified. Gated
+    // on callyzer.enabled inside the function; stands its own alarm down.
+    everyMs: 10 * 60_000,
+    sql: 'select crm.check_callyzer_health()',
+  },
 ];
 
 /**
