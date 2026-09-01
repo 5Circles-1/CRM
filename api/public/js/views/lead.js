@@ -110,7 +110,8 @@ export async function render(outlet, me, params) {
           <td>${esc(a.by_name)}</td>
           <td>${badge(a.disposition)}${a.is_connect ? ' <span class="badge b-ok">connect</span>' : ''}</td>
           <td class="num">${esc(fmtTalk(a.duration_seconds))}</td>
-          <td>${a.is_verified ? '<span class="badge b-ok">device</span>' : '<span class="badge b-mute">manual</span>'}</td>
+          <td>${a.is_verified ? '<span class="badge b-ok">device</span>' : '<span class="badge b-mute">manual</span>'}${
+            a.recording_url ? ` <a href="${esc(a.recording_url)}" target="_blank" rel="noopener" title="Call recording (Callyzer)">🎧</a>` : ''}</td>
           <td>${esc(a.notes ?? '')}</td>
         </tr>`).join('')}
       </tbody></table>`));

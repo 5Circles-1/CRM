@@ -202,6 +202,7 @@ async function users(body, me) {
           <td>${u.is_active ? '<span class="badge b-ok">active</span>' : '<span class="badge b-mute">deactivated</span>'}</td>
           <td class="right">${me.role !== 'admin' ? '' : u.is_active
             ? `${u.role === 'caller' ? `<button class="btn small u-tier" data-id="${esc(u.id)}">Tier</button>` : ''}
+               <button class="btn small u-sim" data-id="${esc(u.id)}">SIM</button>
                <button class="btn small u-avatar" data-id="${esc(u.id)}">${u.avatar_url ? 'Change icon' : 'Set icon'}</button>
                <button class="btn small u-pwd" data-id="${esc(u.id)}">Reset password</button>
                <button class="btn small danger u-deact" data-id="${esc(u.id)}">Deactivate</button>`
@@ -255,6 +256,46 @@ async function users(body, me) {
 
     if (e.target.classList.contains('u-pwd')) passwordModal(id, () => users(body, me));
     if (e.target.classList.contains('u-tier')) tierModal(list.find((u) => u.id === id), () => users(body, me));
+    if (e.target.classList.contains('u-sim')) simModal(list.find((u) => u.id === id), () => users(body, me));
+  });
+}
+
+/**
+ * The Dialing SIM is how device call logs — the companion app's and
+ * Callyzer's — are matched back to a person. An unmapped Callyzer number on
+ * the Ingestion tab is fixed here, and the next sync re-ingests the
+ * quarantined calls on its own.
+ */
+function simModal(user, onDone) {
+  if (!user) return;
+  const bodyEl = h(`
+    <div>
+      <p class="hint mt0">The personal SIM this person dials from. It must match the number
+        registered in Callyzer for their handset, or their calls cannot be verified.</p>
+      <label class="f">Dialing SIM
+        <input name="msisdn" maxlength="20" placeholder="e.g. 98765 43210"
+               value="${esc(user.dialing_msisdn ?? '')}">
+      </label>
+    </div>`);
+  const footer = h(`<div>
+    <button class="btn" data-act="clear">Clear</button>
+    <button class="btn primary" data-act="save">Save SIM</button>
+  </div>`);
+  const { close } = openModal(`Dialing SIM for ${user.full_name}`, bodyEl, footer);
+
+  footer.addEventListener('click', async (e) => {
+    const act = e.target.dataset?.act;
+    if (!act) return;
+    const value = act === 'clear' ? null : bodyEl.querySelector('[name=msisdn]').value.trim();
+    if (act === 'save' && !value) { toast('Enter a number, or use Clear.', 'err'); return; }
+    try {
+      await put(`/admin/users/${user.id}/dialing-msisdn`, { dialingMsisdn: value });
+      toast(value ? 'Dialing SIM saved.' : 'Dialing SIM cleared.');
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   });
 }
 
@@ -486,10 +527,11 @@ function newUserModal(teams, onDone) {
 /* ---------------- ingestion ---------------- */
 
 async function ingest(body, me) {
-  const [sources, runs, teams] = await Promise.all([
+  const [sources, runs, teams, callyzer] = await Promise.all([
     get('/admin/sources'),
     get('/ingest/runs'),
     get('/admin/teams'),
+    get('/integrations/callyzer/health').catch(() => null),
   ]);
   body.innerHTML = '';
   const teamName = (id) => teams.find((t) => t.id === id)?.name ?? null;
@@ -574,6 +616,8 @@ async function ingest(body, me) {
       }
     });
   });
+
+  if (callyzer) renderCallyzer(body, callyzer, me, () => ingest(body, me));
 
   if (sources.length === 0) return;
 
@@ -671,6 +715,101 @@ async function ingest(body, me) {
  * corrected, so the only way forward was to make another source. That is how a
  * single Meta sheet ends up wired in five times.
  */
+/**
+ * Callyzer: handset call verification. A second sensor writing the same
+ * device-call-log table as the companion app — this panel answers "is it
+ * alive, and is anyone's number unmapped", which are the two ways it fails
+ * silently. The alarm on the bell is the loud path; this is the detail.
+ */
+function renderCallyzer(body, cz, me, redraw) {
+  const canAct = me.role === 'admin' || me.role === 'ops';
+  const employees = cz.employees ?? [];
+  const unmapped = employees.filter((e) => !e.user_id);
+  const stale = employees.filter((e) => e.handset_stale);
+  const quarantine = cz.quarantine ?? [];
+
+  const badge =
+    cz.state === 'healthy' ? '<span class="badge b-ok">healthy</span>'
+    : cz.state === 'off' ? '<span class="badge b-mute">off</span>'
+    : cz.state === 'attention' ? '<span class="badge b-bad">needs attention</span>'
+    : `<span class="badge b-bad">${esc(cz.state ?? 'unknown')}</span>`;
+
+  const panel = h(`
+    <div class="panel" data-testid="callyzer-health">
+      <div class="row spread wrap">
+        <h2 class="mt0">Callyzer call verification ${badge}</h2>
+        ${canAct && cz.enabled ? '<button class="btn" id="cz-sync">Sync now</button>' : ''}
+      </div>
+      ${!cz.enabled ? `
+        <div class="hint">The integration is switched off. Turn it on at
+          Admin → Settings → <span class="mono">callyzer.enabled</span> once handsets are enrolled
+          in Callyzer Biz — its call logs then verify dials exactly like the companion app's.</div>` : `
+        <div class="hint">
+          Last pull ${esc(fmtDT(cz.sync_last_ok_at))} · last webhook ${esc(fmtDT(cz.webhook_last_ok_at))}
+          · today ${Number(cz.logs_today ?? 0)} call${Number(cz.logs_today) === 1 ? '' : 's'}
+          (${Number(cz.matched_today ?? 0)} matched a lead)
+          · ${employees.length} handset${employees.length === 1 ? '' : 's'} enrolled
+        </div>
+        ${cz.sync_last_error ? `
+        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
+          Last pull failed: ${esc(cz.sync_last_error)}
+        </div>` : ''}
+        ${cz.api_key_configured ? '' : `
+        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
+          <b>CALLYZER_API_KEY is not set on the server</b>, so the scheduled pull cannot run.
+          Only the webhook (if configured) is feeding call logs.
+        </div>`}
+        ${cz.webhook_secret_configured ? `
+        <div class="hint">Webhook: point Callyzer (Connectors → API &amp; Webhook) at
+          <span class="mono">${esc(location.origin)}${esc(cz.webhook_path ?? '')}?secret=…</span>
+          using the same Secret as CALLYZER_WEBHOOK_SECRET.</div>` : `
+        <div class="hint">CALLYZER_WEBHOOK_SECRET is not set — the webhook is off and rows arrive
+          only by the scheduled pull.</div>`}
+        ${unmapped.length === 0 ? '' : `
+        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
+          <b>${unmapped.length} Callyzer number${unmapped.length === 1 ? '' : 's'} match no CRM user</b>
+          — their calls are quarantined, not verified. Set the number as that person's
+          Dialing SIM on the Users tab; the next sync re-ingests the held calls itself.
+          <div style="margin-top:6px">${unmapped.map((e) =>
+            `<span class="mono">${esc(e.emp_msisdn)}</span>${e.emp_name ? ` (${esc(e.emp_name)})` : ''}`).join(' · ')}</div>
+        </div>`}
+        ${stale.length === 0 ? '' : `
+        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
+          ${stale.length} handset${stale.length === 1 ? ' has' : 's have'} not synced to Callyzer recently
+          — their calls are invisible until the app on the phone syncs again:
+          ${stale.map((e) => esc(e.user_name ?? e.emp_name ?? e.emp_msisdn)).join(', ')}
+        </div>`}
+        ${quarantine.length === 0 ? '' : `
+        <details style="margin-top:8px">
+          <summary>${quarantine.length} held call${quarantine.length === 1 ? '' : 's'} (kept whole, nothing dropped)</summary>
+          <table class="table"><thead><tr><th>Number</th><th>Why held</th><th>Last seen</th></tr></thead><tbody>
+          ${quarantine.map((r) => `
+            <tr>
+              <td class="mono">${esc(r.emp_msisdn ?? '—')}</td>
+              <td>${esc(r.reason)}</td>
+              <td>${esc(fmtDT(r.last_seen_at))}</td>
+            </tr>`).join('')}
+          </tbody></table>
+        </details>`}`}
+    </div>`);
+  body.appendChild(panel);
+
+  panel.querySelector('#cz-sync')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = 'Syncing…';
+    try {
+      const s = await post('/integrations/callyzer/sync', {});
+      toast(`Callyzer: ${Number(s?.logs?.seen ?? 0)} rows seen, ${Number(s?.logs?.inserted ?? 0)} new, `
+        + `${Number(s?.logs?.matched ?? 0)} matched, ${Number(s?.logs?.quarantined ?? 0)} held.`);
+      await redraw();
+    } catch (err) {
+      e.target.disabled = false;
+      e.target.textContent = 'Sync now';
+      toast(err.message, 'err');
+    }
+  });
+}
+
 function sourceModal(source, teams, onDone) {
   const editing = Boolean(source);
   const mapText = source?.column_map && Object.keys(source.column_map).length

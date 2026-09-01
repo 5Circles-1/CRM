@@ -93,10 +93,77 @@ if (serviceUserId && hasSheetCreds) {
   app.log.warn('no Google credentials configured - sheet sync is off; use the Admin > Ingestion screen or the ingest CLI');
 }
 
+// Scheduled Callyzer reconcile: only when the API key is configured. The
+// webhook (routes/callyzer.ts) works either way; this pull is what makes a
+// dropped webhook cost minutes instead of a call recorded as unverified.
+// Behaviour (on/off, window, base URL) lives in crm.settings and is re-read
+// every run, so flipping callyzer.enabled needs no restart.
+let callyzerTimer: NodeJS.Timeout | null = null;
+
+if (serviceUserId && process.env.CALLYZER_API_KEY) {
+  const { CallyzerWorker } = await import('./integrations/callyzer/worker.ts');
+  const worker = new CallyzerWorker(app.db, serviceUserId, process.env.CALLYZER_API_KEY);
+  const intervalMin = Number(process.env.CALLYZER_SYNC_MINUTES ?? 15);
+  let running = false;
+
+  const beat = async (ms: number, error: string | null): Promise<void> => {
+    try {
+      await app.db.withUser(serviceUserId, (q) =>
+        q.query('select crm.record_job_run($1, $2, $3)', ['callyzer_sync', ms, error]),
+      );
+    } catch (err) {
+      app.log.warn({ err }, 'could not record callyzer-sync heartbeat');
+    }
+  };
+
+  const syncOnce = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    const started = Date.now();
+    try {
+      const summary = await worker.syncOnce();
+      // Disabled in settings is a deliberate quiet, not a run: no heartbeat,
+      // or the health panel would show a "working" sync that syncs nothing.
+      if (summary) {
+        app.log.info({ summary }, 'callyzer sync');
+        await beat(Date.now() - started, null);
+      }
+    } catch (err) {
+      app.log.error({ err }, 'callyzer sync failed');
+      await beat(Date.now() - started, err instanceof Error ? err.message : String(err));
+    } finally {
+      running = false;
+    }
+  };
+
+  // Let an admin reconcile (or backfill deeper) from the screen. Unlike the
+  // timer this rethrows, so the screen shows Callyzer's own error - which for
+  // a 403 is the one that matters: the subscription has expired.
+  app.decorate('callyzerSyncNow', async (hours?: number) => {
+    const started = Date.now();
+    try {
+      const summary = await worker.syncOnce(hours);
+      if (summary) await beat(Date.now() - started, null);
+      return summary;
+    } catch (err) {
+      await beat(Date.now() - started, err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  });
+
+  void syncOnce();
+  callyzerTimer = setInterval(() => void syncOnce(), intervalMin * 60_000);
+  callyzerTimer.unref();
+  app.log.info({ everyMinutes: intervalMin }, 'Callyzer sync scheduled');
+} else if (serviceUserId) {
+  app.log.info('CALLYZER_API_KEY is not set - the Callyzer pull is off; the webhook still works if CALLYZER_WEBHOOK_SECRET is set');
+}
+
 const shutdown = async (signal: string): Promise<void> => {
   app.log.info({ signal }, 'shutting down');
   scheduler?.stop();
   if (ingestTimer) clearInterval(ingestTimer);
+  if (callyzerTimer) clearInterval(callyzerTimer);
   await app.close();
   process.exit(0);
 };

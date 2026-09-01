@@ -21,6 +21,12 @@ declare module 'fastify' {
      * "this server has no importer" rather than reporting a false success.
      */
     syncSheetsNow?: () => Promise<unknown[]>;
+    /**
+     * Reconcile against Callyzer right now, same split as syncSheetsNow:
+     * present only when CALLYZER_API_KEY is configured. Resolves null when
+     * callyzer.enabled is off.
+     */
+    callyzerSyncNow?: (hours?: number) => Promise<unknown | null>;
   }
 }
 
@@ -37,7 +43,10 @@ function isPublicPath(url: string): boolean {
     path === '/' ||
     path === '/favicon.ico' ||
     path === '/ui' ||
-    path.startsWith('/ui/')
+    path.startsWith('/ui/') ||
+    // Callyzer's cloud has no CRM session; the route authenticates every
+    // request itself with the shared webhook secret, in constant time.
+    path === '/integrations/callyzer/webhook'
   );
 }
 

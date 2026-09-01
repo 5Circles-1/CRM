@@ -65,6 +65,9 @@ create role crm_api login password '...' in role crm_app;
 | `SESSION_COOKIE_NAME` | no | Default `crm_session` |
 | `INSECURE_COOKIES` | no | Set `true` only for local plain HTTP |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | for sheets | Otherwise `GOOGLE_APPLICATION_CREDENTIALS` |
+| `CALLYZER_API_KEY` | for Callyzer | Bearer token from the Callyzer dashboard; enables the scheduled pull |
+| `CALLYZER_WEBHOOK_SECRET` | for Callyzer | Shared secret; enables `POST /integrations/callyzer/webhook` |
+| `CALLYZER_SYNC_MINUTES` | no | Default 15 |
 | `PG_POOL_MAX` | no | Default 10 |
 
 ## Endpoints
@@ -105,7 +108,23 @@ visible lead get linked. `GET /leads/:id/device-log-suggestion` returns the most
 recent unclaimed device call to that lead's number; attaching its id to a logged
 call is what flips `is_verified`. A caller's raw device log stays visible only
 to them and admin — supervision sees the reconciled attempts, not the personal
-log.
+log (a counsellor additionally sees rows *matched* to leads they can see, which
+is where the coaching recording lives).
+
+**Callyzer** (a second writer to the same table; see migration 0063) —
+`POST /integrations/callyzer/webhook` takes Callyzer's push, authenticated by
+the shared secret (`?secret=` on the URL or an `x-callyzer-secret` header),
+compared in constant time. `GET /integrations/callyzer/health` is the
+counsellor/admin readout: sync and webhook liveness, the handset roster with
+unmapped numbers, open quarantine. `POST /integrations/callyzer/sync`
+(admin/ops) reconciles on demand, optionally deeper (`{"hours": n}`). Both
+the webhook and the scheduled pull feed one `SECURITY DEFINER` door,
+`crm.ingest_callyzer_logs()`: employee SIM → `users.dialing_msisdn` (the one
+mapping fact, editable via `PUT /admin/users/:id/dialing-msisdn`), client
+number → lead match, upsert on re-delivery (notes and recordings arrive late),
+quarantine for anything unplaceable — never a silent drop. Callyzer's Lead
+APIs, statuses and reminders are deliberately not connected: it is a sensor,
+never a second CRM.
 
 **Admin** — users, teams, sources, quarantine, per-record audit trail, and
 `PUT /admin/settings/:key` for every tunable number in the system.
@@ -157,11 +176,13 @@ Without `SERVICE_USER_ID` the jobs are disabled and the server logs a warning.
 ## Tests
 
 `npm test` rebuilds a test database from `db/migrations`, seeds it, and drives
-the real Fastify app with `app.inject()` against a real Postgres. 41 tests:
-auth and lockout, RLS boundaries through HTTP, ingestion idempotency and
-quarantine, the calling pipeline, transfer authority and cap, attendance,
-dashboards, deals/collections/promises, the device-log sync contract, and the
-boot-time RLS guard.
+the real Fastify app with `app.inject()` against a real Postgres: auth and
+lockout, RLS boundaries through HTTP, ingestion idempotency and quarantine,
+the calling pipeline, transfer authority and cap, attendance, dashboards,
+deals/collections/promises, the device-log sync contract, the Callyzer
+webhook/pull/health surface (with a fake Callyzer server), and the boot-time
+RLS guard. `test/callyzer.test.ts` unit-tests the rate-limit queue and the
+client's 429/403 handling against a virtual clock — no database needed.
 
 `npm run test:e2e` goes one layer further: it boots the server on a real port
 and drives the real UI in headless Chromium — caller logs a call with a

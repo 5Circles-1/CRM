@@ -26,6 +26,9 @@ import { DISPOSITIONS } from '../src/routes/leads.ts';
 import { Database } from '../src/db/pool.ts';
 import { buildServer } from '../src/server.ts';
 import { hashPassword } from '../src/auth/credentials.ts';
+import http from 'node:http';
+import { CallyzerWorker } from '../src/integrations/callyzer/worker.ts';
+import { CallyzerApiError } from '../src/integrations/callyzer/client.ts';
 
 let h: TestHarness;
 
@@ -4147,5 +4150,349 @@ describe('mentors module', () => {
     });
     assert.equal(ok.statusCode, 200);
     assert.equal(ok.json().mentor_id, USERS.mentor);
+  });
+});
+
+describe('callyzer: a second sensor on the same verification pipeline', () => {
+  const CZ_SECRET = 'test-callyzer-secret';
+
+  /** call_date/call_time are wall-clock in the account timezone (IST). */
+  const istParts = (d = new Date()) => ({
+    date: new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(d),
+    time: new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).format(d),
+  });
+
+  /** A webhook payload: one employee (caller A1's SIM) with one call log. */
+  const webhookPayload = (log: Record<string, unknown>, empNumber = '9000000001') => [
+    {
+      emp_name: 'Caller A1',
+      emp_country_code: '91',
+      emp_number: empNumber,
+      emp_tags: [],
+      call_logs: [
+        {
+          call_type: 'Outgoing',
+          call_method: 'PhoneCall',
+          call_mode: 'Voice',
+          ...istToday(),
+          ...log,
+        },
+      ],
+    },
+  ];
+  const istToday = () => {
+    const { date, time } = istParts();
+    return { call_date: date, call_time: time, synced_at: `${date} ${time} IST` };
+  };
+
+  let leadId = '';
+  let leadNumber = ''; // national digits, as Callyzer sends them
+
+  before(() => {
+    process.env.CALLYZER_WEBHOOK_SECRET = CZ_SECRET;
+    process.env.SERVICE_USER_ID = USERS.ops;
+    delete process.env.CALLYZER_API_KEY;
+    fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'callyzer.enabled';`);
+
+    leadId = makeLeadFor(USERS.callerA1, 'Callyzer Client');
+    leadNumber = fixtureSql(`select phone_e164 from crm.leads where id = '${leadId}'`)
+      .trim().replace('+91', '');
+  });
+
+  it('the webhook admits nobody without the shared secret', async () => {
+    const noSecret = await h.app.inject({
+      method: 'POST', url: '/integrations/callyzer/webhook', payload: [],
+    });
+    assert.equal(noSecret.statusCode, 401);
+
+    const wrong = await h.app.inject({
+      method: 'POST', url: '/integrations/callyzer/webhook?secret=guess', payload: [],
+    });
+    assert.equal(wrong.statusCode, 401);
+
+    // Unconfigured reads the same as wrong: nothing gets in until the secret
+    // is deliberately set on the server.
+    delete process.env.CALLYZER_WEBHOOK_SECRET;
+    const unconfigured = await h.app.inject({
+      method: 'POST', url: `/integrations/callyzer/webhook?secret=${CZ_SECRET}`, payload: [],
+    });
+    assert.equal(unconfigured.statusCode, 401);
+    process.env.CALLYZER_WEBHOOK_SECRET = CZ_SECRET;
+  });
+
+  it('a delivery ingests, matches the lead, and repeats as an update, never a duplicate', async () => {
+    const payload = webhookPayload({
+      id: 'wh-1',
+      client_country_code: '91',
+      client_number: leadNumber,
+      duration: '75',
+      note: 'spoke about Swing Advisory',
+      call_recording_url: 'https://media1.callyzer.co/wh1.mp3',
+    });
+
+    const first = await h.app.inject({
+      method: 'POST',
+      url: '/integrations/callyzer/webhook',
+      headers: { 'x-callyzer-secret': CZ_SECRET },
+      payload,
+    });
+    assert.equal(first.statusCode, 200, first.body);
+    assert.partialDeepStrictEqual(first.json(), { received: 1, seen: 1, inserted: 1, matched: 1 });
+
+    const again = await h.app.inject({
+      method: 'POST',
+      url: `/integrations/callyzer/webhook?secret=${CZ_SECRET}`,
+      payload,
+    });
+    assert.equal(again.statusCode, 200);
+    assert.partialDeepStrictEqual(again.json(), { inserted: 0, updated: 1 });
+  });
+
+  it('the caller is offered the Callyzer call and one click verifies the dial - recording withheld from them', async () => {
+    const caller = await login(h.app, EMAILS.callerA1);
+
+    const sug = await h.app.inject({
+      method: 'GET', url: `/leads/${leadId}/device-log-suggestion`, headers: auth(caller),
+    });
+    assert.equal(sug.statusCode, 200);
+    const suggestion = sug.json().suggestion;
+    assert.ok(suggestion, 'the Callyzer row is offered exactly like a companion-app row');
+    assert.equal(suggestion.duration_seconds, 75);
+    assert.equal(suggestion.source, 'callyzer');
+    assert.equal(suggestion.recording_url, null, 'a caller never sees their own recordings');
+
+    const logged = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(caller),
+      payload: { disposition: 'connected_interested', durationSeconds: 75, deviceLogId: suggestion.id },
+    });
+    assert.ok(logged.statusCode < 300, logged.body);
+
+    const detail = await h.app.inject({
+      method: 'GET', url: `/leads/${leadId}`, headers: auth(caller),
+    });
+    const attempt = detail.json().attempts[0];
+    assert.equal(attempt.is_verified, true, 'the Callyzer row is what flips is_verified');
+    assert.equal(attempt.recording_url, null);
+  });
+
+  it('the counsellor gets the recording on the same attempt, for coaching', async () => {
+    const counsellor = await login(h.app, EMAILS.counsellorA);
+    const detail = await h.app.inject({
+      method: 'GET', url: `/leads/${leadId}`, headers: auth(counsellor),
+    });
+    assert.equal(detail.statusCode, 200);
+    const attempt = detail.json().attempts[0];
+    assert.equal(attempt.is_verified, true);
+    assert.match(attempt.recording_url ?? '', /callyzer/, 'matched rows carry the recording for the counsellor');
+  });
+
+  it('a WhatsApp call may verify a dial only when the floor turns that on', async () => {
+    const caller = await login(h.app, EMAILS.callerA1);
+    const waLead = makeLeadFor(USERS.callerA1, 'WhatsApp Client');
+    const waNumber = fixtureSql(`select phone_e164 from crm.leads where id = '${waLead}'`)
+      .trim().replace('+91', '');
+
+    const posted = await h.app.inject({
+      method: 'POST',
+      url: `/integrations/callyzer/webhook?secret=${CZ_SECRET}`,
+      payload: webhookPayload({
+        id: 'wh-wa', client_country_code: '91', client_number: waNumber,
+        duration: 120, call_method: 'WhatsAppCall',
+      }),
+    });
+    assert.equal(posted.statusCode, 200);
+    assert.partialDeepStrictEqual(posted.json(), { inserted: 1, matched: 1 }, 'stored - nothing is lost');
+
+    const gated = await h.app.inject({
+      method: 'GET', url: `/leads/${waLead}/device-log-suggestion`, headers: auth(caller),
+    });
+    assert.equal(gated.json().suggestion, null, 'targets were baselined on phone calls');
+
+    fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'callyzer.count_whatsapp_calls';`);
+    const offered = await h.app.inject({
+      method: 'GET', url: `/leads/${waLead}/device-log-suggestion`, headers: auth(caller),
+    });
+    assert.ok(offered.json().suggestion, 'deliberately turned on, it counts');
+    fixtureSql(`update crm.settings set value = 'false'::jsonb where key = 'callyzer.count_whatsapp_calls';`);
+  });
+
+  it('a stranger SIM is quarantined and the health panel names the hold', async () => {
+    const posted = await h.app.inject({
+      method: 'POST',
+      url: `/integrations/callyzer/webhook?secret=${CZ_SECRET}`,
+      payload: webhookPayload(
+        { id: 'wh-stranger', client_country_code: '91', client_number: leadNumber, duration: 30 },
+        '9333300000',
+      ),
+    });
+    assert.equal(posted.statusCode, 200);
+    assert.partialDeepStrictEqual(posted.json(), { quarantined: 1 });
+
+    const admin = await login(h.app, EMAILS.admin);
+    const health = await h.app.inject({
+      method: 'GET', url: '/integrations/callyzer/health', headers: auth(admin),
+    });
+    assert.equal(health.statusCode, 200);
+    const body = health.json();
+    assert.equal(body.enabled, true);
+    assert.ok(body.quarantine_open >= 1);
+    assert.ok(body.quarantine.some((r: { external_id: string }) => r.external_id === 'wh-stranger'));
+    assert.equal(body.api_key_configured, false);
+    assert.equal(body.webhook_secret_configured, true);
+    assert.equal(typeof body.state, 'string');
+  });
+
+  it('health is floor-management reading: counsellors see it, quarantine payload stays admin/ops', async () => {
+    const caller = await login(h.app, EMAILS.callerA1);
+    const denied = await h.app.inject({
+      method: 'GET', url: '/integrations/callyzer/health', headers: auth(caller),
+    });
+    assert.equal(denied.statusCode, 403);
+
+    const counsellor = await login(h.app, EMAILS.counsellorA);
+    const ok = await h.app.inject({
+      method: 'GET', url: '/integrations/callyzer/health', headers: auth(counsellor),
+    });
+    assert.equal(ok.statusCode, 200);
+    // RLS trims the quarantine to nothing for a counsellor - the payloads are
+    // raw personal-call data. No WHERE clause in the route decides this.
+    assert.deepEqual(ok.json().quarantine, []);
+  });
+
+  it('sync-now says plainly when the server has no API key', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST', url: '/integrations/callyzer/sync', headers: auth(admin), payload: {},
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().message, /CALLYZER_API_KEY/);
+  });
+
+  it('the pull worker syncs the roster and the log through the same one door', async () => {
+    const wkLead = makeLeadFor(USERS.callerA1, 'Pulled Client');
+    const wkNumber = fixtureSql(`select phone_e164 from crm.leads where id = '${wkLead}'`)
+      .trim().replace('+91', '');
+    const { date, time } = istParts();
+
+    let authHeader = '';
+    let mode: 'ok' | 'expired' = 'ok';
+    const fake = http.createServer((req, res) => {
+      authHeader = String(req.headers.authorization ?? '');
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json');
+        if (mode === 'expired') {
+          res.statusCode = 403;
+          res.end(JSON.stringify({ result: null, message: 'Your subscription has expired.' }));
+          return;
+        }
+        if (req.method === 'GET' && req.url?.startsWith('/api/v2.2/employee/get')) {
+          res.end(JSON.stringify({
+            message: 'Success',
+            result: [
+              { emp_country_code: '91', emp_number: '9000000001', emp_name: 'Caller A1',
+                app_version: '5.2.0', last_sync_req_at: `${date} ${time} IST` },
+              { emp_country_code: '91', emp_number: '9666600000', emp_name: 'Ghost Handset' },
+            ],
+          }));
+          return;
+        }
+        if (req.method === 'POST' && req.url === '/api/v2.2/call-log/history') {
+          const body = JSON.parse(raw || '{}') as { call_method?: string; page_no?: number };
+          const rows =
+            body.call_method === 'PhoneCall' && body.page_no === 1
+              ? [{
+                  id: 'pull-1', emp_country_code: '91', emp_number: '9000000001',
+                  client_country_code: '91', client_number: wkNumber,
+                  duration: 40, call_type: 'Outgoing',
+                  call_date: date, call_time: time,
+                  call_method: 'PhoneCall', call_mode: 'Voice',
+                  synced_at: `${date} ${time} IST`,
+                }]
+              : [];
+          res.end(JSON.stringify({ message: 'Success', result: rows }));
+          return;
+        }
+        res.statusCode = 404;
+        res.end(JSON.stringify({ result: null, message: 'no such endpoint' }));
+      });
+    });
+    await new Promise<void>((resolve) => fake.listen(0, '127.0.0.1', resolve));
+    const port = (fake.address() as { port: number }).port;
+    fixtureSql(`update crm.settings
+                   set value = to_jsonb('http://127.0.0.1:${port}/api/v2.2/'::text)
+                 where key = 'callyzer.base_url';`);
+
+    try {
+      const worker = new CallyzerWorker(h.db, USERS.ops, 'test-key', { minIntervalMs: 1 });
+      const summary = await worker.syncOnce();
+      assert.ok(summary, 'enabled, so it runs');
+      assert.equal(authHeader, 'Bearer test-key');
+      assert.partialDeepStrictEqual(summary.employees, { seen: 2 });
+      assert.ok(summary.employees.unmapped >= 1, 'the ghost handset is counted unmapped');
+      assert.partialDeepStrictEqual(summary.logs, { seen: 1, inserted: 1, matched: 1, quarantined: 0 });
+
+      const ghost = fixtureSql(
+        `select user_id is null from crm.callyzer_employees where emp_msisdn = '+919666600000'`,
+      ).trim();
+      assert.equal(ghost, 't', 'the roster names the stranger for the health panel');
+
+      // A lapsed invoice must surface as exactly what it is.
+      mode = 'expired';
+      await assert.rejects(
+        () => worker.syncOnce(),
+        (err: unknown) => err instanceof CallyzerApiError && err.subscriptionExpired,
+      );
+
+      // Flipping the setting off is a deliberate quiet, not a failure.
+      fixtureSql(`update crm.settings set value = 'false'::jsonb where key = 'callyzer.enabled';`);
+      assert.equal(await worker.syncOnce(), null);
+      fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'callyzer.enabled';`);
+    } finally {
+      await new Promise<void>((resolve) => fake.close(() => resolve()));
+    }
+  });
+
+  it('an admin can fix the one mapping fact: the Dialing SIM', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+
+    const set = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.mentor}/dialing-msisdn`, headers: auth(admin),
+      payload: { dialingMsisdn: '98111 22233' },
+    });
+    assert.equal(set.statusCode, 200);
+    assert.equal(set.json().dialing_msisdn, '+919811122233', 'normalised on the way in');
+
+    const dupe = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.founder}/dialing-msisdn`, headers: auth(admin),
+      payload: { dialingMsisdn: '9811122233' },
+    });
+    assert.equal(dupe.statusCode, 409);
+    assert.match(dupe.json().message, /already assigned/);
+
+    const junk = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.mentor}/dialing-msisdn`, headers: auth(admin),
+      payload: { dialingMsisdn: '12' },
+    });
+    assert.equal(junk.statusCode, 400);
+
+    const cleared = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.mentor}/dialing-msisdn`, headers: auth(admin),
+      payload: { dialingMsisdn: null },
+    });
+    assert.equal(cleared.statusCode, 200);
+    assert.equal(cleared.json().dialing_msisdn, null);
+
+    const counsellor = await login(h.app, EMAILS.counsellorA);
+    const denied = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.mentor}/dialing-msisdn`, headers: auth(counsellor),
+      payload: { dialingMsisdn: '9811100000' },
+    });
+    assert.equal(denied.statusCode, 403);
   });
 });
