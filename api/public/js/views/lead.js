@@ -71,6 +71,24 @@ export async function render(outlet, me, params) {
       </div>
 
       <div class="grid cols-4" style="margin-top:14px">
+        <div class="stat"><div class="k">Owner — who is reaching out</div>
+          <div class="v" style="font-size:15px" data-testid="lead-owner">${
+            lead.escalation_stage === 'counsellor' && lead.counsellor_name
+              ? esc(lead.counsellor_name)
+              : lead.caller_name
+                ? esc(lead.caller_name)
+                : lead.counsellor_name
+                  ? esc(lead.counsellor_name)
+                  : 'nobody yet'}</div>
+          <div class="s">${
+            lead.escalation_stage === 'counsellor' && lead.counsellor_name
+              ? `counsellor${lead.team_name ? ' · ' + esc(lead.team_name) : ''}`
+              : lead.caller_name
+                ? `caller${lead.team_name ? ' · ' + esc(lead.team_name) : ''}${
+                    lead.counsellor_name ? ' · counsellor ' + esc(lead.counsellor_name) : ''}`
+                : lead.counsellor_name
+                  ? `counsellor${lead.team_name ? ' · ' + esc(lead.team_name) : ''}`
+                  : 'waiting on the floor list'}</div></div>
         <div class="stat"><div class="k">Next action</div>
           <div class="v" style="font-size:15px" data-testid="next-action">${esc(fmtDT(lead.next_action_at))}</div>
           <div class="s">${esc(lead.next_action_note ?? '')}</div></div>
@@ -191,22 +209,36 @@ function journeyPanel(lead, data) {
   const dealDone = lead.status === 'won' || lead.status === 'handed_off';
   const lost = ['lost', 'invalid'].includes(lead.status);
 
+  // Name who did each stage — "somebody called" is not an answer when the
+  // question is whose follow-up this is.
+  const followupNames = [...new Set(
+    attempts.slice(0, Math.max(0, attempts.length - 1)).map((a) => a.by_name).filter(Boolean),
+  )];
+  const followupBy = followupNames.length === 0 ? ''
+    : followupNames.length <= 2 ? ` by ${followupNames.join(', ')}`
+    : ` by ${followupNames[0]} +${followupNames.length - 1} more`;
+  const firstConnect = [...attempts].reverse().find((a) => a.is_connect);
+
   const steps = [
     { label: 'Lead in', state: 'done', sub: fmtDT(lead.created_at) },
     {
       label: '1st call',
       state: firstCall ? 'done' : 'now',
-      sub: firstCall ? fmtDT(firstCall.started_at) : 'not called yet',
+      sub: firstCall
+        ? `${fmtDT(firstCall.started_at)}${firstCall.by_name ? ` · by ${firstCall.by_name}` : ''}`
+        : 'not called yet',
     },
     {
       label: 'Follow-ups',
       state: followups > 0 ? 'done' : firstCall ? 'now' : '',
-      sub: followups > 0 ? `×${followups} done` : 'none yet',
+      sub: followups > 0 ? `×${followups} done${followupBy}` : 'none yet',
     },
     {
       label: 'Reached',
       state: reached ? 'done' : na >= 2 ? 'bad' : firstCall ? 'now' : '',
-      sub: reached ? 'spoke to them' : na >= 2 ? `not answered ×${na}` : 'no real talk yet',
+      sub: reached
+        ? `spoke to them${firstConnect?.by_name ? ` · ${firstConnect.by_name}` : ''}`
+        : na >= 2 ? `not answered ×${na}` : 'no real talk yet',
     },
     {
       label: 'Visit',

@@ -78,11 +78,18 @@ Do not undo these without understanding why they exist.
   born first-touched, and its mandatory follow-up date is a pending callback,
   so missing it rings.
 
-- **Leads do not move between callers on their own** (0049, owner decision).
-  The untouched-lead sweeper and the cross-team mover ship disabled
-  (`sla.untouched_reassign_minutes` = 0, `escalation.cross_team_days` = 0) and
-  are no longer scheduled; the functions remain, gated on those settings. The
-  one automatic hand-up left is caller → counsellor after two no-connect
+- **Leads do not move between callers on their own — except after 15 silent
+  days** (0049, 0066, both owner decisions). The ten-MINUTE untouched sweeper
+  and the cross-team mover stay disabled (`sla.untouched_reassign_minutes` =
+  0, `escalation.cross_team_days` = 0) and unscheduled; ownership at that
+  timescale is sacred. The 15-DAY horizon is different (owner, 3 Sep): an
+  open, **overdue** lead with not one dial in `sla.stale_reassign_days` (15)
+  moves to a different on-floor caller on its team — preferring one who never
+  tried it, because by then the number may be spam-flagged for the old
+  caller's SIM and a fresh caller ID may ring where theirs no longer does.
+  Leads with a future booked callback, counsellor-stage leads, and
+  previous-month history never move; capped by `sla.stale_reassign_max` (2).
+  The other automatic hand-up is caller → counsellor after two no-connect
   attempts, bounded by `escalation.counsellor_daily_cap` (15/day) — past the
   cap the lead stays with its caller wearing a visible "Not answered ×N" badge.
 
@@ -108,10 +115,13 @@ Do not undo these without understanding why they exist.
   spam-flagged number and never been picked up — so `crm.v_reenquired_leads`
   rows render *inside* the fresh list with an "enquired again" badge, flagged
   against the deadline the re-enquiry set, and leave only when a call attempt
-  lands after the re-enquiry — never for age. The bell stays appointments-only
-  (0052). Dedupe keys on the phone alone, so the same human enquiring under a
-  new number is a new lead — accepted, because the phone is the dialing
-  identity.
+  lands after the re-enquiry — never for age. A re-enquiry that reopens a
+  parked lead **with no owner at all** is adopted by the team's counsellor
+  (`crm.adopt_orphan_reenquiries`, 0066, owner decision) — before that rule,
+  revived leads sat on the whole-floor list belonging to nobody. The bell
+  stays appointments-only (0052). Dedupe keys on the phone alone, so the same
+  human enquiring under a new number is a new lead — accepted, because the
+  phone is the dialing identity.
 
 - **Score components that had nothing to measure are excluded from both the
   points earned and the weight available**, and the total is rescaled over what
@@ -251,7 +261,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(316 database assertions, 290 API tests, 10 browser E2E flows), the
+(320 database assertions, 292 API tests, 10 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Callyzer
 integration** (migration 0063, `api/src/integrations/callyzer/`) — webhook +

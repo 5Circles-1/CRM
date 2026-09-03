@@ -347,6 +347,70 @@ select crm_test.check(
     where l.full_name = 'Lead 3'),
   null);
 
+-- The 15-day stale mover (0066, owner decision): an open, overdue lead with
+-- not one dial in sla.stale_reassign_days moves to a different caller on the
+-- team - the number may be spam-flagged for the old caller's SIM. A lead
+-- whose silence is a booked future callback never moves.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                       status, assigned_at, next_action_at, next_action_note)
+values (:SRC, 'Stale Sunil', '+919890000201', :A1, :TEAM_A, 'working',
+        now() - interval '20 days', now() - interval '5 days', 'Follow up'),
+       (:SRC, 'Quiet-but-booked Qamar', '+919890000202', :A1, :TEAM_A, 'working',
+        now() - interval '20 days', now() + interval '2 days', 'Callback booked');
+
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at)
+select id, :A1, :A1, now() + interval '2 days'
+  from crm.leads where full_name = 'Quiet-but-booked Qamar';
+
+select crm.reassign_stale_leads(50);
+
+select crm_test.check(
+  'R9', 'a lead with no dial in 15+ days moves to a different caller on its team',
+  (select caller_id is distinct from :A1::uuid and team_id = :TEAM_A::uuid
+     from crm.leads where full_name = 'Stale Sunil'),
+  (select 'caller now ' || coalesce(caller_id::text, 'null')
+     from crm.leads where full_name = 'Stale Sunil'));
+
+select crm_test.check(
+  'R9', 'the stale move is recorded as automatic and tells the new caller why',
+  (select exists (select 1 from crm.lead_transfers t
+                   join crm.leads l on l.id = t.lead_id
+                  where l.full_name = 'Stale Sunil' and t.is_automatic)
+      and exists (select 1 from crm.notifications n
+                   join crm.leads l on l.id = n.lead_id
+                  where l.full_name = 'Stale Sunil' and n.kind = 'lead_reassigned'
+                    and n.user_id = l.caller_id)),
+  null);
+
+select crm_test.check(
+  'R9', 'a quiet lead with a future booked callback stays put',
+  (select caller_id = :A1::uuid from crm.leads where full_name = 'Quiet-but-booked Qamar'),
+  null);
+
+-- Orphan re-enquiries (0066, owner decision): a re-enquiry that reopened a
+-- parked lead with no caller and no counsellor goes to the team's counsellor.
+insert into crm.leads (source_id, full_name, phone_e164, team_id,
+                       status, next_action_at, next_action_note)
+values (:SRC, 'Orphan Omar', '+919890000203', :TEAM_A, 'working',
+        now() + interval '15 minutes', 'Re-enquiry received');
+
+insert into crm.lead_events (lead_id, event_type, payload)
+select id, 're_enquiry', jsonb_build_object('source_id', :SRC, 'row_key', 'row:9066')
+  from crm.leads where full_name = 'Orphan Omar';
+
+select crm.adopt_orphan_reenquiries(50);
+
+select crm_test.check(
+  'R9', 'an unowned re-enquiry is adopted by the team''s counsellor',
+  (select counsellor_id = :CNS_A::uuid and escalation_stage = 'counsellor'
+     from crm.leads where full_name = 'Orphan Omar'),
+  (select 'counsellor ' || coalesce(counsellor_id::text, 'null')
+     from crm.leads where full_name = 'Orphan Omar'));
+
+-- Keep the fixtures out of the live views for everything that follows.
+update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+ where full_name in ('Stale Sunil', 'Quiet-but-booked Qamar', 'Orphan Omar');
+
 -- =============================================================================
 -- REQUIREMENT 8: only the counsellor can transfer a Not Answered lead
 -- =============================================================================

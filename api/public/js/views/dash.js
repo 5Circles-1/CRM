@@ -4,16 +4,44 @@ import { barChart, donutChart, lineChart } from '../charts.js';
 
 /** Requirement 2: caller and counsellor performance, plus the breakeven thermometer. */
 export async function render(outlet) {
-  const [thermo, funnel, counsellors, money] = await Promise.all([
+  const [thermo, funnel, counsellors, money, freshNow] = await Promise.all([
     get('/dashboards/thermometer'),
     get('/dashboards/funnel?days=30'),
     get('/dashboards/counsellors'),
     get('/dashboards/collections-series?days=30'),
+    get('/dashboards/fresh-now').catch(() => null),
   ]);
   const dayLabel = (d) =>
     new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
 
   outlet.innerHTML = '';
+
+  // The exact number of leads waiting for a call right now — the dashboard's
+  // answer to "how many fresh leads do we have?", matching the Fresh tab
+  // number for number: never-contacted plus enquired-again, floor-wide.
+  if (freshNow) {
+    outlet.appendChild(h(`
+      <div class="panel" data-testid="fresh-now">
+        <div class="row spread wrap">
+          <h2 class="mt0">Waiting for a call <small>right now, whole floor</small></h2>
+          <a class="btn small" href="#/fresh">Open Fresh leads →</a>
+        </div>
+        <div class="grid cols-4">
+          <div class="stat"><div class="k">Total waiting</div>
+            <div class="v">${Number(freshNow.waiting)}</div>
+            <div class="s">${Number(freshNow.fresh)} never contacted · ${Number(freshNow.reenquired)} enquired again</div></div>
+          <div class="stat ${Number(freshNow.late) ? 'tone-bad' : 'tone-good'}"><div class="k">Past their deadline</div>
+            <div class="v">${Number(freshNow.late)}</div><div class="s">call these first</div></div>
+          <div class="stat ${Number(freshNow.no_owner) ? 'tone-bad' : ''}"><div class="k">With no owner</div>
+            <div class="v">${Number(freshNow.no_owner)}</div>
+            <div class="s">${Number(freshNow.no_owner) ? 'held at team level' : 'everything is owned'}</div></div>
+          <div class="stat"><div class="k">By team</div>
+            <div class="v" style="font-size:15px">${(freshNow.teams ?? [])
+              .map((t) => `${esc(t.team_name)} ${Number(t.fresh)}`).join(' · ') || '—'}</div>
+            <div class="s">fresh split across teams</div></div>
+        </div>
+      </div>`));
+  }
 
   // --- thermometer ---
   const pace = Math.max(0, Math.min(130, Number(thermo.pct_of_pace) || 0));

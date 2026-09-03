@@ -12,6 +12,36 @@ import { serviceAccountEmail } from '../ingest/service-account.ts';
  * screen and any export can never disagree about the same number.
  */
 export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * The exact number of leads waiting for a call right now, floor-wide:
+   * never-contacted fresh leads plus re-enquiries not yet dialled again -
+   * the same two lists the Fresh tab shows, as one number for the dashboard.
+   * Definer-rights summary views underneath, so the number is the floor's
+   * number whoever is looking at it.
+   */
+  app.get('/dashboards/fresh-now', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    return req.tx(async (q) => {
+      const teams = await q.many<{ fresh: number; flagged: number; breached: number; unassigned: number }>(
+        `select * from crm.v_fresh_summary order by team_name`,
+      );
+      const re = await q.one<{ reenquired: number; unowned: number; late: number }>(
+        `select * from crm.v_reenquired_summary`,
+      );
+      const fresh = teams.reduce((a, t) => a + Number(t.fresh), 0);
+      const freshLate = teams.reduce((a, t) => a + Number(t.flagged) + Number(t.breached), 0);
+      return {
+        waiting: fresh + Number(re?.reenquired ?? 0),
+        fresh,
+        reenquired: Number(re?.reenquired ?? 0),
+        late: freshLate + Number(re?.late ?? 0),
+        no_owner:
+          teams.reduce((a, t) => a + Number(t.unassigned), 0) + Number(re?.unowned ?? 0),
+        teams,
+      };
+    });
+  });
+
   /** Live floor: who is on, what they have done, what is urgent in their queue. */
   app.get('/dashboards/floor', async (req) => {
     req.requireRole('counsellor', 'admin', 'ops', 'viewer');

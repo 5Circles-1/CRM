@@ -12,7 +12,7 @@ below is automatic unless it says a person decides it.
 
 | Behaviour | Consequence | When |
 |---|---|---|
-| A new lead not dialled | It stays yours and reads as untouched on Fresh leads and the Floor — nobody sweeps it away | Immediately visible |
+| A new lead not dialled | It stays yours, reading as untouched on Fresh leads and the Floor — until it has gone 15 days with no dial while overdue, when it moves to another caller (a fresh number may ring where yours is spam-flagged) | Immediately visible |
 | Two no-connect attempts | The lead escalates to the counsellor to tap (at most {{setting:escalation.counsellor_daily_cap}} per counsellor per day; past that it stays with you, clearly badged “Not answered ×2”) | Immediately on the second |
 | Shift not started | You receive no fresh leads | Until you start |
 | One hour with no activity | Signed out; shift ends at your last real action | Hourly check |

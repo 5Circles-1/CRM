@@ -266,6 +266,31 @@ describe('ingestion', () => {
     );
   });
 
+  it('the dashboard states the exact floor-wide waiting count', async () => {
+    const ops = await login(h.app, EMAILS.ops);
+    const res = await h.app.inject({ url: '/dashboards/fresh-now', headers: auth(ops) });
+    assert.equal(res.statusCode, 200);
+    const now = res.json();
+    assert.equal(
+      Number(now.waiting),
+      Number(now.fresh) + Number(now.reenquired),
+      'the headline number must be exactly fresh plus enquired-again',
+    );
+    assert.ok(Array.isArray(now.teams), 'the per-team split rides along');
+  });
+
+  it('the lead page names who is reaching out', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Owner Visible');
+    const caller = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ url: `/leads/${leadId}`, headers: auth(caller) });
+    assert.equal(res.statusCode, 200);
+    const { lead } = res.json();
+    assert.ok(lead.caller_name, 'the owner name must ride on the lead payload');
+    assert.ok(lead.team_name, 'and the team, so the funnel says whose lead this is');
+    fixtureSql(`update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+                 where id = '${leadId}';`);
+  });
+
   it('keeps the quarantined row available for ops to fix', async () => {
     const ops = await login(h.app, EMAILS.ops);
     const res = await h.app.inject({ url: '/admin/quarantine', headers: auth(ops) });
