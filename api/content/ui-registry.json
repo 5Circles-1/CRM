@@ -317,6 +317,13 @@
       "when": "First thing every morning. Work it to empty."
     },
     {
+      "key": "badge.reenquired",
+      "area": "Badges",
+      "label": "Enquired again",
+      "does": "This person filled a lead form again and nobody has dialled them since. Same lead record, resurfaced on the Fresh tab — never duplicated — with the owner alerted.",
+      "when": "Call first: the earlier attempt may have gone to spam and never rung. The badge clears when a call is logged after the re-enquiry."
+    },
+    {
       "key": "tab.reminders",
       "area": "Tabs",
       "label": "Alerts",

@@ -275,6 +275,78 @@ select crm_test.check(
   'R9', 'a 4-second call is not counted as a connect',
   (select connect_count = 0 from crm.leads where full_name = 'Lead 4'), null);
 
+-- A repeat enquiry attaches to the existing lead rather than duplicating it
+-- (0042) - and since 0064/0065 the attach must be VISIBLE: the lead joins
+-- the fresh worklist (with a flag against its own deadline) until somebody
+-- dials the person again, and the owner is notified. "Two leads in the
+-- sheet, one in the CRM" was this mechanism working invisibly, which the
+-- floor could not tell apart from a lost lead.
+do $$
+declare v_lead uuid;
+begin
+  select id into v_lead from crm.leads where full_name = 'Lead 4';
+  insert into crm.lead_events (lead_id, event_type, payload)
+  values (v_lead, 're_enquiry',
+          jsonb_build_object('source_id', '33333333-0000-0000-0000-000000000001',
+                             'row_key', 'row:9064'));
+end $$;
+
+-- Lead 4 already has a call attempt from BEFORE this re-enquiry (the
+-- 4-second one above), which must not count as having answered it.
+select crm_test.check(
+  'R9', 'a re-enquiry joins the fresh worklist; a call from before it does not clear it',
+  (select count(*) = 1 from crm.v_reenquired_leads r
+     join crm.leads l on l.id = r.lead_id
+    where l.full_name = 'Lead 4'
+      and r.reenquiry_source_name is not null and r.flag is not null),
+  null);
+
+select crm_test.check(
+  'R9', 'a re-enquiry notifies the lead''s owner of the possible missed follow-up',
+  (select count(*) = 1 from crm.notifications n
+     join crm.leads l on l.id = n.lead_id
+    where l.full_name = 'Lead 4' and n.kind = 're_enquiry' and n.user_id = l.caller_id),
+  null);
+
+-- The same person enquiring twice in a burst nags once, not twice.
+do $$
+declare v_lead uuid;
+begin
+  select id into v_lead from crm.leads where full_name = 'Lead 4';
+  insert into crm.lead_events (lead_id, event_type, payload)
+  values (v_lead, 're_enquiry',
+          jsonb_build_object('source_id', '33333333-0000-0000-0000-000000000001',
+                             'row_key', 'row:9065'));
+end $$;
+
+select crm_test.check(
+  'R9', 'a second unread re-enquiry nudge is not stacked on the first',
+  (select count(*) = 1 from crm.notifications n
+     join crm.leads l on l.id = n.lead_id
+    where l.full_name = 'Lead 4' and n.kind = 're_enquiry'),
+  null);
+
+-- And the row clears the way a fresh lead does: a call AFTER the re-enquiry
+-- answers it. Lead 3's only call was logged above, before this back-dated
+-- re-enquiry... so date the enquiry before the call and expect no row.
+do $$
+declare v_lead uuid;
+begin
+  select id into v_lead from crm.leads where full_name = 'Lead 3';
+  insert into crm.lead_events (lead_id, event_type, payload, occurred_at)
+  values (v_lead, 're_enquiry',
+          jsonb_build_object('source_id', '33333333-0000-0000-0000-000000000001',
+                             'row_key', 'row:9065'),
+          now() - interval '1 hour');
+end $$;
+
+select crm_test.check(
+  'R9', 'a re-enquiry already answered by a later call is off the worklist',
+  (select count(*) = 0 from crm.v_reenquired_leads r
+     join crm.leads l on l.id = r.lead_id
+    where l.full_name = 'Lead 3'),
+  null);
+
 -- =============================================================================
 -- REQUIREMENT 8: only the counsellor can transfer a Not Answered lead
 -- =============================================================================

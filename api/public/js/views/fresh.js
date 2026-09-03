@@ -3,15 +3,21 @@ import { agoLabel, esc, h } from '../util.js';
 import { addLeadModal } from '../addlead.js';
 
 /**
- * Fresh: every lead nobody has ever contacted.
+ * Fresh: every enquiry waiting on a call.
  *
- * The one list that answers "did anything arrive and just sit there?" — and
- * it answers it for leads held with no caller too, which appear in nobody's
- * personal pipeline and were therefore the easiest thing on the floor to miss.
+ * Two kinds of row share one list, because the floor works one list:
  *
- * A late fresh lead is never demoted or hidden. It stays here, flagged, until
- * somebody actually speaks to the person. That is the whole promise of the
- * tab: leads cannot be lost by being quietly re-categorised.
+ *  - Leads nobody has ever contacted. They stay here, flagged, until
+ *    somebody actually speaks to the person — never dropped for getting old.
+ *  - Leads whose person ENQUIRED AGAIN (0064/0065). The enquiry was attached
+ *    to their existing lead — one live lead per phone, never a duplicate for
+ *    two callers to fight over — but the owner's rule is that every enquiry
+ *    lands on this tab: the earlier call may have hit a spam-flagged number
+ *    and never been picked up. The row wears an "enquired again" badge and
+ *    leaves the list only when somebody dials the person after they asked.
+ *
+ * This is also the screen the Google Sheet gets reconciled against: every
+ * sheet row is here, either as a fresh lead or as a badged re-enquiry.
  */
 
 const FLAGS = [
@@ -20,6 +26,8 @@ const FLAGS = [
   ['flagged', 'Late'],
   ['waiting', 'Still in time'],
 ];
+
+const FLAG_RANK = { breached: 0, flagged: 1, waiting: 2 };
 
 const flagBadge = (l) => {
   if (l.flag === 'breached') {
@@ -46,17 +54,28 @@ export async function render(outlet, me) {
     const data = await get(`/me/fresh?${params}`);
     outlet.innerHTML = '';
 
-    const all = data.leads;
-    const late = all.filter((l) => l.flag !== 'waiting').length;
-    const badly = all.filter((l) => l.flag === 'breached').length;
-    const noOwner = all.filter((l) => !l.user_id).length;
-    const oldest = all.reduce((m, l) => Math.max(m, Number(l.age_minutes) || 0), 0);
+    // One worklist: never-contacted leads and re-enquiries, most urgent
+    // first — the same order the fresh list has always used.
+    const lateness = (l) => (l.minutes_late == null ? -1e15 : Number(l.minutes_late));
+    const rows = [
+      ...data.leads,
+      ...(data.reenquired ?? []).map((l) => ({ ...l, reenquired: true })),
+    ].sort((a, b) =>
+      (FLAG_RANK[a.flag] ?? 2) - (FLAG_RANK[b.flag] ?? 2)
+      || lateness(b) - lateness(a)
+      || (Number(b.age_minutes) || 0) - (Number(a.age_minutes) || 0));
+
+    const again = rows.filter((l) => l.reenquired).length;
+    const late = rows.filter((l) => l.flag !== 'waiting').length;
+    const badly = rows.filter((l) => l.flag === 'breached').length;
+    const noOwner = rows.filter((l) => !l.user_id).length;
+    const oldest = rows.reduce((m, l) => Math.max(m, Number(l.age_minutes) || 0), 0);
 
     outlet.appendChild(h(`
       <div>
       <div class="grid cols-4" style="margin-bottom:16px">
-        <div class="stat"><div class="k">Never contacted</div><div class="v">${all.length}</div>
-          <div class="s">oldest waiting ${esc(agoLabel(oldest))}</div></div>
+        <div class="stat"><div class="k">Waiting for a call</div><div class="v">${rows.length}</div>
+          <div class="s">${rows.length - again} never contacted · ${again} enquired again · oldest ${esc(agoLabel(oldest))}</div></div>
         <div class="stat ${late ? 'tone-bad' : 'tone-good'}"><div class="k">Past their deadline</div>
           <div class="v">${late}</div><div class="s">call these first</div></div>
         <div class="stat ${badly ? 'tone-bad' : ''}"><div class="k">Badly late</div>
@@ -69,11 +88,12 @@ export async function render(outlet, me) {
       <div class="panel">
         <div class="row spread wrap">
           <div>
-            <h2 class="mt0">Fresh leads <small>${all.length}</small></h2>
+            <h2 class="mt0">Fresh leads <small>${rows.length}</small></h2>
             <div class="hint">
-              Nobody has ever spoken to these. They stay on this list, flagged,
-              until somebody actually does — a lead is never dropped off here for
-              getting old.
+              Every enquiry waiting on a call — leads nobody has ever spoken
+              to, and people who <b>enquired again</b> and haven't been dialled
+              since. Rows stay here, flagged, until somebody actually calls —
+              a lead is never dropped off here for getting old.
             </div>
           </div>
           <div class="row" style="gap:8px">
@@ -92,10 +112,10 @@ export async function render(outlet, me) {
         <div class="chips" style="margin:10px 0 14px">
           ${FLAGS.map(([v, l]) => `<button class="chip ${flag === v ? 'on' : ''}" data-flag="${v}">${l}</button>`).join('')}
         </div>
-        ${all.length === 0 ? `<div class="empty">
+        ${rows.length === 0 ? `<div class="empty">
           ${scope === 'mine' && canSeeAll
             ? 'None of <b>your own</b> leads are waiting. Switch to <b>Whole floor</b> to see everyone’s.'
-            : 'Nothing is waiting for a first call. This is the state to end every day in.'}
+            : 'Nothing is waiting for a call. This is the state to end every day in.'}
         </div>` : `
         <div style="overflow-x:auto">
         <table class="table"><thead><tr>
@@ -104,13 +124,15 @@ export async function render(outlet, me) {
           ${scope === 'all' ? '<th>Owner</th>' : ''}
           <th></th>
         </tr></thead><tbody>
-        ${all.map((l) => `
+        ${rows.map((l) => `
           <tr class="click ${l.flag !== 'waiting' ? 'radar-hot' : ''}" data-lead="${esc(l.lead_id)}">
             <td><b>${esc(l.full_name ?? 'Unnamed')}</b>
               ${l.priority === 'immediate' ? '<span class="badge b-bad">immediate</span>' : ''}
+              ${l.reenquired ? `<span class="badge b-warn">enquired again${
+                Number(l.reenquiry_count) > 1 ? ` ×${Number(l.reenquiry_count)}` : ''}</span>` : ''}
               <span class="hint mono">${esc(l.phone_e164)}</span></td>
             <td>${esc(l.city ?? '—')}</td>
-            <td class="hint">${esc(l.source_name ?? l.campaign_name ?? '—')}</td>
+            <td class="hint">${esc((l.reenquired ? l.reenquiry_source_name : null) ?? l.source_name ?? l.campaign_name ?? '—')}</td>
             <td class="num">${esc(agoLabel(l.age_minutes))}</td>
             <td>${flagBadge(l)}</td>
             ${scope === 'all' ? `<td>${l.owner_name
