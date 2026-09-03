@@ -173,7 +173,18 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     const { id } = z.object({ id: uuid }).parse(req.params);
 
     return req.tx(async (q) => {
-      const lead = await q.one(`select * from crm.leads where id = $1`, [id]);
+      // Owner names ride along: "who is reaching out to this person" must be
+      // answerable from the lead page itself, not by cross-checking Floor.
+      const lead = await q.one(
+        `select l.*, cu.full_name as caller_name, ku.full_name as counsellor_name,
+                t.name as team_name
+           from crm.leads l
+           left join crm.users cu on cu.id = l.caller_id
+           left join crm.users ku on ku.id = l.counsellor_id
+           left join crm.teams t on t.id = l.team_id
+          where l.id = $1`,
+        [id],
+      );
       if (!lead) throw notFound('lead not found');
 
       const [timeline, attempts, callbacks, transfers] = await Promise.all([

@@ -212,6 +212,10 @@ export class IngestWorker {
         'select crm.assign_pending_leads($1) as assign_pending_leads',
         [Math.max(rows.length, 100)],
       );
+      // A re-enquiry that reopened a parked lead left it with no owner at
+      // all; those go to the team's counsellor (0066, owner decision) the
+      // moment the sync that revived them finishes.
+      await q.query('select crm.adopt_orphan_reenquiries(200)');
       return row?.assign_pending_leads ?? 0;
     });
 

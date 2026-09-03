@@ -26,10 +26,28 @@ export const JOBS: Job[] = [
     sql: 'select crm.assign_pending_leads(500)',
     shiftHoursOnly: true,
   },
-  // The untouched-lead sweeper and the cross-team mover are no longer
-  // scheduled: the floor's rule (0049) is that a lead stays with its caller
-  // until a counsellor transfers it by hand. The engine functions remain in
-  // the database, gated on their settings, in case that rule is ever reversed.
+  // The ten-minute untouched-lead sweeper and the cross-team mover are no
+  // longer scheduled: the floor's rule (0049) is that a lead stays with its
+  // caller until a counsellor transfers it by hand. The engine functions
+  // remain in the database, gated on their settings, in case that rule is
+  // ever reversed.
+  {
+    name: 'reassign_stale_leads',
+    // The 15-DAY horizon is different from the ten-minute one (0066, owner
+    // decision): after two weeks of not one dial on an overdue lead, the
+    // number may be spam-flagged for that caller's SIM - a different caller
+    // may ring where they no longer can. Hourly is plenty at that timescale.
+    everyMs: 60 * 60_000,
+    sql: 'select crm.reassign_stale_leads(200)',
+    shiftHoursOnly: true,
+  },
+  {
+    name: 'adopt_orphan_reenquiries',
+    // A re-enquiry can reopen a parked lead with no owner at any hour; the
+    // ingest worker adopts them after each sync, and this catches strays.
+    everyMs: 10 * 60_000,
+    sql: 'select crm.adopt_orphan_reenquiries(200)',
+  },
   {
     name: 'expire_missed_callbacks',
     everyMs: 5 * 60_000,

@@ -37,6 +37,11 @@ const BUCKETS = [
 
 export async function render(outlet, me) {
   let active = null; // null = everything, in priority order
+  // Columns by default (owner ask): the funnel laid side by side, so the
+  // not-answered and callback work is one glance, not a scroll. The list
+  // stays one click away and the choice is remembered per browser.
+  let view = 'board';
+  try { view = localStorage.getItem('crm_day_view') || 'board'; } catch { /* private mode */ }
 
   const draw = async () => {
     const data = await get(`/me/pipeline${active ? `?bucket=${active}` : ''}`);
@@ -57,14 +62,26 @@ export async function render(outlet, me) {
           The client rang us? Log it here — an inbound call is the warmest lead
           on the floor and its follow-up date rings when it is due.
         </div>
-        <button class="btn primary" data-testid="day-inbound" id="day-inbound">
-          📞 Log inbound call
-        </button>
+        <div class="row" style="gap:8px">
+          <div class="chips" style="margin:0">
+            <button class="chip ${view === 'board' ? 'on' : ''}" data-view="board" title="The funnel as side-by-side columns">Columns</button>
+            <button class="chip ${view === 'list' ? 'on' : ''}" data-view="list" title="One list, top to bottom in priority order">List</button>
+          </div>
+          <button class="btn primary" data-testid="day-inbound" id="day-inbound">
+            📞 Log inbound call
+          </button>
+        </div>
       </div>`));
     outlet.querySelector('#day-inbound').addEventListener('click', () =>
       addLeadModal(me, (lead) => {
         if (lead?.id) location.hash = `#/lead/${lead.id}`; else draw();
       }, 'inbound'));
+    outlet.querySelectorAll('[data-view]').forEach((b) =>
+      b.addEventListener('click', () => {
+        view = b.dataset.view;
+        try { localStorage.setItem('crm_day_view', view); } catch { /* private mode */ }
+        draw();
+      }));
 
     // Tabs, each with its own count. Clicking one filters; clicking it again
     // goes back to everything - a filter you cannot leave is a trap.
@@ -113,6 +130,9 @@ export async function render(outlet, me) {
           ? 'Nothing in this list right now.'
           : 'Queue clear — nothing open. New leads land here automatically.'
       }</div></div>`));
+    } else if (view === 'board' && !active) {
+      await drawBoard(outlet, me, leads);
+      return;
     } else {
       // Grouped even when unfiltered, so "one bulk list" never happens again.
       for (const b of BUCKETS) {
@@ -135,6 +155,71 @@ export async function render(outlet, me) {
   };
 
   await draw();
+}
+
+/**
+ * The funnel as columns (owner ask, 3 Sep): every stage side by side, so a
+ * caller or counsellor sees the whole shape of their day and can work the
+ * not-answered and callback stacks without scrolling past everything else.
+ *
+ * The "Not answered" column is the reason this view exists: those leads live
+ * scattered through the time buckets (a callback that went unanswered sits
+ * under Callbacks), so they also stack here, together, ready to be re-tapped
+ * — plus the quiet re-tap pool for those who can see it.
+ */
+async function drawBoard(outlet, me, leads) {
+  const pool = ['counsellor', 'admin', 'ops'].includes(me?.role)
+    ? await get('/me/retap-pool').catch(() => ({ leads: [] }))
+    : { leads: [] };
+
+  const notAnswered = leads.filter(
+    (l) => Number(l.na_streak) >= 2 || l.last_disposition === 'not_answered',
+  );
+
+  const columns = BUCKETS
+    .map((b) => ({ ...b, items: leads.filter((l) => l.bucket === b.key) }))
+    .filter((c) => c.items.length > 0);
+  columns.push({
+    key: 'not_answered',
+    label: '📵 Not answered — re-tap these',
+    blurb: 'Also shown in their time column; stacked here so re-tapping is one pass.',
+    hot: notAnswered.length > 0,
+    items: notAnswered,
+    extra: pool.leads ?? [],
+  });
+
+  const board = h(`<div data-testid="day-board" style="display:grid;grid-auto-flow:column;
+    grid-auto-columns:minmax(250px,300px);gap:12px;align-items:start;overflow-x:auto;
+    padding-bottom:8px"></div>`);
+
+  for (const c of columns) {
+    const total = c.items.length + (c.extra?.length ?? 0);
+    const col = h(`
+      <div class="panel" style="margin:0;padding:10px" data-testid="board-${esc(c.key)}">
+        <div style="font-weight:700;margin-bottom:2px">${esc(c.label)}
+          <span class="count">· ${total}</span></div>
+        <div class="hint" style="margin-bottom:8px">${esc(c.blurb ?? '')}</div>
+      </div>`);
+    if (total === 0) {
+      col.appendChild(h('<div class="empty">Nothing here — clear.</div>'));
+    }
+    for (const l of c.items) col.appendChild(card(l));
+    for (const l of c.extra ?? []) {
+      col.appendChild(h(`
+        <a class="leadcard" href="#/lead/${esc(l.lead_id)}">
+          <div class="r1">
+            <span class="name">${esc(l.full_name ?? 'Unnamed lead')}</span>
+            <span class="phone mono">${esc(l.phone_e164)}</span>
+            <span style="margin-left:auto"><span class="badge b-mute">quiet · ${Number(l.attempt_count)} tries</span></span>
+          </div>
+          <div class="r2">
+            <span>last: ${l.last_disposition ? esc(String(l.last_disposition).replace(/_/g, ' ')) : '—'}</span>
+          </div>
+        </a>`));
+    }
+    board.appendChild(col);
+  }
+  outlet.appendChild(board);
 }
 
 /**

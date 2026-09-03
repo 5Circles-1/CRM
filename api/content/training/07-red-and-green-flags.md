@@ -13,7 +13,7 @@ one has a specific way to clear it.
 | Flag | What triggers it | What it costs | How to clear it |
 |---|---|---|---|
 | **Overdue follow-up** | `next_action_at` is in the past, in working hours | The lead cools; leakage list grows | Call them, log the call, set the next action |
-| **Untouched lead** | Assigned, never dialled | It stays yours and shows as waiting on Fresh leads and the Floor — nobody else will call it | Dial it |
+| **Untouched lead** | Assigned, never dialled | It stays yours and shows as waiting on Fresh leads and the Floor — but after 15 days with no dial while overdue it moves to another caller | Dial it |
 | **Immediate lead not contacted** | Priority lead past {{setting:sla.immediate_first_touch_minutes}} working minutes | Highest-intent lead going cold | Call now |
 | **Missed callback** | A scheduled callback passed with no call | The most expensive miss on the floor — they *wanted* to talk | Call, apologise, rebook |
 | **Unverified dials** | Logged calls with no matching device call-log entry | Suggests invented activity | Install the companion app; attach the device call when logging |
