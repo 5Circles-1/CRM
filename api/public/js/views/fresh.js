@@ -12,6 +12,11 @@ import { addLeadModal } from '../addlead.js';
  * A late fresh lead is never demoted or hidden. It stays here, flagged, until
  * somebody actually speaks to the person. That is the whole promise of the
  * tab: leads cannot be lost by being quietly re-categorised.
+ *
+ * Under the fresh list: "Enquired again" (0064) — people who filled a form
+ * again and were attached to their existing lead instead of duplicated. This
+ * tab is what the Google Sheet gets reconciled against, so a sheet row that
+ * deliberately did not become a new lead has to be visible here too.
  */
 
 const FLAGS = [
@@ -47,6 +52,7 @@ export async function render(outlet, me) {
     outlet.innerHTML = '';
 
     const all = data.leads;
+    const reenquired = data.reenquired ?? [];
     const late = all.filter((l) => l.flag !== 'waiting').length;
     const badly = all.filter((l) => l.flag === 'breached').length;
     const noOwner = all.filter((l) => !l.user_id).length;
@@ -125,6 +131,38 @@ export async function render(outlet, me) {
               (${t.flagged + t.breached} late${t.unassigned ? `, ${t.unassigned} with no caller` : ''})`).join(' · ')}
           </div>` : ''}`}
       </div>
+
+      ${reenquired.length === 0 ? '' : `
+      <div class="panel">
+        <h2 class="mt0">Enquired again <small>${reenquired.length}</small></h2>
+        <div class="hint">
+          These people filled a lead form again. They are already in the CRM —
+          the new enquiry was attached to their existing lead (never a second
+          lead for one phone number) and pushed to the top of its owner's list.
+          A repeat enquiry usually means the person is still waiting, so treat
+          it as a missed follow-up until proven otherwise.
+        </div>
+        <div style="overflow-x:auto;margin-top:12px">
+        <table class="table"><thead><tr>
+          <th>Lead</th><th>Enquired again</th><th>Via</th><th>Lead lives under</th>
+          <th>Owner</th><th>Status</th><th></th>
+        </tr></thead><tbody>
+        ${reenquired.map((l) => `
+          <tr class="click" data-lead="${esc(l.lead_id)}">
+            <td><b>${esc(l.full_name ?? 'Unnamed')}</b>
+              <span class="hint mono">${esc(l.phone_e164)}</span></td>
+            <td>${esc(agoLabel(l.minutes_ago))} ago
+              ${Number(l.reenquiry_count) > 1 ? `<span class="badge b-warn">×${Number(l.reenquiry_count)}</span>` : ''}</td>
+            <td class="hint">${esc(l.reenquiry_source_name ?? '—')}</td>
+            <td class="hint">${esc(l.source_name ?? '—')}</td>
+            <td>${l.owner_name ? esc(l.owner_name) : '<span class="badge b-warn">no caller</span>'}</td>
+            <td>${l.never_contacted
+              ? '<span class="badge b-bad">never contacted</span>'
+              : `<span class="badge">${esc(l.status)} · ${Number(l.attempt_count)} call${Number(l.attempt_count) === 1 ? '' : 's'}</span>`}</td>
+            <td class="num"><button class="btn small" data-open="${esc(l.lead_id)}">Call</button></td>
+          </tr>`).join('')}
+        </tbody></table></div>
+      </div>`}
       </div>`));
 
     outlet.querySelector('#add-lead')?.addEventListener('click', () => addLeadModal(me, () => draw()));

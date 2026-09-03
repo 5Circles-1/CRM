@@ -149,6 +149,12 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
    * "did anything arrive and just sit there?" has to be answerable in one
    * glance, including for leads held with no caller at all - which appear in
    * nobody's personal pipeline.
+   *
+   * Alongside them, the recent re-enquiries (0064): people who filled a form
+   * again and were attached to their existing lead rather than duplicated.
+   * This is the screen the Google Sheet gets reconciled against, so a sheet
+   * row that deliberately did not become a new lead has to be visible here -
+   * otherwise the dedupe is indistinguishable from a lost lead.
    */
   app.get('/me/fresh', async (req) => {
     const user = req.requireUser();
@@ -169,9 +175,22 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
           limit 500`,
         [scope, user.id, flag ?? null],
       );
-      await logLeadAccess(q, user.id, rows.map((r) => r.lead_id), 'list', req.ip);
+      const reenquired = await q.many<{ lead_id: string }>(
+        `select * from crm.v_reenquired_leads
+          where ($1::text = 'all' or user_id = $2)
+          order by reenquired_at desc
+          limit 200`,
+        [scope, user.id],
+      );
+      await logLeadAccess(
+        q,
+        user.id,
+        [...rows, ...reenquired].map((r) => r.lead_id),
+        'list',
+        req.ip,
+      );
       const teams = await q.many(`select * from crm.v_fresh_summary order by team_name`);
-      return { count: rows.length, leads: rows, teams };
+      return { count: rows.length, leads: rows, teams, reenquired };
     });
   });
 

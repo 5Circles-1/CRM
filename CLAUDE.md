@@ -98,6 +98,19 @@ Do not undo these without understanding why they exist.
   tab offers it behind one click, and overdue work keeps its home in the
   pipeline buckets.
 
+- **A repeat enquiry never creates a second lead — and is never invisible**
+  (0042, 0064). A form submission whose phone matches a live lead (or any lead
+  inside `lead.dedupe_window_days`) attaches to that lead: priority jumps to
+  immediate, the next action is pulled to within 15 minutes, the timeline gets
+  a `re_enquiry` event. Since 0064 the attach also *shows*: the Fresh tab
+  renders an "Enquired again" list (`crm.v_reenquired_leads`, window
+  `fresh.reenquiry_show_days`) naming when and through which form, and the
+  lead's owner is notified on the Alerts work list — a re-enquiry usually
+  means a missed follow-up. It deliberately does not ring the bell (0052
+  stands: the bell is appointments-only). Dedupe keys on the phone alone, so
+  the same human enquiring under a new number is a new lead — that is
+  accepted, because the phone is the dialing identity.
+
 - **Score components that had nothing to measure are excluded from both the
   points earned and the weight available**, and the total is rescaled over what
   applied. Awarding full marks for an empty component rewards idleness — before
@@ -236,7 +249,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(312 database assertions, 289 API tests, 10 browser E2E flows), the
+(315 database assertions, 290 API tests, 10 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Callyzer
 integration** (migration 0063, `api/src/integrations/callyzer/`) — webhook +

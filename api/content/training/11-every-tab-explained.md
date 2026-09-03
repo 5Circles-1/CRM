@@ -29,6 +29,13 @@ demoted or hidden — it stays on this list, flagged, until somebody actually
 speaks to the person. One real attempt removes it for good.
 **Counsellors and admins** can switch to *Whole floor* to see leads with no
 caller — if any appear there, check **Floor → Lead flow** for the reason.
+**Enquired again**, under the fresh list, shows people who filled a lead form
+*again* in the last few days. They are not new rows — the CRM attached the
+enquiry to their existing lead (one live lead per phone, always) and pushed it
+to the top of its owner's pipeline, and the owner gets an alert. If you are
+comparing the Google Sheet against this tab, this list is the missing half:
+sheet rows that deliberately did not become new leads. A repeat enquiry
+usually means the person is still waiting on a follow-up — call them first.
 **The mistake:** assuming your own pipeline covers it. It does not show leads
 nobody owns yet.
 

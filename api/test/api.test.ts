@@ -225,6 +225,31 @@ describe('ingestion', () => {
     assert.equal(row, '1:immediate', 're-enquiry should bump the count and raise priority');
   });
 
+  it('a re-enquiry is visible on the fresh tab and told to the owner, never silent', async () => {
+    // "In the sheet there are two leads, in the CRM only one reflects" - the
+    // dedupe working invisibly is indistinguishable from a lost lead. The
+    // attach must surface: on the Fresh tab's re-enquired list, and as a
+    // notification to whoever may have missed the follow-up.
+    const ops = await login(h.app, EMAILS.ops);
+    const res = await h.app.inject({ url: '/me/fresh?scope=all', headers: auth(ops) });
+    assert.equal(res.statusCode, 200);
+
+    const hit = res.json().reenquired.find(
+      (r: { phone_e164: string }) => r.phone_e164 === '+919811100001',
+    );
+    assert.ok(hit, 'the re-enquired lead must be listed beside the fresh leads');
+    assert.equal(hit.reenquiry_count, 1);
+    assert.ok(hit.reenquiry_source_name, 'the form the new enquiry came through must be named');
+
+    const notified = fixtureSql(`
+      select count(*) from crm.notifications n
+        join crm.leads l on l.id = n.lead_id
+       where n.kind = 're_enquiry' and l.phone_e164 = '+919811100001'
+         and n.user_id = coalesce(l.caller_id, l.counsellor_id);
+    `).trim();
+    assert.equal(notified, '1', 'the lead owner must be told the person asked again');
+  });
+
   it('keeps the quarantined row available for ops to fix', async () => {
     const ops = await login(h.app, EMAILS.ops);
     const res = await h.app.inject({ url: '/admin/quarantine', headers: auth(ops) });

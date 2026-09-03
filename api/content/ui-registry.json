@@ -317,6 +317,13 @@
       "when": "First thing every morning. Work it to empty."
     },
     {
+      "key": "panel.reenquired",
+      "area": "Panels",
+      "label": "Enquired again",
+      "does": "People who filled a lead form again recently. Attached to their existing lead — never duplicated — and pushed to the top of its owner's list; the owner is alerted.",
+      "when": "Treat as a missed follow-up until proven otherwise. Also where a sheet row goes when it matches an existing lead."
+    },
+    {
       "key": "tab.reminders",
       "area": "Tabs",
       "label": "Alerts",
