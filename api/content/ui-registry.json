@@ -317,11 +317,11 @@
       "when": "First thing every morning. Work it to empty."
     },
     {
-      "key": "panel.reenquired",
-      "area": "Panels",
+      "key": "badge.reenquired",
+      "area": "Badges",
       "label": "Enquired again",
-      "does": "People who filled a lead form again recently. Attached to their existing lead — never duplicated — and pushed to the top of its owner's list; the owner is alerted.",
-      "when": "Treat as a missed follow-up until proven otherwise. Also where a sheet row goes when it matches an existing lead."
+      "does": "This person filled a lead form again and nobody has dialled them since. Same lead record, resurfaced on the Fresh tab — never duplicated — with the owner alerted.",
+      "when": "Call first: the earlier attempt may have gone to spam and never rung. The badge clears when a call is logged after the re-enquiry."
     },
     {
       "key": "tab.reminders",

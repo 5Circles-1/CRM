@@ -225,11 +225,11 @@ describe('ingestion', () => {
     assert.equal(row, '1:immediate', 're-enquiry should bump the count and raise priority');
   });
 
-  it('a re-enquiry is visible on the fresh tab and told to the owner, never silent', async () => {
+  it('a re-enquiry joins the fresh worklist and is told to the owner, never silent', async () => {
     // "In the sheet there are two leads, in the CRM only one reflects" - the
-    // dedupe working invisibly is indistinguishable from a lost lead. The
-    // attach must surface: on the Fresh tab's re-enquired list, and as a
-    // notification to whoever may have missed the follow-up.
+    // dedupe working invisibly is indistinguishable from a lost lead. Owner's
+    // rule: every enquiry lands on the Fresh tab (the earlier call may have
+    // hit a spam-flagged number), flagged, until the person is dialled again.
     const ops = await login(h.app, EMAILS.ops);
     const res = await h.app.inject({ url: '/me/fresh?scope=all', headers: auth(ops) });
     assert.equal(res.statusCode, 200);
@@ -237,9 +237,10 @@ describe('ingestion', () => {
     const hit = res.json().reenquired.find(
       (r: { phone_e164: string }) => r.phone_e164 === '+919811100001',
     );
-    assert.ok(hit, 'the re-enquired lead must be listed beside the fresh leads');
+    assert.ok(hit, 'the re-enquired lead must be listed with the fresh leads');
     assert.equal(hit.reenquiry_count, 1);
     assert.ok(hit.reenquiry_source_name, 'the form the new enquiry came through must be named');
+    assert.ok(hit.flag, 'the row carries an in-time/late flag like any fresh lead');
 
     const notified = fixtureSql(`
       select count(*) from crm.notifications n
@@ -248,6 +249,21 @@ describe('ingestion', () => {
          and n.user_id = coalesce(l.caller_id, l.counsellor_id);
     `).trim();
     assert.equal(notified, '1', 'the lead owner must be told the person asked again');
+
+    // The row clears the way a fresh lead does: by actually calling the
+    // person after they asked again - and only then.
+    fixtureSql(`
+      insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, is_verified)
+      select id, caller_id, 'not_answered', 0, true
+        from crm.leads where phone_e164 = '+919811100001';
+    `);
+    const after = await h.app.inject({ url: '/me/fresh?scope=all', headers: auth(ops) });
+    assert.ok(
+      !after.json().reenquired.some(
+        (r: { phone_e164: string }) => r.phone_e164 === '+919811100001',
+      ),
+      'a call logged after the re-enquiry takes the row off the worklist',
+    );
   });
 
   it('keeps the quarantined row available for ops to fix', async () => {

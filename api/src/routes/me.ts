@@ -150,11 +150,14 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
    * glance, including for leads held with no caller at all - which appear in
    * nobody's personal pipeline.
    *
-   * Alongside them, the recent re-enquiries (0064): people who filled a form
-   * again and were attached to their existing lead rather than duplicated.
-   * This is the screen the Google Sheet gets reconciled against, so a sheet
-   * row that deliberately did not become a new lead has to be visible here -
-   * otherwise the dedupe is indistinguishable from a lost lead.
+   * Merged into the same list (0064, 0065): people who filled a form again
+   * and were attached to their existing lead rather than duplicated. The
+   * owner's rule is that every enquiry lands on the Fresh tab - a repeat
+   * enquiry is fresh work (the earlier call may have hit a spam-flagged
+   * number and never been picked up), so it sits in the list, flagged
+   * against its own deadline, until somebody dials the person again. This
+   * is also the screen the Google Sheet gets reconciled against, so a sheet
+   * row that deliberately did not become a new lead is visible here.
    */
   app.get('/me/fresh', async (req) => {
     const user = req.requireUser();
@@ -178,9 +181,11 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       const reenquired = await q.many<{ lead_id: string }>(
         `select * from crm.v_reenquired_leads
           where ($1::text = 'all' or user_id = $2)
-          order by reenquired_at desc
+            and ($3::text is null or flag = $3)
+          order by case flag when 'breached' then 0 when 'flagged' then 1 else 2 end,
+                   minutes_late desc nulls last, age_minutes desc
           limit 200`,
-        [scope, user.id],
+        [scope, user.id, flag ?? null],
       );
       await logLeadAccess(
         q,

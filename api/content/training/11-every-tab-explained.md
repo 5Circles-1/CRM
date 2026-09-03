@@ -29,13 +29,15 @@ demoted or hidden — it stays on this list, flagged, until somebody actually
 speaks to the person. One real attempt removes it for good.
 **Counsellors and admins** can switch to *Whole floor* to see leads with no
 caller — if any appear there, check **Floor → Lead flow** for the reason.
-**Enquired again**, under the fresh list, shows people who filled a lead form
-*again* in the last few days. They are not new rows — the CRM attached the
-enquiry to their existing lead (one live lead per phone, always) and pushed it
-to the top of its owner's pipeline, and the owner gets an alert. If you are
-comparing the Google Sheet against this tab, this list is the missing half:
-sheet rows that deliberately did not become new leads. A repeat enquiry
-usually means the person is still waiting on a follow-up — call them first.
+**Enquired again** rows sit in the same list wearing that badge: people who
+filled a lead form *again* and have not been dialled since. They are the same
+lead record, resurfaced — the CRM attached the enquiry to their existing lead
+(one live lead per phone, always), pushed it to the top of its owner's
+pipeline, and alerted the owner. They stay on this tab, flagged like any
+fresh lead, until somebody actually calls them back — a repeat enquiry often
+means the earlier call went to spam and never rang, so treat it as a person
+waiting right now. Comparing the Google Sheet against this tab now matches
+row for row: every sheet row is here, as a fresh lead or a badged re-enquiry.
 **The mistake:** assuming your own pipeline covers it. It does not show leads
 nobody owns yet.
 
