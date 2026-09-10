@@ -228,6 +228,30 @@ it('admin: the breakeven thermometer shows the grossed-up numbers', async () => 
   await signOut();
 });
 
+it('admin: the Overview tab shows totals, every member, and the bulk response for a chosen window', async () => {
+  await signIn(EMAILS.admin);
+  await page.click('a[data-nav="#/overview"]');
+
+  await page.waitForSelector('[data-testid=overview-tiles]');
+  const tiles = await page.locator('[data-testid=overview-tiles]').textContent();
+  assert.ok(tiles?.includes('Leads in the CRM'), 'the all-time lead count tile renders');
+  assert.ok(tiles?.includes('Not answered'), 'the bulk-response tile renders');
+
+  // One row per person who can hold a lead: 4 callers + 2 counsellors seeded.
+  await page.waitForSelector('[data-testid=overview-members]');
+  const rows = await page.locator('[data-testid=overview-members] tbody tr').count();
+  assert.ok(rows >= 6, `expected a row for each of the six seeded members, found ${rows}`);
+  const members = await page.locator('[data-testid=overview-members]').textContent();
+  assert.ok(members?.includes('Caller A1'), 'the seeded caller appears by name');
+
+  // A custom window applies without a reload: pick Today via the preset chip.
+  await page.click('#ov-presets .chip:has-text("Today")');
+  await page.waitForSelector('[data-testid=overview-tiles]');
+
+  await page.screenshot({ path: path.join(SHOTS, '11-admin-overview.png'), fullPage: true });
+  await signOut();
+});
+
 it('admin: the performance charts render with real marks and a table beneath', async () => {
   await signIn(EMAILS.admin);
   await page.goto(`${base}/ui/#/people`);

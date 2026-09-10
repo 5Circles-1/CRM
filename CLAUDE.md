@@ -261,7 +261,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(320 database assertions, 292 API tests, 10 browser E2E flows), the
+(320 database assertions, 296 API tests, 11 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Callyzer
 integration** (migration 0063, `api/src/integrations/callyzer/`) — webhook +
