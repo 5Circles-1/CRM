@@ -6,6 +6,7 @@ import * as lead from './views/lead.js';
 import * as score from './views/score.js';
 import * as attendance from './views/attendance.js';
 import * as floor from './views/floor.js';
+import * as overview from './views/overview.js';
 import * as collections from './views/collections.js';
 import * as dash from './views/dash.js';
 import * as admin from './views/admin.js';
@@ -29,6 +30,7 @@ const NAV = [
   { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
   { hash: '#/retap', label: 'Re-tap', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
+  { hash: '#/overview', label: 'Overview', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   // The client book was renamed Collections, and the dues queue Outstanding
   // payments, at the floor's request - the hashes stay stable so old links,
   // help anchors and muscle memory keep working.
@@ -52,7 +54,7 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, fresh, reminders, retap, floor, collections, advisory, mentors, events, training,
+  day, fresh, reminders, retap, floor, overview, collections, advisory, mentors, events, training,
   dash, leads, people, score, attendance, admin, lead, team, history,
 };
 
@@ -64,7 +66,7 @@ const VIEWS = {
 const HELP_FOR = {
   day: 'the-callers-job', fresh: 'the-callers-job',
   reminders: 'the-callers-job', retap: 'the-callers-job',
-  floor: 'the-counsellors-job',
+  floor: 'the-counsellors-job', overview: 'how-the-crm-works',
   collections: 'the-counsellors-job', advisory: 'the-counsellors-job',
   mentors: 'the-mentors-job', events: 'how-the-crm-works',
   dash: 'how-the-crm-works', leads: 'the-callers-job',
@@ -75,7 +77,7 @@ const HELP_FOR = {
 };
 
 const TITLES = {
-  day: 'My Pipeline', fresh: 'Fresh leads', reminders: 'Alerts', retap: 'Re-tap', floor: 'Floor', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
+  day: 'My Pipeline', fresh: 'Fresh leads', reminders: 'Alerts', retap: 'Re-tap', floor: 'Floor', overview: 'Overview', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
   events: 'Events', training: 'Training',
   dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',

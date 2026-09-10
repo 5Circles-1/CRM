@@ -224,6 +224,190 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * The Overview tab: the whole book between two IST dates, on one screen.
+   *
+   * One call returns the four things the owner asks for in one breath - how
+   * many leads the CRM holds, who is carrying how many, what the phones said
+   * back in bulk (not answered / call later / will visit / ...), and what it
+   * turned into (walk-ins, deals, money). RLS scopes every count, so the same
+   * URL is the team overview for a counsellor and the floor for admin/ops.
+   *
+   * Dates are inclusive IST business dates. Defaults to the current month,
+   * because "how are we doing" on this floor always means the month first.
+   */
+  app.get('/dashboards/overview', async (req) => {
+    req.requireRole('counsellor', 'admin', 'ops', 'viewer');
+    const { from, to } = z
+      .object({
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      })
+      .parse(req.query);
+    if (from && to && from > to) {
+      throw badRequest('"from" must not be after "to"');
+    }
+
+    return req.tx(async (q) => {
+      // Resolve defaults in SQL so "today" and "this month" are the IST
+      // calendar, never the server's UTC one.
+      const range = (await q.one<{ from_d: string; to_d: string }>(
+        `select coalesce($1::date, date_trunc('month', crm.ist_date(now()))::date)::text as from_d,
+                coalesce($2::date, crm.ist_date(now()))::text as to_d`,
+        [from ?? null, to ?? null],
+      ))!;
+      const args = [range.from_d, range.to_d];
+
+      const totals = await q.one(
+        `with r as (select $1::date as f, $2::date as t)
+         select
+           (select count(*) from crm.leads)::int                              as leads_all_time,
+           (select count(*) from crm.leads
+             where status not in ('won','lost','invalid','nurture','handed_off'))::int as open_now,
+           (select count(*) from crm.leads l, r
+             where crm.ist_date(l.created_at) between r.f and r.t)::int       as leads_in_range,
+           (select count(*) from crm.leads l, r
+             where crm.ist_date(l.walked_in_at) between r.f and r.t)::int     as walkins,
+           (select count(*) from crm.leads l, r
+             where l.status = 'won'
+               and crm.ist_date(l.closed_at) between r.f and r.t)::int        as won,
+           (select count(*) from crm.leads l, r
+             where l.status = 'lost'
+               and crm.ist_date(l.closed_at) between r.f and r.t)::int        as lost,
+           (select count(*) from crm.call_attempts a, r
+             where crm.ist_date(a.started_at) between r.f and r.t)::int       as dials,
+           (select count(*) from crm.call_attempts a, r
+             where a.is_connect
+               and crm.ist_date(a.started_at) between r.f and r.t)::int       as connects,
+           (select round(coalesce(sum(a.duration_seconds) filter (where a.is_connect), 0) / 60.0)
+              from crm.call_attempts a, r
+             where crm.ist_date(a.started_at) between r.f and r.t)::int       as talk_minutes,
+           (select count(*) from crm.callbacks cb, r
+             where crm.ist_date(cb.created_at) between r.f and r.t)::int      as callbacks_set,
+           (select count(*) from crm.deals d, r
+             where crm.ist_date(d.booked_at) between r.f and r.t)::int        as deals_booked,
+           (select coalesce(sum(d.booked_amount), 0) from crm.deals d, r
+             where crm.ist_date(d.booked_at) between r.f and r.t)             as booked_amount,
+           (select coalesce(sum(p.amount), 0) from crm.payments p, r
+             where crm.ist_date(p.paid_at) between r.f and r.t)               as collected_amount`,
+        args,
+      );
+
+      // The bulk response: every outcome the phones gave back in the window.
+      const dispositions = await q.many(
+        `select disposition::text as disposition,
+                count(*)::int as count,
+                count(*) filter (where is_connect)::int as connects
+           from crm.call_attempts
+          where crm.ist_date(started_at) between $1::date and $2::date
+          group by disposition
+          order by count desc`,
+        args,
+      );
+
+      // Where the window's leads stand now.
+      const statuses = await q.many(
+        `select status::text as status, count(*)::int as count
+           from crm.leads
+          where crm.ist_date(created_at) between $1::date and $2::date
+          group by status
+          order by count desc`,
+        args,
+      );
+
+      // One row per person who can hold a lead. "Assigned" counts the
+      // window's leads against everyone who carried them (setter and closer
+      // both), matching how deal credit is shared; "open now" is the live
+      // book of whoever holds each lead today, so those two columns answer
+      // different questions on purpose.
+      const members = await q.many(
+        `with r as (select $1::date as f, $2::date as t),
+         people as (
+           select u.id, u.full_name, u.role::text as role, u.is_active,
+                  tm.name as team_name
+             from crm.users u
+             left join crm.teams tm on tm.id = crm.team_of(u.id, crm.ist_date(now()))
+            where u.role in ('caller', 'counsellor')
+         ),
+         lead_counts as (
+           select p.id as user_id,
+                  count(*) filter (where crm.ist_date(l.created_at)
+                                     between r.f and r.t)                  as leads_assigned,
+                  count(*) filter (where l.status not in
+                                     ('won','lost','invalid','nurture','handed_off')
+                                    and coalesce(l.counsellor_id, l.caller_id) = p.id) as open_now,
+                  count(*) filter (where crm.ist_date(l.walked_in_at)
+                                     between r.f and r.t)                  as walkins,
+                  count(*) filter (where l.status = 'won'
+                                    and crm.ist_date(l.closed_at)
+                                     between r.f and r.t)                  as won
+             from people p
+             join crm.leads l on l.caller_id = p.id or l.counsellor_id = p.id
+             cross join r
+            group by p.id
+         ),
+         call_counts as (
+           select a.user_id,
+                  count(*)::int                                            as dials,
+                  count(*) filter (where a.is_connect)                     as connects,
+                  round(coalesce(sum(a.duration_seconds)
+                    filter (where a.is_connect), 0) / 60.0)                as talk_minutes,
+                  count(*) filter (where a.disposition = 'not_answered')   as not_answered,
+                  count(*) filter (where a.disposition in
+                    ('callback_requested', 'will_call_back_self'))         as call_later,
+                  count(*) filter (where a.disposition = 'will_visit')     as visit_promised,
+                  count(*) filter (where a.disposition in
+                    ('busy', 'switched_off', 'incoming_unavailable'))      as busy_unreachable,
+                  count(*) filter (where a.disposition =
+                    'connected_interested')                                as interested,
+                  count(*) filter (where a.disposition =
+                    'connected_not_interested')                            as not_interested
+             from crm.call_attempts a, r
+            where crm.ist_date(a.started_at) between r.f and r.t
+            group by a.user_id
+         ),
+         money as (
+           select d.counsellor_id as user_id,
+                  count(distinct d.id) filter (where crm.ist_date(d.booked_at)
+                    between r.f and r.t)                                   as deals_booked,
+                  coalesce(sum(p.amount) filter (where crm.ist_date(p.paid_at)
+                    between r.f and r.t), 0)                               as collected_amount
+             from crm.deals d
+             left join crm.payments p on p.deal_id = d.id
+             cross join r
+            group by d.counsellor_id
+         )
+         select p.id as user_id, p.full_name, p.role, p.is_active, p.team_name,
+                coalesce(lc.leads_assigned, 0)::int    as leads_assigned,
+                coalesce(lc.open_now, 0)::int          as open_now,
+                coalesce(lc.walkins, 0)::int           as walkins,
+                coalesce(lc.won, 0)::int               as won,
+                coalesce(cc.dials, 0)::int             as dials,
+                coalesce(cc.connects, 0)::int          as connects,
+                coalesce(cc.talk_minutes, 0)::int      as talk_minutes,
+                coalesce(cc.not_answered, 0)::int      as not_answered,
+                coalesce(cc.call_later, 0)::int        as call_later,
+                coalesce(cc.visit_promised, 0)::int    as visit_promised,
+                coalesce(cc.busy_unreachable, 0)::int  as busy_unreachable,
+                coalesce(cc.interested, 0)::int        as interested,
+                coalesce(cc.not_interested, 0)::int    as not_interested,
+                coalesce(m.deals_booked, 0)::int       as deals_booked,
+                coalesce(m.collected_amount, 0)        as collected_amount
+           from people p
+           left join lead_counts lc on lc.user_id = p.id
+           left join call_counts cc on cc.user_id = p.id
+           left join money m on m.user_id = p.id
+          where p.is_active
+             or coalesce(lc.leads_assigned, 0) > 0
+             or coalesce(cc.dials, 0) > 0
+          order by p.role, coalesce(lc.leads_assigned, 0) desc, p.full_name`,
+        args,
+      );
+
+      return { from: range.from_d, to: range.to_d, totals, dispositions, statuses, members };
+    });
+  });
+
+  /**
    * Why each caller is or is not receiving leads.
    *
    * The distribution engine has recorded every decision since day one -

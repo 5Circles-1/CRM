@@ -643,6 +643,58 @@ describe('dashboards', () => {
     const res = await h.app.inject({ url: '/dashboards/counsellors', headers: auth(a1) });
     assert.equal(res.statusCode, 403);
   });
+
+  it('gives leadership a date-ranged overview: totals, per person, and the bulk response', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Overview');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const call = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'not_answered', durationSeconds: 0 },
+    });
+    assert.equal(call.statusCode, 201);
+
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({ url: '/dashboards/overview', headers: auth(admin) });
+    assert.equal(res.statusCode, 200);
+    const o = res.json();
+    assert.ok(o.from <= o.to, 'the default window is a valid range');
+    assert.ok(Number(o.totals.leads_all_time) >= Number(o.totals.leads_in_range));
+    assert.ok(Number(o.totals.dials) >= 1);
+
+    const na = o.dispositions.find((d: { disposition: string }) => d.disposition === 'not_answered');
+    assert.ok(na && Number(na.count) >= 1, 'the bulk response counts the not-answered call');
+
+    const row = o.members.find((m: { user_id: string }) => m.user_id === USERS.callerA1);
+    assert.ok(row, 'every caller has a row');
+    assert.ok(Number(row.leads_assigned) >= 1, 'the lead counts against its caller');
+    assert.ok(Number(row.not_answered) >= 1, 'the response split is per person too');
+  });
+
+  it('keeps the overview window honest: an empty week counts nothing in range', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      url: '/dashboards/overview?from=2001-01-01&to=2001-01-07', headers: auth(admin),
+    });
+    assert.equal(res.statusCode, 200);
+    const o = res.json();
+    assert.equal(Number(o.totals.leads_in_range), 0);
+    assert.equal(Number(o.totals.dials), 0);
+    assert.ok(Number(o.totals.leads_all_time) > 0, 'the all-time count ignores the window');
+  });
+
+  it('rejects an overview range that runs backwards', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      url: '/dashboards/overview?from=2025-02-01&to=2025-01-01', headers: auth(admin),
+    });
+    assert.equal(res.statusCode, 400);
+  });
+
+  it('does not let a caller read the overview', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ url: '/dashboards/overview', headers: auth(a1) });
+    assert.equal(res.statusCode, 403);
+  });
 });
 
 describe('settings', () => {

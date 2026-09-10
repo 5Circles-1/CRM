@@ -16,6 +16,13 @@
       "when": "Twice a day if you run a team."
     },
     {
+      "key": "tab.overview",
+      "area": "Tabs",
+      "label": "Overview",
+      "does": "The whole book between any two dates: total leads in the CRM, how many each team member is carrying, the bulk response (not answered, call later, will visit...), walk-ins, deals and money.",
+      "when": "Whenever you want the floor's numbers for a custom period — a day, a week, a month, or all time."
+    },
+    {
       "key": "tab.advisory",
       "area": "Tabs",
       "label": "Collections",
