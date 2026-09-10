@@ -19,7 +19,11 @@ const PRESETS = [
   { label: 'Did not answer', filters: { lastDisposition: 'not_answered' } },
   { label: 'Asked for a callback', filters: { lastDisposition: 'callback_requested' } },
   { label: 'Will call us back', filters: { lastDisposition: 'will_call_back_self' } },
-  { label: 'Will visit', filters: { lastDisposition: 'will_visit' } },
+  // Keyed on the open PROMISE, not on the last outcome. Filtering on
+  // lastDisposition here was how a will-visit lead vanished from this list
+  // the moment one later dial went unanswered - and sank into the bulk
+  // not-answered pile instead. The promise outlives later outcomes.
+  { label: 'Will visit', filters: { visit: 'promised' } },
   { label: 'Busy / switched off / unreachable', filters: { lastDisposition: 'busy,switched_off,incoming_unavailable' } },
   { label: 'Overdue now', filters: { due: 'overdue' } },
   { label: 'Never contacted', filters: { due: 'untouched' } },
@@ -126,6 +130,13 @@ export async function render(outlet, me) {
             <option value="2plus">2+ times in a row</option>
           </select>
         </label>
+        <label class="f">Visit
+          <select name="visit">
+            <option value="">Any</option>
+            <option value="promised">Promised — not yet come</option>
+            <option value="arrived">Walked in</option>
+          </select>
+        </label>
         <button class="btn" id="clear">Clear</button>
       </div>
 
@@ -135,7 +146,7 @@ export async function render(outlet, me) {
 
   const input = panel.querySelector('[name=q]');
   const results = panel.querySelector('#results');
-  const controls = ['lastDisposition', 'due', 'status', 'whatsapp', 'attempts', 'na'];
+  const controls = ['lastDisposition', 'due', 'status', 'whatsapp', 'attempts', 'na', 'visit'];
   let timer = null;
 
   const readControls = () => {
@@ -191,7 +202,9 @@ export async function render(outlet, me) {
           <tr>
             <td>${esc(l.full_name ?? 'Unnamed')}</td>
             <td class="mono">${esc(l.phone_e164)}</td>
-            <td>${badge(l.status)}${Number(l.na_streak) >= 2
+            <td>${badge(l.status)}${l.walkin_expected_at && !l.walked_in_at
+                  ? ' <span class="badge b-ok" title="Promised to visit and has not yet come — a quality lead, whatever the last outcome">🚶 will visit</span>'
+                  : ''}${Number(l.na_streak) >= 2
                   ? ` <span class="badge b-bad" title="Not answered ${Number(l.na_streak)} times in a row">📵 ×${Number(l.na_streak)}</span>`
                   : ''}</td>
             <td>${l.last_disposition

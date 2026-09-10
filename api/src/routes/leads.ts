@@ -308,6 +308,12 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
         // The "not answered twice in a row" list. A count, not a disposition
         // filter: a lead whose LAST outcome was busy still belongs on it.
         na: z.enum(['2plus']).optional(),
+        // The visit promise, which outlives later outcomes. 'promised' is NOT
+        // the same list as lastDisposition=will_visit: one unanswered dial
+        // after the promise changes the last outcome, but the promise stays
+        // open until the walk-in is recorded - and the lead stays on this
+        // list, which is what stops good leads sinking into the bulk piles.
+        visit: z.enum(['promised', 'arrived']).optional(),
         limit: z.coerce.number().int().min(1).max(200).default(50),
         offset: z.coerce.number().int().min(0).default(0),
       })
@@ -346,6 +352,15 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
                    else attempt_count = $8::int
                  end)
             and ($9::text is null or na_streak >= 2)
+            and ($10::text is null or case $10
+                   -- Open promise: they said they would come and have not.
+                   -- Parked (nurture) leads stay on this list on purpose -
+                   -- a promised visit that exhausted its attempts is exactly
+                   -- the lead this filter exists to keep visible.
+                   when 'promised' then crm.visit_promise_open(walkin_expected_at, walked_in_at)
+                                        and status not in ('won', 'lost', 'invalid', 'handed_off')
+                   when 'arrived'  then walked_in_at is not null
+                 end)
           order by next_action_at asc nulls last, created_at desc
           limit $3 offset $4`,
         [
@@ -358,6 +373,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
           query.whatsapp ?? null,
           query.attempts ?? null,
           query.na ?? null,
+          query.visit ?? null,
         ],
       );
 

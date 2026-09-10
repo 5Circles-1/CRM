@@ -1623,6 +1623,53 @@ describe('the new call outcomes', () => {
     assert.equal(row, 'true');
   });
 
+  it('keeps the promise when later calls go unanswered - a will-visit lead never becomes bulk', async () => {
+    // The owner's exact complaint: "will visit" on the first call, "not
+    // answered" on the second - and the lead used to leave the Will visit
+    // list (which keyed on the LAST outcome) and sink into the not-answered
+    // bulk pile, then into the breached tab once it sat 48h overdue.
+    const leadId = makeLeadFor(USERS.callerA1, 'Promised Then Silent');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'will_visit', durationSeconds: 120 },
+    });
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'not_answered', durationSeconds: 0 },
+    });
+
+    // Still on the Will visit list: visit=promised keys on the open promise,
+    // not on whatever the phone last did.
+    const list = await h.app.inject({
+      method: 'GET', url: '/leads?visit=promised', headers: auth(a1),
+    });
+    assert.equal(list.statusCode, 200);
+    assert.ok(
+      list.json().leads.some((l: { id: string }) => l.id === leadId),
+      'the lead must stay on the visit=promised list after an unanswered dial',
+    );
+
+    // Left to rot three days past due - beyond the 48h breach horizon - the
+    // open promise still holds the will_visit bucket rather than 'breached'.
+    fixtureSql(`update crm.leads set next_action_at = now() - interval '3 days' where id = '${leadId}';`);
+    const pipe = await h.app.inject({ method: 'GET', url: '/me/pipeline', headers: auth(a1) });
+    const mine = pipe.json().leads.find((l: { lead_id: string }) => l.lead_id === leadId);
+    assert.equal(mine?.bucket, 'will_visit', `expected will_visit, got ${mine?.bucket}`);
+
+    // Recording the walk-in resolves the promise; the ordinary rules return.
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin`, headers: auth(a1), payload: { walkedIn: true },
+    });
+    const after = await h.app.inject({
+      method: 'GET', url: '/leads?visit=promised', headers: auth(a1),
+    });
+    assert.ok(
+      !after.json().leads.some((l: { id: string }) => l.id === leadId),
+      'a recorded walk-in must release the lead from the promised list',
+    );
+  });
+
   it('waits days, not an hour, before chasing someone who said they would call', async () => {
     // This is the hourly-nagging complaint: the gap is per outcome and settable.
     const leadId = makeLeadFor(USERS.callerA1, 'Will Ring Us');

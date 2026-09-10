@@ -123,6 +123,20 @@ Do not undo these without understanding why they exist.
   human enquiring under a new number is a new lead — accepted, because the
   phone is the dialing identity.
 
+- **A promised visit outranks the silence that follows it** (0067, owner
+  decision). "Will visit" on call one, "not answered" from call two used to
+  re-file the lead by its *last* outcome into the not-answered bulk piles —
+  which is where good leads died. `crm.visit_promise_open()` is the one
+  definition of "they said they would come and have not yet come"; while it
+  holds, the lead keeps the `will_visit` bucket (it can never fall to
+  `breached`), keeps its overdue alerts past the quiet threshold, stays out
+  of `v_no_answer_pool`, and the Find-lead "Will visit" list keys on the
+  promise (`visit=promised`), not the last disposition. The lead still
+  appears in the not-answered re-tap lists — it does still need re-dialling —
+  wearing a "🚶 will visit" badge there. Recording the walk-in resolves the
+  promise, and the nine-attempt nurture cap, the 15-day stale mover and the
+  transfer rules all still apply: a promise is identity, not immortality.
+
 - **Score components that had nothing to measure are excluded from both the
   points earned and the weight available**, and the total is rescaled over what
   applied. Awarding full marks for an empty component rewards idleness — before

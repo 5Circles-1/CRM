@@ -284,7 +284,13 @@ function card(l) {
     : l.bucket === 'immediate' ? '<span class="badge b-bad">CALL NOW</span>'
     : l.bucket === 'fresh' ? '<span class="badge b-warn">FRESH</span>'
     : l.bucket === 'will_visit'
-      ? `<span class="badge b-ok" title="Visit expected">🚶 ${esc(fmtDT(l.walkin_expected_at ?? l.next_action_at))}</span>`
+      // The promise holds this bucket however many dials go unanswered after
+      // it, so the lateness has to be visible HERE - it no longer moves the
+      // lead to Overdue or Breached.
+      ? `<span class="badge b-ok" title="Visit expected">🚶 ${esc(fmtDT(l.walkin_expected_at ?? l.next_action_at))}</span>${
+          Number(l.minutes_overdue) > 0
+            ? ` <span class="badge b-bad">overdue ${agoLabel(l.minutes_overdue)}</span>`
+            : ''}`
     : l.bucket === 'callback' || l.bucket === 'callback_upcoming'
       ? `<span class="badge b-info">${esc(fmtDT(l.callback_at ?? l.next_action_at))}</span>`
     : `<span class="badge b-mute">${esc(fmtDT(l.next_action_at))}</span>`;
@@ -295,6 +301,9 @@ function card(l) {
         <span class="name">${esc(l.full_name ?? 'Unnamed lead')}</span>
         <span class="phone mono">${esc(l.phone_e164)}</span>
         ${l.whatsapp_sent_at ? '<span class="badge b-ok" title="WhatsApp sent">WA</span>' : ''}
+        ${l.bucket !== 'will_visit' && l.walkin_expected_at && !l.walked_in_at
+          ? '<span class="badge b-ok" title="Promised to visit and has not yet come — a quality lead, whatever the last outcome">🚶 will visit</span>'
+          : ''}
         ${Number(l.na_streak) >= 2
           ? `<span class="badge b-bad" title="Not answered ${Number(l.na_streak)} times in a row">📵 Not answered ×${Number(l.na_streak)}</span>`
           : ''}

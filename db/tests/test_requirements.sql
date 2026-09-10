@@ -2745,6 +2745,88 @@ select crm_test.check(
          @> '["retap_due"]'::jsonb), null);
 
 -- =============================================================================
+-- VISIT PROMISE (VIS): "will visit" on call one, "not answered" from call two
+-- onwards. The owner's rule (0067): the promise outranks the silence after
+-- it. The lead never sinks into the breached tab, never goes quiet, and never
+-- joins the re-tap batch pool while the promise is open - and the exemption
+-- ends the moment the visit is recorded.
+-- =============================================================================
+
+do $$
+declare
+  v_src uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1  uuid := '22222222-0000-0000-0000-000000000001';
+begin
+  -- The reported sequence, at its worst: one connected call that promised a
+  -- visit, then six unanswered dials, now five days past due - beyond both
+  -- the quiet threshold (3) and the breach horizon (48h).
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         first_touched_at, attempt_count, connect_count, na_streak,
+                         last_contacted_at, next_action_at, next_action_note,
+                         walkin_expected_at)
+  values (v_src, 'Visit Then Silent', '+919555910003', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() - interval '9 days', 7, 1, 6,
+          now() - interval '8 days', now() - interval '5 days',
+          'Retry after not answered', now() - interval '7 days');
+
+  -- The identical lead except the visit HAPPENED. With the promise resolved,
+  -- the ordinary rules apply again in full.
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         first_touched_at, attempt_count, connect_count, na_streak,
+                         last_contacted_at, next_action_at, next_action_note,
+                         walkin_expected_at, walked_in_at)
+  values (v_src, 'Visited Then Silent', '+919555910004', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() - interval '9 days', 7, 1, 6,
+          now() - interval '8 days', now() - interval '5 days',
+          'Retry after not answered', now() - interval '7 days',
+          now() - interval '6 days');
+end $$;
+
+select crm_test.check(
+  'VIS', 'an open promise holds the will_visit bucket even five days past due',
+  (select bucket = 'will_visit' from crm.v_my_pipeline
+    where full_name = 'Visit Then Silent'),
+  (select 'bucket was ' || bucket from crm.v_my_pipeline
+    where full_name = 'Visit Then Silent'));
+
+select crm_test.check(
+  'VIS', 'the lateness is still measured - the promise keeps identity, not innocence',
+  (select minutes_overdue > 0 from crm.v_my_pipeline
+    where full_name = 'Visit Then Silent'), null);
+
+select crm_test.check(
+  'VIS', 'an open promise never joins the re-tap batch pool, however unanswered',
+  (select count(*) = 0 from crm.v_no_answer_pool
+    where full_name = 'Visit Then Silent'), null);
+
+select crm_test.check(
+  'VIS', 'an open promise keeps its overdue alert past the quiet threshold',
+  (select count(*) > 0 from crm.v_my_alerts
+    where lead_name = 'Visit Then Silent' and kind = 'action_overdue'), null);
+
+select crm_test.check(
+  'VIS', 'once the visit is recorded the lead leaves the will_visit bucket',
+  (select bucket = 'breached' from crm.v_my_pipeline
+    where full_name = 'Visited Then Silent'),
+  (select 'bucket was ' || bucket from crm.v_my_pipeline
+    where full_name = 'Visited Then Silent'));
+
+select crm_test.check(
+  'VIS', 'and goes quiet like any other unanswered lead - into the batch pool',
+  (select count(*) = 1 from crm.v_no_answer_pool
+    where full_name = 'Visited Then Silent'), null);
+
+select crm_test.check(
+  'VIS', 'a resolved promise raises no overdue alerts past the threshold',
+  (select count(*) = 0 from crm.v_my_alerts
+    where lead_name = 'Visited Then Silent'
+      and kind in ('action_overdue', 'follow_up_due')),
+  (select string_agg(kind, ',') from crm.v_my_alerts
+    where lead_name = 'Visited Then Silent'));
+
+-- =============================================================================
 -- FRESH (FRS): never-contacted leads keep their own list, and get flagged
 -- rather than quietly re-categorised.
 -- =============================================================================
