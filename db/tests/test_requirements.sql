@@ -2745,6 +2745,298 @@ select crm_test.check(
          @> '["retap_due"]'::jsonb), null);
 
 -- =============================================================================
+-- VISIT PROMISE (VIS): "will visit" on call one, "not answered" from call two
+-- onwards. The owner's rule (0067): the promise outranks the silence after
+-- it. The lead never sinks into the breached tab, never goes quiet, and never
+-- joins the re-tap batch pool while the promise is open - and the exemption
+-- ends the moment the visit is recorded.
+-- =============================================================================
+
+do $$
+declare
+  v_src uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1  uuid := '22222222-0000-0000-0000-000000000001';
+begin
+  -- The reported sequence, at its worst: one connected call that promised a
+  -- visit, then six unanswered dials, now five days past due - beyond both
+  -- the quiet threshold (3) and the breach horizon (48h).
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         first_touched_at, attempt_count, connect_count, na_streak,
+                         last_contacted_at, next_action_at, next_action_note,
+                         walkin_expected_at)
+  values (v_src, 'Visit Then Silent', '+919555910003', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() - interval '9 days', 7, 1, 6,
+          now() - interval '8 days', now() - interval '5 days',
+          'Retry after not answered', now() - interval '7 days');
+
+  -- The identical lead except the visit HAPPENED. With the promise resolved,
+  -- the ordinary rules apply again in full.
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         first_touched_at, attempt_count, connect_count, na_streak,
+                         last_contacted_at, next_action_at, next_action_note,
+                         walkin_expected_at, walked_in_at)
+  values (v_src, 'Visited Then Silent', '+919555910004', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() - interval '9 days', 7, 1, 6,
+          now() - interval '8 days', now() - interval '5 days',
+          'Retry after not answered', now() - interval '7 days',
+          now() - interval '6 days');
+end $$;
+
+select crm_test.check(
+  'VIS', 'an open promise holds the will_visit bucket even five days past due',
+  (select bucket = 'will_visit' from crm.v_my_pipeline
+    where full_name = 'Visit Then Silent'),
+  (select 'bucket was ' || bucket from crm.v_my_pipeline
+    where full_name = 'Visit Then Silent'));
+
+select crm_test.check(
+  'VIS', 'the lateness is still measured - the promise keeps identity, not innocence',
+  (select minutes_overdue > 0 from crm.v_my_pipeline
+    where full_name = 'Visit Then Silent'), null);
+
+select crm_test.check(
+  'VIS', 'an open promise never joins the re-tap batch pool, however unanswered',
+  (select count(*) = 0 from crm.v_no_answer_pool
+    where full_name = 'Visit Then Silent'), null);
+
+select crm_test.check(
+  'VIS', 'an open promise keeps its overdue alert past the quiet threshold',
+  (select count(*) > 0 from crm.v_my_alerts
+    where lead_name = 'Visit Then Silent' and kind = 'action_overdue'), null);
+
+select crm_test.check(
+  'VIS', 'once the visit is recorded the lead leaves the will_visit bucket',
+  (select bucket = 'breached' from crm.v_my_pipeline
+    where full_name = 'Visited Then Silent'),
+  (select 'bucket was ' || bucket from crm.v_my_pipeline
+    where full_name = 'Visited Then Silent'));
+
+select crm_test.check(
+  'VIS', 'and goes quiet like any other unanswered lead - into the batch pool',
+  (select count(*) = 1 from crm.v_no_answer_pool
+    where full_name = 'Visited Then Silent'), null);
+
+select crm_test.check(
+  'VIS', 'a resolved promise raises no overdue alerts past the threshold',
+  (select count(*) = 0 from crm.v_my_alerts
+    where lead_name = 'Visited Then Silent'
+      and kind in ('action_overdue', 'follow_up_due')),
+  (select string_agg(kind, ',') from crm.v_my_alerts
+    where lead_name = 'Visited Then Silent'));
+
+-- =============================================================================
+-- GREEN (GRN): a lead that showed convertible intent - a promised visit or a
+-- real positive conversation - never goes lost or vague on its own (0068,
+-- owner decision). It keeps its alerts, stays out of the batch pool, survives
+-- the attempt cap, and carries a visible green light everywhere. Only a
+-- person can end it.
+-- =============================================================================
+
+-- Built through the REAL call trigger, not fixture fields: one interested
+-- conversation, then six unanswered dials.
+do $$
+declare
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_lead uuid;
+  i      int;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, next_action_note)
+  values (v_src, 'Keen Then Silent', '+919555910005', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() + interval '1 hour', 'First contact')
+  returning id into v_lead;
+
+  -- Backdated far outside every 7-day performance window: these attempts
+  -- exercise the green rule, which is dateless, and must not add dials or
+  -- presence to A1's carefully built leave arithmetic (ABS/TIR below).
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, started_at)
+  values (v_lead, v_a1, 'connected_interested', 150, now() - interval '45 days');
+
+  for i in 1..6 loop
+    insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, started_at)
+    values (v_lead, v_a1, 'not_answered', 0, now() - make_interval(days => 44 - i));
+  end loop;
+
+  -- Left to rot: five days past due, beyond both the quiet threshold and the
+  -- 48-hour breach horizon.
+  update crm.leads set next_action_at = now() - interval '5 days' where id = v_lead;
+end $$;
+
+select crm_test.check(
+  'GRN', 'one real interested conversation makes the lead green',
+  (select green_reason = 'interested' from crm.v_lead_history
+    where full_name = 'Keen Then Silent'), null);
+
+select crm_test.check(
+  'GRN', 'a green lead never joins the re-tap batch pool, however unanswered',
+  (select count(*) = 0 from crm.v_no_answer_pool
+    where full_name = 'Keen Then Silent'), null);
+
+select crm_test.check(
+  'GRN', 'a green lead keeps its overdue alert past the quiet threshold',
+  (select count(*) > 0 from crm.v_my_alerts
+    where lead_name = 'Keen Then Silent' and kind = 'action_overdue'), null);
+
+select crm_test.check(
+  'GRN', 'the green light rides along even in the breached bucket',
+  (select bucket = 'breached' and green_reason = 'interested' from crm.v_my_pipeline
+    where full_name = 'Keen Then Silent'),
+  (select 'bucket ' || bucket || ', reason ' || coalesce(green_reason, 'none')
+     from crm.v_my_pipeline where full_name = 'Keen Then Silent'));
+
+-- The attempt cap: nine dials park an ordinary lead to nurture; a green one
+-- stays open with a next action. Both built through the real trigger.
+do $$
+declare
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_grn  uuid;
+  v_gry  uuid;
+  i      int;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, next_action_note)
+  values (v_src, 'Green Nine Lives', '+919555910006', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() + interval '1 hour', 'First contact')
+  returning id into v_grn;
+
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, next_action_note)
+  values (v_src, 'Grey Nine Attempts', '+919555910007', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() + interval '1 hour', 'First contact')
+  returning id into v_gry;
+
+  -- Backdated like the fixture above, and for the same reason: attempt
+  -- COUNTS drive the park rule, not attempt dates.
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, started_at)
+  values (v_grn, v_a1, 'connected_interested', 120, now() - interval '44 days');
+
+  for i in 1..8 loop
+    insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, started_at)
+    values (v_grn, v_a1, 'not_answered', 0, now() - interval '44 days' + make_interval(hours => i));
+    insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, started_at)
+    values (v_gry, v_a1, 'not_answered', 0, now() - interval '44 days' + make_interval(hours => i));
+  end loop;
+
+  -- The grey lead's ninth attempt - the one that parks it.
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, started_at)
+  values (v_gry, v_a1, 'not_answered', 0, now() - interval '43 days');
+end $$;
+
+select crm_test.check(
+  'GRN', 'nine attempts never park a green lead - it stays open with a next action',
+  (select status = 'working' and next_action_at is not null and attempt_count = 9
+     from crm.leads where full_name = 'Green Nine Lives'),
+  (select 'status ' || status || ', next ' || coalesce(next_action_at::text, 'NULL')
+     from crm.leads where full_name = 'Green Nine Lives'));
+
+select crm_test.check(
+  'GRN', 'the same nine attempts still park a lead that never engaged',
+  (select status = 'nurture' and next_action_at is null and attempt_count = 9
+     from crm.leads where full_name = 'Grey Nine Attempts'),
+  (select 'status ' || status || ', attempts ' || attempt_count
+     from crm.leads where full_name = 'Grey Nine Attempts'));
+
+-- "I will come next Wednesday" belongs in Visits promised, dated - not filed
+-- under generic "later" (the two-day window is gone).
+do $$
+declare
+  v_src uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1  uuid := '22222222-0000-0000-0000-000000000001';
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         first_touched_at, attempt_count, connect_count,
+                         next_action_at, next_action_note, walkin_expected_at)
+  values (v_src, 'Promise Next Week', '+919555910008', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() - interval '1 hour', 1, 1,
+          now() + interval '7 days', 'Check whether they visited',
+          now() + interval '7 days');
+end $$;
+
+select crm_test.check(
+  'GRN', 'a visit promised for next week still sits in the will_visit bucket',
+  (select bucket = 'will_visit' from crm.v_my_pipeline
+    where full_name = 'Promise Next Week'),
+  (select 'bucket was ' || bucket from crm.v_my_pipeline
+    where full_name = 'Promise Next Week'));
+
+-- The counsellor's stuck->re-tap park also steps around green: an escalated
+-- lead with an open promise keeps its retry instead of being batch-parked.
+do $$
+declare
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_cns  uuid := '22222222-0000-0000-0000-000000000005';
+  v_lead uuid;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, counsellor_id,
+                         team_id, status, escalation_stage, first_touched_at,
+                         attempt_count, next_action_at, next_action_note,
+                         walkin_expected_at)
+  values (v_src, 'Promised Escalated', '+919555910009', v_a1, v_cns,
+          crm.team_of(v_a1, current_date), 'working', 'counsellor',
+          now() - interval '2 days', 2, now() - interval '1 hour',
+          'Escalated - counsellor to tap', now() - interval '1 day')
+  returning id into v_lead;
+
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, started_at)
+  values (v_lead, v_cns, 'not_answered', 0, now() - interval '40 days');
+end $$;
+
+select crm_test.check(
+  'GRN', 'a counsellor''s failed tap never batch-parks a green lead',
+  (select status = 'working' and pool is distinct from 'retap'
+      and next_action_at is not null
+     from crm.leads where full_name = 'Promised Escalated'),
+  (select 'status ' || status || ', pool ' || coalesce(pool, 'none')
+     from crm.leads where full_name = 'Promised Escalated'));
+
+-- Found by this build: saving a call while the lead had a pending callback
+-- due within the hour used to fail whole (the BEFORE trigger linked the
+-- callback to an attempt id that did not exist yet, and the FK rejected the
+-- insert). The caller ringing at exactly the promised time is the ONE call
+-- that must always save.
+do $$
+declare
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_lead uuid;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         first_touched_at, next_action_at, next_action_note)
+  values (v_src, 'Ring At Four', '+919555910010', v_a1,
+          crm.team_of(v_a1, current_date), 'working',
+          now() - interval '41 days', now() + interval '30 minutes', 'Callback due')
+  returning id into v_lead;
+
+  insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+  values (v_lead, v_a1, v_a1, now() + interval '30 minutes', 'Client asked for 4pm');
+
+  -- The call at the promised time. Before the deferred FK this insert threw.
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, started_at)
+  values (v_lead, v_a1, 'not_answered', 0, now() - interval '40 days');
+end $$;
+
+select crm_test.check(
+  'GRN', 'the call at the promised callback time saves, and completes the callback with its link',
+  (select cb.status = 'completed' and cb.completed_attempt_id is not null
+     from crm.callbacks cb
+     join crm.leads l on l.id = cb.lead_id
+    where l.full_name = 'Ring At Four'),
+  (select 'callback ' || cb.status || ', link ' ||
+          coalesce(cb.completed_attempt_id::text, 'NULL')
+     from crm.callbacks cb
+     join crm.leads l on l.id = cb.lead_id
+    where l.full_name = 'Ring At Four'));
+
+-- =============================================================================
 -- FRESH (FRS): never-contacted leads keep their own list, and get flagged
 -- rather than quietly re-categorised.
 -- =============================================================================
