@@ -123,19 +123,32 @@ Do not undo these without understanding why they exist.
   human enquiring under a new number is a new lead — accepted, because the
   phone is the dialing identity.
 
-- **A promised visit outranks the silence that follows it** (0067, owner
-  decision). "Will visit" on call one, "not answered" from call two used to
-  re-file the lead by its *last* outcome into the not-answered bulk piles —
-  which is where good leads died. `crm.visit_promise_open()` is the one
-  definition of "they said they would come and have not yet come"; while it
-  holds, the lead keeps the `will_visit` bucket (it can never fall to
-  `breached`), keeps its overdue alerts past the quiet threshold, stays out
-  of `v_no_answer_pool`, and the Find-lead "Will visit" list keys on the
-  promise (`visit=promised`), not the last disposition. The lead still
-  appears in the not-answered re-tap lists — it does still need re-dialling —
-  wearing a "🚶 will visit" badge there. Recording the walk-in resolves the
-  promise, and the nine-attempt nurture cap, the 15-day stale mover and the
-  transfer rules all still apply: a promise is identity, not immortality.
+- **A green lead never goes dark on its own** (0067, 0068, owner decisions).
+  "Will visit" on call one, "not answered" from call two used to re-file the
+  lead by its *last* outcome into the not-answered bulk piles — which is
+  where good leads died. Two named definitions now stand between potential
+  and the bulk machinery. `crm.visit_promise_open()` — "they said they would
+  come and have not yet come" — holds the `will_visit` bucket for as long as
+  the promise stands: never `breached`, no two-day window (a visit promised
+  for next Wednesday sits in Visits promised, dated), and the date is the
+  **caller's chosen date** — the API refuses a `will_visit` without one, the
+  chosen date becomes `walkin_expected_at`, and a re-promise moves it.
+  `crm.lead_green_reason()` is the wider rule — an open visit promise, or any
+  connect-grade positive conversation (`connected_interested`,
+  `callback_requested`, `will_visit`, `will_call_back_self`) — and while it
+  holds the lead keeps its overdue alerts past the quiet threshold, stays out
+  of `v_no_answer_pool`, is **never parked by the nine-attempt nurture cap or
+  the counsellor's stuck→re-tap park** (those caps still park the
+  never-engaged bulk they were written for), and wears a green badge (🚶 /
+  🟢) on every list, with a `green=yes` filter and a "🟢 Potential" preset on
+  Find lead. Green is one-way by design: silence never clears it; only a
+  walk-in, a deal, or an explicit close does — so a green lead leaves the
+  pipeline only by a person's decision. When logging an unreached outcome on
+  a green lead the UI requires the person to choose the next follow-up date
+  themselves. Still applying: the 15-day stale mover (a fresh caller ID may
+  ring where a spam-flagged one doesn't — the green light travels with the
+  lead) and the transfer rules. Green is identity and visibility, not
+  immortality.
 
 - **Score components that had nothing to measure are excluded from both the
   points earned and the weight available**, and the total is rescaled over what

@@ -177,7 +177,8 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
       // answerable from the lead page itself, not by cross-checking Floor.
       const lead = await q.one(
         `select l.*, cu.full_name as caller_name, ku.full_name as counsellor_name,
-                t.name as team_name
+                t.name as team_name,
+                crm.lead_green_reason(l.id) as green_reason
            from crm.leads l
            left join crm.users cu on cu.id = l.caller_id
            left join crm.users ku on ku.id = l.counsellor_id
@@ -314,6 +315,10 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
         // open until the walk-in is recorded - and the lead stays on this
         // list, which is what stops good leads sinking into the bulk piles.
         visit: z.enum(['promised', 'arrived']).optional(),
+        // The green list (0068): every open lead where a client showed real
+        // intent - a pending visit promise or a positive connect - that no
+        // human has closed. The "must never go lost or vague" list.
+        green: z.enum(['yes']).optional(),
         limit: z.coerce.number().int().min(1).max(200).default(50),
         offset: z.coerce.number().int().min(0).default(0),
       })
@@ -325,7 +330,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
                 next_action_at, next_action_note, attempt_count, connect_count, na_streak,
                 caller_id, counsellor_id, created_at, first_touched_at, last_contacted_at,
                 last_disposition, last_call_at, last_duration_seconds,
-                whatsapp_sent_at, walkin_expected_at, walked_in_at
+                whatsapp_sent_at, walkin_expected_at, walked_in_at, green_reason
            from crm.v_lead_history
           -- The phone branch only applies when the query actually contains
           -- digits. Without that guard regexp_replace returns an empty string
@@ -361,6 +366,9 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
                                         and status not in ('won', 'lost', 'invalid', 'handed_off')
                    when 'arrived'  then walked_in_at is not null
                  end)
+            and ($11::text is null
+                 or (green_reason is not null
+                     and status not in ('won', 'lost', 'invalid', 'handed_off')))
           order by next_action_at asc nulls last, created_at desc
           limit $3 offset $4`,
         [
@@ -374,6 +382,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
           query.attempts ?? null,
           query.na ?? null,
           query.visit ?? null,
+          query.green ?? null,
         ],
       );
 
@@ -410,6 +419,12 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     if (body.disposition === 'callback_requested' && !body.callbackAt) {
       throw badRequest('a callback_requested disposition needs callbackAt');
     }
+    // The owner's rule (0068): "if somebody has said will visit, then the
+    // next follow up date should be chosen" - by the caller, from the
+    // client's own words, never defaulted by the system.
+    if (body.disposition === 'will_visit' && !body.callbackAt) {
+      throw badRequest('a will_visit outcome needs callbackAt - the visit date the client gave');
+    }
     if (body.callbackAt && body.callbackAt.getTime() < Date.now() - 60_000) {
       throw badRequest('callbackAt must be in the future');
     }
@@ -444,6 +459,20 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
            on conflict (lead_id) where status = 'pending'
            do update set scheduled_at = excluded.scheduled_at, note = excluded.note`,
           [id, user.id, body.callbackAt, body.callbackNote ?? null],
+        );
+      }
+
+      // The chosen date IS the promise date. The trigger's default (+1 working
+      // day) is only a fallback for calls logged without one; when the client
+      // named a day, the Visits promised tab must show that day - and a
+      // re-promise ("come Friday instead") moves it, never keeps the old one.
+      if (body.disposition === 'will_visit' && body.callbackAt) {
+        await q.query(
+          `update crm.leads
+              set walkin_expected_at = $2, updated_at = now()
+            where id = $1
+              and status not in ('won', 'lost', 'invalid', 'handed_off')`,
+          [id, body.callbackAt],
         );
       }
 

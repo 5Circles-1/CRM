@@ -10,11 +10,13 @@ const OPEN_STATUSES = new Set(['new', 'working', 'callback', 'qualified', 'negot
  */
 let DISPOSITIONS = [];
 let NEEDS_FOLLOWUP = new Set();
+let TERMINAL = new Set();
 
 async function loadDispositions() {
   if (DISPOSITIONS.length) return;
   DISPOSITIONS = await get('/meta/dispositions');
   NEEDS_FOLLOWUP = new Set(DISPOSITIONS.filter((d) => d.followUp).map((d) => d.value));
+  TERMINAL = new Set(DISPOSITIONS.filter((d) => d.terminal).map((d) => d.value));
 }
 
 
@@ -45,6 +47,11 @@ export async function render(outlet, me, params) {
           <h2 class="mt0" style="font-size:19px" data-testid="lead-name">${esc(lead.full_name ?? 'Unnamed lead')}
             <span data-testid="lead-status">${badge(lead.status)}</span>
             ${lead.priority === 'immediate' ? '<span class="badge b-bad">immediate</span>' : ''}
+            ${lead.green_reason === 'will_visit'
+              ? '<span class="badge b-ok" data-testid="green-flag" title="Promised to visit and has not yet come — stays green until they walk in or a person closes it">🚶 will visit</span>'
+              : lead.green_reason === 'interested'
+              ? '<span class="badge b-ok" data-testid="green-flag" title="Showed real interest on a call — stays green until a person closes it">🟢 potential</span>'
+              : ''}
             ${Number(lead.na_streak) >= 2
               ? `<span class="badge b-bad" data-testid="na-flag" title="Unreached ${Number(lead.na_streak)} times in a row">📵 Not answered ×${Number(lead.na_streak)}</span>`
               : ''}
@@ -442,12 +449,21 @@ function logCallModal(lead, onDone) {
   const sel = body.querySelector('[name=disposition]');
   const followup = body.querySelector('#followup');
   const followupLabel = body.querySelector('#followup-label');
+  // The date is asked of the caller, never invented by the system, whenever
+  // the outcome is positive OR the lead is green (0068): a promised visit or
+  // an interested client who did not pick up today still gets a HUMAN-chosen
+  // next date, so the lead keeps a live green light instead of a silent retry.
+  const needsDate = (value) =>
+    NEEDS_FOLLOWUP.has(value) || (!!lead.green_reason && !TERMINAL.has(value));
   const syncFollowup = () => {
-    const needs = NEEDS_FOLLOWUP.has(sel.value);
-    followup.style.display = needs ? '' : 'none';
-    followupLabel.textContent = sel.value === 'callback_requested'
-      ? 'Callback time (client asked)'
-      : 'Next follow-up (required for an interested client)';
+    followup.style.display = needsDate(sel.value) ? '' : 'none';
+    followupLabel.textContent =
+      sel.value === 'callback_requested' ? 'Callback time (client asked)'
+      : sel.value === 'will_visit' ? 'When will they visit? (the date the client gave)'
+      : NEEDS_FOLLOWUP.has(sel.value) ? 'Next follow-up (required for an interested client)'
+      : lead.green_reason === 'will_visit'
+        ? 'They promised a visit — choose the next follow-up yourself'
+        : 'This lead is green (showed interest) — choose the next follow-up yourself';
   };
   sel.addEventListener('change', syncFollowup);
   syncFollowup();
@@ -483,7 +499,7 @@ function logCallModal(lead, onDone) {
       notes: body.querySelector('[name=notes]').value.trim() || undefined,
       deviceLogId: body.querySelector('[name=deviceLogId]').value || undefined,
     };
-    if (NEEDS_FOLLOWUP.has(disposition)) {
+    if (needsDate(disposition)) {
       const at = body.querySelector('[name=callbackAt]').value;
       if (!at) { toast('Set the follow-up time first.', 'err'); return; }
       payload.callbackAt = localToIso(at);

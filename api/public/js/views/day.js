@@ -301,8 +301,10 @@ function card(l) {
         <span class="name">${esc(l.full_name ?? 'Unnamed lead')}</span>
         <span class="phone mono">${esc(l.phone_e164)}</span>
         ${l.whatsapp_sent_at ? '<span class="badge b-ok" title="WhatsApp sent">WA</span>' : ''}
-        ${l.bucket !== 'will_visit' && l.walkin_expected_at && !l.walked_in_at
+        ${l.bucket !== 'will_visit' && l.green_reason === 'will_visit'
           ? '<span class="badge b-ok" title="Promised to visit and has not yet come — a quality lead, whatever the last outcome">🚶 will visit</span>'
+          : l.green_reason === 'interested'
+          ? '<span class="badge b-ok" title="Showed real interest on a call — a quality lead, whatever the last outcome">🟢</span>'
           : ''}
         ${Number(l.na_streak) >= 2
           ? `<span class="badge b-bad" title="Not answered ${Number(l.na_streak)} times in a row">📵 Not answered ×${Number(l.na_streak)}</span>`

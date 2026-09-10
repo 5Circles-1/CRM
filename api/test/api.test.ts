@@ -378,6 +378,13 @@ describe('row-level security through the API', () => {
   });
 
   it('scopes a caller\'s day to their own pipeline', async () => {
+    // Pin a due-now lead of A1's own. The ingested fixtures' retry times land
+    // on the working-hours clock, so late in the IST afternoon they drift
+    // past midnight and the day view is legitimately empty - which made this
+    // test flake by wall clock. It is about RLS scoping, not retry timing.
+    const mine = makeLeadFor(USERS.callerA1, 'Day Scope');
+    fixtureSql(`update crm.leads set next_action_at = now() where id = '${mine}';`);
+
     const a1 = await login(h.app, EMAILS.callerA1);
     const res = await h.app.inject({ url: '/me/day', headers: auth(a1) });
     assert.equal(res.statusCode, 200);
@@ -1610,17 +1617,46 @@ describe('the new call outcomes', () => {
     assert.equal(row, 'invalid');
   });
 
-  it('records a promised visit as a date somebody has to check', async () => {
+  it('refuses a promised visit that arrives without the date the client gave', async () => {
+    // The owner's rule (0068): the next follow-up date is CHOSEN by the
+    // caller from the client's own words, never defaulted by the system.
+    const leadId = makeLeadFor(USERS.callerA1, 'Vague Promise');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'will_visit', durationSeconds: 120 },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().message, /callbackAt/);
+  });
+
+  it('records a promised visit on the exact date the caller chose, and a re-promise moves it', async () => {
     const leadId = makeLeadFor(USERS.callerA1, 'Coming In');
     const a1 = await login(h.app, EMAILS.callerA1);
+    const first = new Date(Date.now() + 24 * 3.6e6).toISOString();
     await h.app.inject({
       method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
-      payload: { disposition: 'will_visit', durationSeconds: 120, nextActionAt: next() },
+      payload: { disposition: 'will_visit', durationSeconds: 120, callbackAt: first },
     });
-    const row = fixtureSql(
-      `select (walkin_expected_at is not null)::text from crm.leads where id = '${leadId}';`,
+    let same = fixtureSql(
+      `select (walkin_expected_at = '${first}'::timestamptz
+               and next_action_at = '${first}'::timestamptz)::text
+         from crm.leads where id = '${leadId}';`,
     ).trim();
-    assert.equal(row, 'true');
+    assert.equal(same, 'true', 'the chosen date must become both the promise date and the next action');
+
+    // They call again: "come Friday instead". The promise date follows the
+    // client, not the first thing they ever said.
+    const second = new Date(Date.now() + 72 * 3.6e6).toISOString();
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'will_visit', durationSeconds: 90, callbackAt: second },
+    });
+    same = fixtureSql(
+      `select (walkin_expected_at = '${second}'::timestamptz)::text
+         from crm.leads where id = '${leadId}';`,
+    ).trim();
+    assert.equal(same, 'true', 'a re-promise must move the expected-visit date');
   });
 
   it('keeps the promise when later calls go unanswered - a will-visit lead never becomes bulk', async () => {
@@ -1632,7 +1668,7 @@ describe('the new call outcomes', () => {
     const a1 = await login(h.app, EMAILS.callerA1);
     await h.app.inject({
       method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
-      payload: { disposition: 'will_visit', durationSeconds: 120 },
+      payload: { disposition: 'will_visit', durationSeconds: 120, callbackAt: next() },
     });
     await h.app.inject({
       method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
@@ -1667,6 +1703,48 @@ describe('the new call outcomes', () => {
     assert.ok(
       !after.json().leads.some((l: { id: string }) => l.id === leadId),
       'a recorded walk-in must release the lead from the promised list',
+    );
+  });
+
+  it('an interested lead is green, stays on the green list, and the attempt cap never parks it', async () => {
+    // The owner's rule (0068): a lead with real potential never goes lost or
+    // vague on its own - only a person can end it.
+    const leadId = makeLeadFor(USERS.callerA1, 'Keen But Unreachable');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+      payload: { disposition: 'connected_interested', durationSeconds: 150, callbackAt: next() },
+    });
+
+    const green = await h.app.inject({ method: 'GET', url: '/leads?green=yes', headers: auth(a1) });
+    assert.ok(
+      green.json().leads.some((l: { id: string }) => l.id === leadId),
+      'a positive connect must put the lead on the green list',
+    );
+
+    // Eight unanswered dials take it to nine attempts - the count that parks
+    // an ordinary lead to nurture. A green one must stay open, with a next
+    // action, still on the green list.
+    for (let i = 0; i < 8; i++) {
+      await h.app.inject({
+        method: 'POST', url: `/leads/${leadId}/calls`, headers: auth(a1),
+        payload: { disposition: 'not_answered', durationSeconds: 0 },
+      });
+    }
+    // Status may read 'working' or 'callback' (the follow-up booked on the
+    // interested call flips it); what matters is that it is NOT parked and
+    // still carries a next action.
+    const state = fixtureSql(
+      `select (status in ('working', 'callback') and next_action_at is not null
+               and attempt_count = 9)::text
+         from crm.leads where id = '${leadId}';`,
+    ).trim();
+    assert.equal(state, 'true', 'nine attempts must not park a green lead');
+
+    const still = await h.app.inject({ method: 'GET', url: '/leads?green=yes', headers: auth(a1) });
+    assert.ok(
+      still.json().leads.some((l: { id: string }) => l.id === leadId),
+      'the green light must survive every unanswered dial',
     );
   });
 
