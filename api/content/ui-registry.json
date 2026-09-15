@@ -345,6 +345,20 @@
       "when": "When the five-day re-tap reminder arrives, or any quiet hour."
     },
     {
+      "key": "tab.walkins",
+      "area": "Tabs",
+      "label": "Office visits",
+      "does": "Every client who is coming into the office, is in the office, or has been counselled \u2014 with what the counsellor said happened, and the office-visits-to-conversions ratio built on it. A caller books a visit from the lead; a counsellor punches in whoever walks through the door.",
+      "when": "A caller books a visit the moment a client agrees to come in. A counsellor lives on this tab: punch them in on arrival, record the response when the counselling is done."
+    },
+    {
+      "key": "tab.targets",
+      "area": "Tabs",
+      "label": "Targets",
+      "does": "Each person's own number for the month \u2014 revenue collected for a counsellor, walk-ins put in the office for a caller \u2014 with progress and the daily pace needed to finish. Anyone without one carries their role's default.",
+      "when": "Check your own on Monday morning. Counsellors and admins set other people's here at the start of a month."
+    },
+    {
       "key": "badge.quiet",
       "area": "Badges",
       "label": "Quiet lead",

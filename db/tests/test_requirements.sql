@@ -4212,6 +4212,321 @@ reset role;
 update crm.settings set value = 'false'::jsonb where key = 'callyzer.enabled';
 
 -- =============================================================================
+-- OFFICE VISITS (WLK): a walk-in is a row, from booked to counselled to
+-- converted (0069, owner decision 15 Sep). "Office visits to conversions" was
+-- not a ratio the CRM could compute: the numerator was per counsellor and the
+-- denominator - one nullable timestamp on the lead - belonged to nobody.
+-- =============================================================================
+
+select set_config('app.user_id', :A1, false) as _ \gset
+
+do $$
+declare
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_a2   uuid := '22222222-0000-0000-0000-000000000002';
+  v_cns  uuid := '22222222-0000-0000-0000-000000000005';
+  v_lead uuid;
+begin
+  -- Door one: the caller books it from the pipeline.
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, next_action_note)
+  values (v_src, 'Visit Booked', '+919555930001', v_a1,
+          crm.team_of(v_a1, current_date), 'working', now() + interval '1 hour', 'x')
+  returning id into v_lead;
+  perform crm.assign_walkin(v_lead, v_cns, now() + interval '2 days', 'wants the annual plan');
+
+  -- Door two: the counsellor punches one in at the desk, never booked.
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, next_action_note)
+  values (v_src, 'Walked Straight In', '+919555930002', v_a2,
+          crm.team_of(v_a2, current_date), 'working', now() + interval '1 hour', 'x')
+  returning id into v_lead;
+  perform set_config('app.user_id', v_cns::text, false);
+  perform crm.record_walkin_arrival(v_lead, v_cns, null);
+  perform set_config('app.user_id', v_a1::text, false);
+end $$;
+
+select crm_test.check(
+  'WLK', 'a caller books a visit and it lands as expected, with the day on it',
+  (select status = 'expected' and expected_at is not null
+     from crm.v_walkin_visits where full_name = 'Visit Booked'), null);
+
+select crm_test.check(
+  'WLK', 'credit for the walk-in stays with the caller who sent them in',
+  (select caller_id = :A1 and counsellor_id = :CNS_A
+     from crm.v_walkin_visits where full_name = 'Visit Booked'), null);
+
+select crm_test.check(
+  'WLK', 'a booked visit puts the promise on the lead, so the green light holds',
+  (select walkin_expected_at is not null
+     and crm.visit_promise_open(walkin_expected_at, walked_in_at)
+     from crm.leads where full_name = 'Visit Booked'), null);
+
+select crm_test.check(
+  'WLK', 'a counsellor can punch in a walk-in that was never booked',
+  (select status = 'arrived' and has_arrived
+     from crm.v_walkin_visits where full_name = 'Walked Straight In'), null);
+
+select crm_test.check(
+  'WLK', 'an arrival sets the lead''s own walk-in date, so every old figure still reads',
+  (select walked_in_at is not null from crm.leads
+    where full_name = 'Walked Straight In'), null);
+
+select crm_test.check(
+  'WLK', 'an arrival never leaves the lead open without a next action',
+  (select next_action_at is not null from crm.leads
+    where full_name = 'Walked Straight In'), null);
+
+-- The arrival of a BOOKED client completes that booking. One person in the
+-- office is one visit; two rows would inflate the denominator of the ratio.
+select set_config('app.user_id', :CNS_A, false) as _ \gset
+select crm.record_walkin_arrival(
+  (select id from crm.leads where full_name = 'Visit Booked'), :CNS_A, null) as _ \gset
+
+select crm_test.check(
+  'WLK', 'a booked client who turns up is one visit, not two',
+  (select count(*) = 1 from crm.walkin_visits w
+     join crm.leads l on l.id = w.lead_id where l.full_name = 'Visit Booked'),
+  (select count(*)::text from crm.walkin_visits w
+     join crm.leads l on l.id = w.lead_id where l.full_name = 'Visit Booked'));
+
+select crm_test.check(
+  'WLK', 'and the one row is now arrived rather than expected',
+  (select status = 'arrived' from crm.v_walkin_visits where full_name = 'Visit Booked'), null);
+
+-- The counselling response.
+select crm.record_walkin_response(
+  (select visit_id from crm.v_walkin_visits where full_name = 'Walked Straight In'),
+  'thinking', '44444444-0000-0000-0000-000000000001', 'discussing with spouse',
+  now() + interval '3 days') as _ \gset
+
+select crm_test.check(
+  'WLK', 'the counsellor''s response closes the visit without closing the lead',
+  (select v.outcome = 'thinking' and v.status = 'counselled'
+     and l.status not in ('won', 'lost')
+     from crm.v_walkin_visits v join crm.leads l on l.id = v.lead_id
+    where v.full_name = 'Walked Straight In'), null);
+
+select crm_test.check(
+  'WLK', '"thinking it over" leaves the lead open with the follow-up as its next action',
+  (select next_action_at > now() + interval '2 days'
+     from crm.leads where full_name = 'Walked Straight In'), null);
+
+-- A hand-typed conversion must RAISE, so it is provoked defensively.
+do $$
+declare v_ok boolean := false;
+begin
+  begin
+    perform crm.record_walkin_response(
+      (select visit_id from crm.v_walkin_visits where full_name = 'Visit Booked'),
+      'converted', null, null, null);
+  exception when check_violation then
+    v_ok := true;
+  end;
+  perform crm_test.check(
+    'WLK', 'a conversion is refused by hand - the deal is the conversion', v_ok, null);
+end $$;
+
+-- A caller may book and may mark an arrival, but what was said at the desk is
+-- not theirs to write - the same shape as the transfer rule.
+do $$
+declare v_denied boolean := false;
+begin
+  perform set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false);
+  begin
+    perform crm.record_walkin_response(
+      (select visit_id from crm.v_walkin_visits where full_name = 'Visit Booked'),
+      'thinking', null, null, now() + interval '1 day');
+  exception when insufficient_privilege then
+    v_denied := true;
+  end;
+  perform crm_test.check(
+    'WLK', 'a caller cannot write the counselling response', v_denied, null);
+  perform set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false);
+end $$;
+
+-- Booking the deal marks the visit converted, carrying the product across.
+do $$
+declare
+  v_lead uuid;
+  v_deal uuid;
+begin
+  select id into v_lead from crm.leads where full_name = 'Visit Booked';
+  insert into crm.deals (lead_id, product_id, counsellor_id, setter_id, team_id, booked_amount)
+  values (v_lead, '44444444-0000-0000-0000-000000000002',
+          '22222222-0000-0000-0000-000000000005',
+          '22222222-0000-0000-0000-000000000001',
+          (select team_id from crm.leads where id = v_lead), 75000)
+  returning id into v_deal;
+end $$;
+
+select crm_test.check(
+  'WLK', 'booking the deal marks the visit converted - nobody types it',
+  (select is_converted and outcome = 'converted'
+     from crm.v_walkin_visits where full_name = 'Visit Booked'), null);
+
+select crm_test.check(
+  'WLK', 'and the visit carries the deal''s product, so the product board is honest',
+  (select product_id = '44444444-0000-0000-0000-000000000002'
+     and booked_amount = 75000
+     from crm.v_walkin_visits where full_name = 'Visit Booked'), null);
+
+-- A deal closed before the client ever came in is NOT an office visit. Counting
+-- it would inflate the denominator with a sale made on the phone.
+do $$
+declare
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_a1   uuid := '22222222-0000-0000-0000-000000000001';
+  v_lead uuid;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, next_action_note)
+  values (v_src, 'Closed On The Phone', '+919555930003', v_a1,
+          crm.team_of(v_a1, current_date), 'working', now() + interval '1 hour', 'x')
+  returning id into v_lead;
+  perform set_config('app.user_id', v_a1::text, false);
+  perform crm.assign_walkin(v_lead, '22222222-0000-0000-0000-000000000005',
+                            now() + interval '5 days', null);
+  insert into crm.deals (lead_id, product_id, counsellor_id, setter_id, team_id, booked_amount)
+  values (v_lead, '44444444-0000-0000-0000-000000000003',
+          '22222222-0000-0000-0000-000000000005', v_a1,
+          (select team_id from crm.leads where id = v_lead), 15000);
+  perform set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false);
+end $$;
+
+select crm_test.check(
+  'WLK', 'a deal closed before the visit is not an office visit conversion',
+  (select status = 'cancelled' and not is_converted and not has_arrived
+     from crm.v_walkin_visits where full_name = 'Closed On The Phone'),
+  (select status || '/' || is_converted::text from crm.v_walkin_visits
+    where full_name = 'Closed On The Phone'));
+
+-- A client seen, with nothing recorded about it, is flagged - and is never a
+-- conversion, because only the money makes one.
+do $$
+declare
+  v_src  uuid := '33333333-0000-0000-0000-000000000001';
+  v_b1   uuid := '22222222-0000-0000-0000-000000000003';
+  v_cns  uuid := '22222222-0000-0000-0000-000000000006';
+  v_lead uuid;
+  v_visit uuid;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         next_action_at, next_action_note)
+  values (v_src, 'Walk In Unanswered', '+919555930004', v_b1,
+          crm.team_of(v_b1, current_date), 'working', now() + interval '1 hour', 'x')
+  returning id into v_lead;
+  perform set_config('app.user_id', v_cns::text, false);
+  v_visit := crm.record_walkin_arrival(v_lead, v_cns, null);
+  update crm.walkin_visits set arrived_at = now() - interval '4 hours' where id = v_visit;
+  perform crm_test.check(
+    'WLK', 'a visit nobody has answered for is flagged, and is not a conversion',
+    (select response_overdue and not is_converted
+       from crm.v_walkin_visits where visit_id = v_visit), null);
+end $$;
+
+select crm_test.check(
+  'WLK', 'the desk carries everyone expected, arrived or counselled today',
+  (select count(*) >= 2 from crm.v_walkin_desk), null);
+
+-- RLS: a walk-in is lead-scoped, so team B's counsellor cannot read team A's.
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000006', false) as _ \gset
+select crm_test.check(
+  'WLK', 'a counsellor cannot read the other team''s office visits',
+  (select count(*) = 0 from crm.v_walkin_visits where full_name = 'Visit Booked'), null);
+select crm_test.check(
+  'WLK', 'but reads their own team''s',
+  (select count(*) = 1 from crm.v_walkin_visits where full_name = 'Walk In Unanswered'), null);
+reset role;
+
+-- =============================================================================
+-- TARGETS (TGT): one number per person per month - revenue for a counsellor,
+-- walk-ins for a caller (0070, owner decision 15 Sep). Nobody has to be given
+-- a target for the screen to be honest: an unset person carries their role's
+-- default, never zero.
+-- =============================================================================
+
+select set_config('app.user_id', :ADMIN, false) as _ \gset
+
+select crm_test.check(
+  'TGT', 'a caller with no row set still carries the floor walk-in standard',
+  (select walkin_target = crm.setting_int('walkin.monthly_target_per_caller', 10)
+     and not is_custom
+     from crm.user_target_progress() where user_id = :B1), null);
+
+select crm_test.check(
+  'TGT', 'a caller carries no revenue target - the deal is not theirs to close',
+  (select revenue_target is null from crm.user_target_progress() where user_id = :B1), null);
+
+select crm_test.check(
+  'TGT', 'a counsellor with no row set carries a share of the office breakeven',
+  (select revenue_target > 0 and not is_custom
+     from crm.user_target_progress() where user_id = '22222222-0000-0000-0000-000000000006'), null);
+
+select crm_test.check(
+  'TGT', 'the daily brief quotes the same revenue target as the targets screen',
+  (select b.monthly_target = t.revenue_target
+     from crm.v_daily_brief b
+     join crm.user_target_progress() t on t.user_id = b.user_id
+    where b.user_id = :CNS_A), null);
+
+select crm.set_user_target(:B1, crm.ist_date(now()), null, 25, null) as _ \gset
+
+select crm_test.check(
+  'TGT', 'a target set for one person is theirs alone',
+  (select walkin_target = 25 and is_custom
+     from crm.user_target_progress() where user_id = :B1), null);
+
+select crm_test.check(
+  'TGT', 'and nobody else moves with them',
+  (select walkin_target = crm.setting_int('walkin.monthly_target_per_caller', 10)
+     from crm.user_target_progress() where user_id = :B2), null);
+
+select crm.set_user_target(:B1, crm.ist_date(now()), null, null, null) as _ \gset
+
+select crm_test.check(
+  'TGT', 'clearing a target falls back to the default, never to zero',
+  (select walkin_target > 0
+     from crm.user_target_progress() where user_id = :B1), null);
+
+do $$
+declare v_denied boolean := false;
+begin
+  perform set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false);
+  begin
+    perform crm.set_user_target('22222222-0000-0000-0000-000000000001',
+                                crm.ist_date(now()), null, 1, null);
+  exception when insufficient_privilege then
+    v_denied := true;
+  end;
+  perform crm_test.check(
+    'TGT', 'a caller cannot set a target, not even their own', v_denied, null);
+
+  perform set_config('app.user_id', '22222222-0000-0000-0000-00000000000a', false);
+  v_denied := false;
+  begin
+    perform crm.set_user_target('22222222-0000-0000-0000-000000000005',
+                                date '2024-01-01', 100000, null, null);
+  exception when check_violation then
+    v_denied := true;
+  end;
+  perform crm_test.check(
+    'TGT', 'a target cannot be set backwards into a closed month', v_denied, null);
+end $$;
+
+select crm_test.check(
+  'TGT', 'a caller''s walk-ins count towards their own target, not the closer''s',
+  (select walkins >= 1 from crm.user_target_progress() where user_id = :B1),
+  (select walkins::text from crm.user_target_progress() where user_id = :B1));
+
+select crm_test.check(
+  'TGT', 'pace needed is only computed while the month is still being worked',
+  (select walkins_per_day_needed is not null or working_days_left = 0
+     from crm.user_target_progress() where user_id = :B1), null);
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 

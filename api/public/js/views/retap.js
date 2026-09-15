@@ -58,6 +58,49 @@ export async function render(outlet, me) {
 
     outlet.appendChild(h(`
       <div>
+      <div class="panel" data-testid="retap-explainer" style="margin-bottom:16px">
+        <h2 class="mt0">What this tab is <small>read this once</small></h2>
+        <div class="grid cols-3">
+          <div>
+            <div class="section-h">What it is</div>
+            <p class="hint" style="margin:0">
+              The floor's <b>second-chance pile</b>. A lead that has gone unanswered more than
+              ${data.threshold} times in a row stops raising its own alerts — left in the bell it
+              would drown out the callbacks that a client actually asked for, and a bell nobody
+              trusts is worse than no bell. Nothing is lost: these leads keep their next action,
+              still appear in My Pipeline and Find lead, and still count in every leakage figure.
+              They just stop interrupting you, and wait here until somebody sits down with the list.
+            </p>
+          </div>
+          <div>
+            <div class="section-h">Who shows up here</div>
+            <p class="hint" style="margin:0">
+              Open leads, still owned by ${canSeeTeam ? 'someone on the team' : 'you'}, that went
+              unanswered more than ${data.threshold} times — longest silence at the top, because
+              that is the order worth calling in.
+              <br><br>
+              <b>Who never shows up here:</b> a lead that showed real interest, promised a visit
+              or asked for a callback. Those carry the green light (🟢) and are never treated as
+              bulk, however long they stay silent. If a lead you expected is missing, that is why —
+              look for it on Fresh leads or My Pipeline.
+            </p>
+          </div>
+          <div>
+            <div class="section-h">What to do</div>
+            <ol class="hint" style="margin:0;padding-left:18px">
+              <li><b>Work top down.</b> Longest silence first.</li>
+              <li><b>Send a WhatsApp to the “never messaged” ones.</b> A message often restarts
+                  a number that will not take a call.</li>
+              <li><b>Try a different time of day.</b> Same time, same result.</li>
+              <li><b>Log every attempt</b>, so the silence counter is honest.</li>
+              <li><b>Close the dead ones honestly</b> — wrong number, not interested — rather than
+                  leaving them here forever. A lead parked with a real reason is a clean book;
+                  one left to rot is the leak this tab exists to stop.</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+
       <div class="grid cols-4" style="margin-bottom:16px">
         <div class="stat"><div class="k">Waiting to re-tap</div><div class="v">${data.leads.length}</div>
           <div class="s">unanswered more than ${data.threshold} times</div></div>

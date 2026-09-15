@@ -35,6 +35,47 @@ Logging a 5-second call as "connected" does not move any KPI — by design.
 - **A new lead untouched for 10 minutes moves to the next caller**
   (`sla.untouched_reassign_minutes`) and the pass is recorded.
 
+## Individual targets — one person's number, not the floor's
+
+Everything above is a floor standard. On top of it, each person carries a
+target of their own for the month, set in **Targets** by a counsellor or an
+admin and stored in `crm.user_targets`:
+
+| Role | Their target | Column | Default when none is set |
+|---|---|---|---|
+| Counsellor | Revenue **collected** this month | `monthly_collection_target` | Equal share of the office breakeven, grossed up (`crm.monthly_revenue_target`) |
+| Caller | **Walk-ins** put in the office this month | `monthly_walkin_target` | `walkin.monthly_target_per_caller` (10) |
+
+Two different numbers on purpose. A counsellor is judged on money that arrived —
+the same figure the thermometer and the daily brief already mean by "collected",
+not a second booked-revenue number beside it. A caller is judged on how many
+people they put in the office, because the deal is not theirs to close; the
+walk-in is credited to whoever *sent the client in*, never to whoever greeted
+them (`crm.walkin_visits.caller_id`), which is what makes it a fair individual
+target rather than a shared one.
+
+Nobody has to be given a target for the screen to be honest: an unset person
+carries their role's default, and clearing a target falls back to that default
+rather than to zero. Progress, pace and the gap all come from
+`crm.user_target_progress()`, which the Targets screen and the daily brief both
+read — so the two cannot quote different numbers at the same person on the same
+morning.
+
+## Office visits → conversions
+
+| KPI | Meaning | Source |
+|---|---|---|
+| Promise kept | Walked in / promised to visit on a call | `crm.v_walkin_visits`, `call_attempts` |
+| **Visit conversion** | Converted / walked in | `crm.v_walkin_visits` |
+| Response discipline | Visits with a counselling response recorded | `walkin.counselling_due_minutes` (90) |
+
+A visit is a row (`crm.walkin_visits`), not a timestamp: who sent them in, who
+sat with them, what was said, and what it turned into. **A conversion is never
+typed by hand** — booking the deal marks the visit converted and carries the
+product and amount across, so the ratio and the money cannot drift apart. A
+client seen with no response recorded counts as a visit and never as a
+conversion.
+
 ## Counsellor KPIs (monthly)
 
 | KPI | Target | Weight | Setting / source |
@@ -64,8 +105,17 @@ Status escalates green → amber → red → founder intervention on pace vs. to
 The overall standings blend every metric into one 0–100 number. Weights are
 settings (`leaderboard.weight_*`): deals 25, revenue 25, connects 15, dials 10,
 interested 10, walk-ins 10, talk time 5. Each metric is normalised against the
-best on the floor in the window, so the board is always a race, never a fixed
+best on the board in the window, so the board is always a race, never a fixed
 bar.
+
+**There are two boards, one per job.** A single board mixing both roles
+normalises a caller's revenue against a counsellor's and a counsellor's dials
+against a caller's — two different jobs scored on one curve, where whichever
+role the weights suit less simply loses. Callers are ranked among callers and
+counsellors among counsellors; both come from the same `crm.rate_standings()`
+the nightly ACE pick uses, asked for one role at a time. The volume trophies
+stay on raw totals, because "most calls" meaning most calls is a fact, not a
+ranking.
 
 ## Review cadence
 

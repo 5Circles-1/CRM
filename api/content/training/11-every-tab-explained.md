@@ -70,11 +70,61 @@ days+" or "No WhatsApp sent". You get one reminder every
 yours, still counted — it just stopped shouting. Close it properly if it truly
 will never answer.
 
+## Office visits
+
+**Who sees it:** everyone.
+**What it is:** every client who is **coming into the office, is in the office,
+or has been counselled** — and the office-visits-to-conversions ratio built on
+those rows. A visit here is a record, not a tick: who sent them in, who sat with
+them, what was said, and what it turned into.
+**What to do:**
+
+- **Callers** — the moment a client agrees to come in, press **Send to
+  counsellor** on the lead (or **Book a visit** on this tab): name the
+  counsellor and the day. It lands under *Expected*, and the walk-in is
+  credited to you.
+- **Counsellors** — when somebody walks through the door, press **They are
+  here** on their booked row, or **Punch in a walk-in** if they were never
+  booked. When the counselling is finished, press **Record response** and say
+  what happened: thinking it over, coming back in, not interested, not
+  eligible.
+
+**You never mark a visit "converted".** Book the deal the way you always have
+and the visit is marked converted for you, carrying the product and the amount
+across. That is deliberate — a hand-typed conversion is a second record of the
+money, and two records of the same money always drift apart.
+
+**The mistake:** counselling somebody and never recording the response. Until
+one is recorded the visit counts in the denominator and never in the numerator,
+so it drags your own conversion rate down. The tab flags those rows for exactly
+that reason.
+
+## Targets
+
+**Who sees it:** everyone. Counsellors and admins can set other people's.
+**What it is:** each person's own number for the month — **revenue collected**
+for a counsellor, **walk-ins put in the office** for a caller — with progress
+and the daily pace needed to finish.
+**What to do:** check your own on Monday morning and work back from the pace
+figure. Managers, set the month's targets at the start of the month.
+**Why two different numbers:** a counsellor is judged on money that arrived; a
+caller is judged on how many people they put in the office, because the deal is
+not theirs to close. A walk-in is credited to whoever *sent the client in*,
+never to whoever greeted them.
+**The mistake:** reading an empty target box as "no target". Nobody has no
+target — anyone without one of their own carries their role's default, and
+clearing a target puts them back on that default, not on zero.
+
 ## Floor
 
 **Who sees it:** counsellors and admins.
-**What it is:** the live floor — leaderboard, who is on shift, the follow-up
+**What it is:** the live floor — leaderboards, who is on shift, the follow-up
 radar, pipeline leakage, and **Lead flow**.
+**Two leaderboards, one per job.** Callers are ranked among callers and
+counsellors among counsellors. Ranking them together measured a caller's
+revenue against a counsellor's and a counsellor's dials against a caller's,
+which is two jobs on one curve; the volume trophies below still use raw totals,
+because "most calls" means most calls.
 **What to do:** read it twice a day. Work the leak list to zero before you
 leave.
 **Lead flow** is the panel that answers "why is X not getting leads?" and "why
@@ -220,7 +270,10 @@ people who were already spoken to once.
 
 **Who sees it:** callers, counsellors, admins, ops. A caller sees only
 themselves.
-**What it is:** dials, connects, talk time, walk-ins booked, conversion.
+**What it is:** dials, connects, talk time, walk-ins booked, conversion — with
+callers and counsellors on **separate boards**, each ranked within its own job.
+The star rating is scored the same way: three stars for a counsellor means
+three stars among counsellors.
 **What to do:** managers, read it before any coaching conversation.
 **The mistake:** reading "—" as zero. A caller with no dials has no
 denominator, so no percentage is shown. A 0% would rank idleness beside effort.

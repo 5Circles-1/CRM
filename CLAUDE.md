@@ -14,7 +14,8 @@ advisory pipeline and must **not** be built here.
 |---|---|
 | Lead ingestion, distribution, teams and roles | Client KYC and onboarding |
 | Caller → counsellor pipeline, callbacks, reminders | Consent and agreements |
-| Attendance, scoring, dashboards | Fee-cap and family limits |
+| Attendance, scoring, targets, dashboards | Fee-cap and family limits |
+| Office visits, counselling response, conversion ratio | Advisory sessions with a paying client |
 | Deals, instalments, collections chasing | Service delivery and research |
 | Call QA — conduct and coaching | Long-term client records, grievances, audits |
 
@@ -150,6 +151,53 @@ Do not undo these without understanding why they exist.
   lead) and the transfer rules. Green is identity and visibility, not
   immortality.
 
+- **An office visit is a row, and a conversion is never typed twice** (0069,
+  owner decision 15 Sep). A walk-in used to be one nullable timestamp on the
+  lead, which can say a visit happened and nothing else — so "office visits to
+  conversions" was not a ratio anybody could compute: the numerator (deals) is
+  per counsellor and the denominator belonged to nobody. `crm.walkin_visits`
+  carries who sent them in, who sat with them, what was said and what it turned
+  into, through `expected → arrived → counselled`. Two doors, both the owner's:
+  the **caller books it** from the pipeline (`crm.assign_walkin`, a named day
+  required) and the **counsellor punches it in** at the desk
+  (`crm.record_walkin_arrival`, which completes a booking rather than opening a
+  second visit — one person in the office is one visit). The counselling
+  response is the counsellor's to write, never the caller's
+  (`crm.record_walkin_response`, 42501 like `transfer_lead`). **`converted` is
+  refused by hand**: booking the deal marks the visit converted and carries the
+  product and amount across, because a hand-typed conversion is a second record
+  of the money and two records of the same money always drift apart. A deal
+  closed before the client ever came in cancels the booked visit rather than
+  counting as an office visit. `leads.walked_in_at` keeps its meaning and is
+  set from this table, so every existing walk-in figure still reads — including
+  the lead page's own "Mark walked in", which now goes through the same
+  function so the two numbers cannot disagree.
+
+- **A target is one person's number** (0070, owner decision 15 Sep). A
+  counsellor carries a **revenue** target, a caller a **walk-in** target, in
+  `crm.user_targets` for a month. Revenue deliberately means *collected* — the
+  same figure the thermometer and the daily brief already use — rather than a
+  second booked-revenue number beside it, because a screen with two revenue
+  targets on it is a screen where nobody knows which one they are behind on. A
+  caller's number is walk-ins because the deal is not theirs to close, and it
+  is fair only because `crm.walkin_visits` credits the walk-in to whoever sent
+  the client in. Nobody needs a target for the screen to be honest: an unset
+  person carries their role's default (`crm.monthly_revenue_target`,
+  `crm.monthly_walkin_target`) and clearing one falls back to that default,
+  never to zero. The daily brief now reads the same default function, so the
+  brief and the Targets screen cannot quote different numbers at the same
+  person on the same morning.
+
+- **Two leaderboards, one per job** (owner decision 15 Sep). `crm.rate_standings`
+  normalises every component against the best rate *on the board*, so a board
+  holding both roles measures a caller's revenue against a counsellor's and a
+  counsellor's dials against a caller's — two jobs on one curve, and the loser
+  is whichever role the weights happen to suit less. `/performance/overall`
+  takes a `role`, and Floor and Performance render callers and counsellors as
+  separate boards, each ranked from 1 within itself. Still one formula: the
+  same function the nightly ACE pick uses. The volume trophies stay on raw
+  totals — "most calls" meaning most calls is a fact, not a ranking.
+
 - **Score components that had nothing to measure are excluded from both the
   points earned and the weight available**, and the total is rescaled over what
   applied. Awarding full marks for an empty component rewards idleness — before
@@ -239,7 +287,7 @@ api/             TypeScript / Node 22 / Fastify. See api/README.md
   src/ingest/    Google Sheets -> ingested_rows -> assign_lead
   src/jobs/      scheduled calls into the database engines
   public/        the web UI: dependency-free ES modules, no build step
-  test/          41 API integration tests + 3 Playwright browser flows
+  test/          API integration tests + Playwright browser flows
 docs/            requirement traceability, open questions
 ```
 
@@ -288,7 +336,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(320 database assertions, 296 API tests, 11 browser E2E flows), the
+(366 database assertions, 317 API tests, 15 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Callyzer
 integration** (migration 0063, `api/src/integrations/callyzer/`) — webhook +

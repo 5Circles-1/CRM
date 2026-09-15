@@ -62,7 +62,12 @@ export async function render(outlet, me) {
     get('/leads?status=qualified&limit=100'),
     get('/leads?status=negotiation&limit=100'),
     get('/performance?days=1').catch(() => []),
-    get('/performance/overall?days=1').catch(() => []),
+    // Two boards, not one. See drawBoard below for why the split is in the
+    // request rather than a filter over one response.
+    Promise.all([
+      get('/performance/overall?days=1&role=caller').catch(() => []),
+      get('/performance/overall?days=1&role=counsellor').catch(() => []),
+    ]),
     get('/users/avatars').catch(() => ({})),
     get('/dashboards/lead-flow').catch(() => null),
     get('/dashboards/followups').catch(() => []),
@@ -102,61 +107,88 @@ export async function render(outlet, me) {
   const board = h('<div class="panel"></div>');
   outlet.appendChild(board);
 
+  /**
+   * One board per job (owner, 15 Sep).
+   *
+   * A single board mixing both roles measured a caller's revenue against a
+   * counsellor's and a counsellor's dials against a caller's — two different
+   * jobs scored on one curve, where whichever role the weights suited less
+   * simply lost. The split is made in the REQUEST, not by filtering one
+   * response: crm.rate_standings normalises each component against the best
+   * rate on the board, so asking for callers only is what makes "best caller"
+   * mean best among callers.
+   */
+  const boardMarkup = (title, sub, overall, testid) => {
+    if (overall.length === 0) {
+      return `<div class="section-h">${esc(title)}</div>
+        <div class="empty" data-testid="${esc(testid)}">Nobody has scored yet in this window.</div>`;
+    }
+    const medals = ['🥇', '🥈', '🥉'];
+    const maxPts = Number(overall[0].overall_points) || 1;
+    return `
+      <div class="row spread wrap" style="margin-top:6px">
+        <div class="section-h" style="margin-bottom:0">${esc(title)}</div>
+        <span class="hint">${esc(sub)}</span>
+      </div>
+      <div class="podium" data-testid="${esc(testid)}">
+        ${overall.slice(0, 3).map((p, i) => `
+          <div class="podium-slot p${i + 1}">
+            <div class="podium-medal">${medals[i]}</div>
+            ${avatarHtml(p.full_name, avatars[p.user_id], i === 0 ? 64 : 48)}
+            <div class="podium-name">${esc(p.full_name)}</div>
+            <div class="podium-points">${Number(p.overall_points).toFixed(0)} pts</div>
+            ${boardDays > 1 ? `<div class="podium-basis">over ${Number(p.days_present)} day${Number(p.days_present) === 1 ? '' : 's'} worked</div>` : ''}
+          </div>`).join('')}
+      </div>
+      ${overall.length > 3 ? `
+      <div class="standings">
+        ${overall.slice(3).map((p) => `
+          <div class="standing-row">
+            <span class="standing-rank">#${Number(p.rank)}</span>
+            ${avatarHtml(p.full_name, avatars[p.user_id], 26)}
+            <span class="standing-name">${esc(p.full_name)}${boardDays > 1
+              ? ` <small class="standing-basis">${Number(p.days_present)}d</small>` : ''}</span>
+            <span class="standing-track"><span style="width:${Math.max(2, (Number(p.overall_points) / maxPts) * 100)}%"></span></span>
+            <span class="standing-points">${Number(p.overall_points).toFixed(0)}</span>
+          </div>`).join('')}
+      </div>` : ''}`;
+  };
+
   const drawBoard = async () => {
-    const [rows, overall] = boardDays === 1
+    const [rows, [callerBoard, counsellorBoard]] = boardDays === 1
       ? [today, overallToday]
       : await Promise.all([
           get(`/performance?days=${boardDays}`),
-          get(`/performance/overall?days=${boardDays}`).catch(() => []),
+          Promise.all([
+            get(`/performance/overall?days=${boardDays}&role=caller`).catch(() => []),
+            get(`/performance/overall?days=${boardDays}&role=counsellor`).catch(() => []),
+          ]),
         ]);
     board.innerHTML = '';
     board.appendChild(h(`
       <div class="row spread">
-        <h2 class="mt0">Leaderboard <small>updates live as calls are logged</small></h2>
+        <h2 class="mt0">Leaderboards <small>updates live as calls are logged</small></h2>
         <div class="chips" style="margin:0">
           ${[[1, 'Today'], [7, 'This week'], [30, 'This month']].map(([d, l]) => `
             <button class="chip ${d === boardDays ? 'on' : ''}" data-board-days="${d}">${l}</button>`).join('')}
         </div>
       </div>`));
 
-    // Overall standings: every metric, one weighted number. The podium is the
+    // Two boards, each normalised inside its own role. The podium is the
     // motivation; the list under it is the fairness - everyone can see where
     // the points came from, and the weights are Admin settings, not magic.
-    if (overall.length > 0) {
-      const podium = overall.slice(0, 3);
-      const medals = ['🥇', '🥈', '🥉'];
-      board.appendChild(h(`
-        <div class="podium" data-testid="overall-podium">
-          ${podium.map((p, i) => `
-            <div class="podium-slot p${i + 1}">
-              <div class="podium-medal">${medals[i]}</div>
-              ${avatarHtml(p.full_name, avatars[p.user_id], i === 0 ? 64 : 48)}
-              <div class="podium-name">${esc(p.full_name)}</div>
-              <div class="podium-points">${Number(p.overall_points).toFixed(0)} pts</div>
-              ${boardDays > 1 ? `<div class="podium-basis">over ${Number(p.days_present)} day${Number(p.days_present) === 1 ? '' : 's'} worked</div>` : ''}
-            </div>`).join('')}
-        </div>`));
-      if (overall.length > 3) {
-        const maxPts = Number(overall[0].overall_points) || 1;
-        board.appendChild(h(`
-          <div class="standings">
-            ${overall.slice(3).map((p) => `
-              <div class="standing-row">
-                <span class="standing-rank">#${Number(p.rank)}</span>
-                ${avatarHtml(p.full_name, avatars[p.user_id], 26)}
-                <span class="standing-name">${esc(p.full_name)}${boardDays > 1
-                  ? ` <small class="standing-basis">${Number(p.days_present)}d</small>` : ''}</span>
-                <span class="standing-track"><span style="width:${Math.max(2, (Number(p.overall_points) / maxPts) * 100)}%"></span></span>
-                <span class="standing-points">${Number(p.overall_points).toFixed(0)}</span>
-              </div>`).join('')}
-          </div>`));
-      }
-      board.appendChild(h(`<div class="hint" style="margin:2px 0 10px">
-        Overall points weigh conversions and revenue first, then connects, dials, interest,
-        walk-ins and talk time — the weights are settings under Admin → Settings (leaderboard.*).
-        ${boardDays > 1 ? `Points are counted <b>per day worked</b>, so days off cost nobody a place —
-        the trophies below stay on raw totals, because “most calls” means most calls.` : ''}</div>`));
-    }
+    board.appendChild(h(`<div>
+      ${boardMarkup('📞 Callers', 'ranked among callers only', callerBoard, 'caller-podium')}
+      ${boardMarkup('🤝 Counsellors', 'ranked among counsellors only', counsellorBoard, 'counsellor-podium')}
+    </div>`));
+
+    board.appendChild(h(`<div class="hint" style="margin:2px 0 10px">
+      Each board is scored inside its own role: a caller is never ranked against a
+      counsellor's revenue, nor a counsellor against a caller's dial count. Overall points
+      weigh conversions and revenue first, then connects, dials, interest, walk-ins and talk
+      time — the weights are settings under Admin → Settings (leaderboard.*).
+      ${boardDays > 1 ? `Points are counted <b>per day worked</b>, so days off cost nobody a place —
+      the trophies below stay on raw totals, because “most calls” means most calls.` : ''}</div>`));
 
     const cards = h('<div class="trophy-grid"></div>');
     for (const t of TROPHIES) {

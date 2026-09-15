@@ -133,32 +133,58 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
    *
    * Separate from the will_visit outcome on purpose: a promise to visit and a
    * visit are different numbers, and only one of them turns into revenue.
+   *
+   * Since 0069 this goes through crm.record_walkin_arrival rather than writing
+   * leads.walked_in_at directly. It has to: a visit recorded here but not in
+   * crm.walkin_visits would sit in the Overview walk-in tile and be missing
+   * from the conversion ratio, and two walk-in numbers that disagree is worse
+   * than one nobody built. The button on the lead page and the punch-in on the
+   * Office visits tab are now the same act.
    */
   app.post('/leads/:id/walkin', async (req) => {
     const user = req.requireUser();
     const { id } = z.object({ id: uuid }).parse(req.params);
-    const body = z.object({ walkedIn: z.boolean().default(true) }).parse(req.body ?? {});
+    const body = z
+      .object({ walkedIn: z.boolean().default(true), counsellorId: uuid.optional() })
+      .parse(req.body ?? {});
 
-    const row = await req.tx((q) =>
-      q.one(
-        `update crm.leads
-            set walked_in_at = case when $2 then coalesce(walked_in_at, now()) else null end,
-                updated_at = now()
-          where id = $1
-          returning id, walked_in_at, walkin_expected_at`,
-        [id, body.walkedIn],
-      ),
-    );
-    if (!row) throw notFound('no lead with that id');
+    return req.tx(async (q) => {
+      if (body.walkedIn) {
+        await q.one(`select crm.record_walkin_arrival($1, $2, null) as visit`, [
+          id,
+          body.counsellorId ?? null,
+        ]);
+      } else {
+        // Undoing a mistaken mark. The visit is cancelled rather than deleted -
+        // nothing in this system is hard-deleted - and the lead's flag is
+        // cleared with it so the two still agree.
+        const cancelled = await q.one<{ id: string }>(
+          `update crm.walkin_visits
+              set status = 'cancelled', arrived_at = null, updated_at = now()
+            where lead_id = $1 and status in ('arrived', 'expected')
+            returning id`,
+          [id],
+        );
+        const cleared = await q.one(
+          `update crm.leads set walked_in_at = null, updated_at = now()
+            where id = $1 returning id`,
+          [id],
+        );
+        if (!cleared && !cancelled) throw notFound('no lead with that id');
+        await q.query(
+          `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
+           values ($1, 'note', $2, $3)`,
+          [id, user.id, JSON.stringify({ walked_in: false })],
+        );
+      }
 
-    await req.tx((q) =>
-      q.query(
-        `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
-         values ($1, 'note', $2, $3)`,
-        [id, user.id, JSON.stringify({ walked_in: body.walkedIn })],
-      ),
-    );
-    return row;
+      const row = await q.one(
+        `select id, walked_in_at, walkin_expected_at from crm.leads where id = $1`,
+        [id],
+      );
+      if (!row) throw notFound('no lead with that id');
+      return row;
+    });
   });
 
   /**

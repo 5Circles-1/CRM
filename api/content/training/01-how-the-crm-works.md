@@ -45,14 +45,16 @@ Not everyone sees all of these — you see the ones your role uses.
 | **Fresh leads** | Everyone nobody has ever called, flagged if past their first-touch deadline. |
 | **Alerts** | Everything waiting on you, grouped. Only callbacks interrupt with a popup. |
 | **Re-tap** | Leads that went unanswered repeatedly. Quiet by design, worked as a batch. |
-| **Floor** | The live floor: leaderboard, who is on shift, what is leaking. Counsellors and admins. |
+| **Office visits** | Clients coming in, in the office, and counselled — with the visits-to-conversions ratio. |
+| **Floor** | The live floor: leaderboards (one per job), who is on shift, what is leaking. Counsellors and admins. |
 | **Collections** | The client book: everyone who has paid, one row per product, with the group/KYC/MITC checkpoints, who converted them and the lead source. |
 | **Outstanding payments** | Money still owed — instalments, promises to pay, who to chase, and the payment punch-in. |
 | **Mentors** | Paying clients kept warm — touchpoints, health, upsell interest. |
 | **Events** | Seminars and webinars, and the roster of who was invited and who came. |
 | **Dashboards** | Charts: conversion, collections over time, funnel, pipeline leakage. |
 | **Find lead** | Search and filter the whole book you are allowed to see. This is the re-tap tool. |
-| **Performance** | Per-person numbers — dials, connects, walk-ins, conversion. |
+| **Performance** | Per-person numbers — dials, connects, walk-ins, conversion. Callers and counsellors on separate boards. |
+| **Targets** | Your number for the month: revenue for a counsellor, walk-ins for a caller. |
 | **Previous months** | Older uploaded records, parked out of the live queue but still tappable. |
 | **Team** | Team chat. Everyone can post. |
 | **My Score** | Your score, and what each component is measuring. |
