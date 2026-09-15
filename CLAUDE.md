@@ -151,7 +151,7 @@ Do not undo these without understanding why they exist.
   lead) and the transfer rules. Green is identity and visibility, not
   immortality.
 
-- **An office visit is a row, and a conversion is never typed twice** (0069,
+- **An office visit is a row, and a conversion is never typed twice** (0071,
   owner decision 15 Sep). A walk-in used to be one nullable timestamp on the
   lead, which can say a visit happened and nothing else — so "office visits to
   conversions" was not a ratio anybody could compute: the numerator (deals) is
@@ -173,7 +173,7 @@ Do not undo these without understanding why they exist.
   the lead page's own "Mark walked in", which now goes through the same
   function so the two numbers cannot disagree.
 
-- **A target is one person's number** (0070, owner decision 15 Sep). A
+- **A target is one person's number** (0072, owner decision 15 Sep). A
   counsellor carries a **revenue** target, a caller a **walk-in** target, in
   `crm.user_targets` for a month. Revenue deliberately means *collected* — the
   same figure the thermometer and the daily brief already use — rather than a
