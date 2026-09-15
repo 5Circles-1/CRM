@@ -50,17 +50,23 @@ export async function render(outlet, me) {
 
   const draw = async () => {
     outlet.innerHTML = '<div class="spin"></div>';
-    const [rows, daily, mine, overall] = await Promise.all([
+    const [rows, daily, mine, callerPts, counsellorPts] = await Promise.all([
       get(`/performance?days=${days}&sort=${sort}`),
       get(`/performance/daily?days=${days}`),
       get(`/outcomes?days=${days}&userId=${me.id}`),
-      get(`/performance/overall?days=${days}`).catch(() => []),
+      get(`/performance/overall?days=${days}&role=caller`).catch(() => []),
+      get(`/performance/overall?days=${days}&role=counsellor`).catch(() => []),
     ]);
     outlet.innerHTML = '';
 
-    // The rating the floor asked for: overall points (0-100) as stars.
+    // The rating the floor asked for: overall points (0-100) as stars. Scored
+    // within the person's own role, matching the two boards below - a
+    // counsellor's three stars mean "three stars among counsellors", which is
+    // the only reading of them that is fair to either job.
     const pointsFor = Object.fromEntries(
-      (Array.isArray(overall) ? overall : []).map((o) => [o.user_id, o.overall_points]),
+      [...(Array.isArray(callerPts) ? callerPts : []),
+       ...(Array.isArray(counsellorPts) ? counsellorPts : [])]
+        .map((o) => [o.user_id, o.overall_points]),
     );
 
     const team = rows.reduce((a, r) => {
@@ -124,30 +130,44 @@ export async function render(outlet, me) {
     grid.appendChild(mix);
     outlet.appendChild(grid);
 
-    // --- the leaderboard, only where there is more than one person ---
+    // --- the leaderboards, one per job, only where there is more than one person ---
+    //
+    // Two boards rather than one mixed list (owner, 15 Sep). Ranking a caller
+    // and a counsellor side by side on "deals" says the caller closed nothing,
+    // which is true and meaningless - closing is not their job. Each role is
+    // ranked against its own, and the metric chips carry the sort for both.
     if (isLead && rows.length > 1) {
       const metric = RANKABLE.find((m) => m.key === sort) ?? RANKABLE[0];
+      const fmtValue = (v) =>
+        sort === 'revenue' ? fmtINR(v) : sort === 'talk_seconds' ? fmtTalk(v) : String(v);
+
       const board = h(`
         <div class="panel">
-          <div class="row spread">
-            <h2 class="mt0">Who is doing what <small>ranked by ${esc(metric.label.toLowerCase())}</small></h2>
+          <div class="row spread wrap">
+            <h2 class="mt0">Who is doing what <small>ranked by ${esc(metric.label.toLowerCase())}, within each job</small></h2>
             <div class="chips" style="margin:0">
               ${RANKABLE.map((m) => `
                 <button class="chip small ${m.key === sort ? 'on' : ''}" data-sort="${esc(m.key)}">${esc(m.label)}</button>`).join('')}
             </div>
           </div>
         </div>`);
-      board.appendChild(barChart(
-        rows.map((r) => ({
-          label: r.full_name,
-          sub: r.role === 'counsellor' ? '· counsellor' : '',
-          value: Number(r[sort] ?? 0),
-        })),
-        {
-          highlight: me.full_name,
-          format: (v) => (sort === 'revenue' ? fmtINR(v) : sort === 'talk_seconds' ? fmtTalk(v) : String(v)),
-        },
-      ));
+
+      for (const [role, title, testid] of [
+        ['caller', '📞 Callers', 'people-board-callers'],
+        ['counsellor', '🤝 Counsellors', 'people-board-counsellors'],
+      ]) {
+        const group = rows.filter((r) => r.role === role);
+        board.appendChild(h(`<div class="section-h" data-testid="${testid}">${title}
+          <small class="hint">${group.length} ${group.length === 1 ? 'person' : 'people'}</small></div>`));
+        if (group.length === 0) {
+          board.appendChild(h('<div class="empty">Nobody in this role has any activity in this window.</div>'));
+          continue;
+        }
+        board.appendChild(barChart(
+          group.map((r) => ({ label: r.full_name, value: Number(r[sort] ?? 0) })),
+          { highlight: me.full_name, format: fmtValue },
+        ));
+      }
       outlet.appendChild(board);
     }
 
@@ -168,7 +188,7 @@ export async function render(outlet, me) {
             <td><b>${esc(r.full_name)}</b></td>
             <td>${starsHtml(pointsFor[r.user_id],
                   pointsFor[r.user_id] !== undefined
-                    ? `${Number(pointsFor[r.user_id]).toFixed(0)} / 100 overall points in this window`
+                    ? `${Number(pointsFor[r.user_id]).toFixed(0)} / 100 overall points in this window, among ${esc(r.role)}s`
                     : '') || '<span class="hint">—</span>'}</td>
             <td>${esc(r.role)}</td>
             ${COLUMNS.map((c) => `<td class="num">${Number(r[c.key] ?? 0)}</td>`).join('')}

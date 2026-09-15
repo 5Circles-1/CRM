@@ -111,8 +111,11 @@ export async function render(outlet, me) {
       c.classList.toggle('on', c.dataset.from === state.from && c.dataset.to === state.to));
     body.innerHTML = '<div class="spin"></div>';
     try {
-      const data = await get(`/dashboards/overview?from=${state.from}&to=${state.to}`);
-      drawBody(body, data, me);
+      const [data, walkins] = await Promise.all([
+        get(`/dashboards/overview?from=${state.from}&to=${state.to}`),
+        get(`/dashboards/walkins?from=${state.from}&to=${state.to}`).catch(() => null),
+      ]);
+      drawBody(body, data, me, walkins);
     } catch (err) {
       body.innerHTML = '';
       body.appendChild(h(`<div class="panel"><div class="empty">${esc(err.message)}</div></div>`));
@@ -132,7 +135,7 @@ export async function render(outlet, me) {
   await apply();
 }
 
-function drawBody(body, data, me) {
+function drawBody(body, data, me, walkins) {
   const { totals: t, dispositions, statuses, members } = data;
   const n = (v) => Number(v ?? 0);
   const byDispo = new Map(dispositions.map((d) => [d.disposition, n(d.count)]));
@@ -155,6 +158,9 @@ function drawBody(body, data, me) {
   grid.appendChild(statTile('Won / lost', `${n(t.won)} / ${n(t.lost)}`, 'leads closed in this window'));
   grid.appendChild(statTile('Collected', fmtINR(t.collected_amount), `${fmtINR(t.booked_amount)} booked · ${n(t.deals_booked)} deals`));
   body.appendChild(tiles);
+
+  // --- office visits to conversions, the owner's four questions ---
+  if (walkins) drawWalkins(body, walkins);
 
   // --- the bulk response, and where the window's leads stand now ---
   const chartRow = h('<div class="chart-grid" style="margin-bottom:18px"></div>');
@@ -227,4 +233,125 @@ function drawBody(body, data, me) {
       </div>`));
   }
   body.appendChild(people);
+}
+
+/**
+ * Office visits to conversions: the four questions the owner asks of a
+ * walk-in (15 Sep) - how many converted, who converted the most, which
+ * product converted the most, and who called the most walk-ins in.
+ *
+ * Won/lost above counts LEADS closed, which is a different question and
+ * always will be: a lead can be won over the phone and a lead can be lost
+ * without ever coming in. This panel is only about people who sat in a chair
+ * in the office, and every number in it is an aggregate of the same
+ * crm.v_walkin_visits rows the Office visits tab groups, so the two screens
+ * cannot disagree.
+ */
+function drawWalkins(body, w) {
+  const n = (v) => Number(v ?? 0);
+  const f = w.funnel ?? {};
+  const ratio = (a, b) => (n(b) > 0 ? `${Math.round((n(a) / n(b)) * 100)}%` : '—');
+  const pctOf = (v) => (v === null || v === undefined ? '—' : `${Number(v)}%`);
+
+  const panel = h(`<div class="panel" data-testid="overview-walkins">
+    <div class="row spread wrap">
+      <h2 class="mt0">Office visits → conversions
+        <small>only people who came into the office</small></h2>
+      <a class="btn small" href="#/walkins">Open Office visits →</a>
+    </div>
+  </div>`);
+
+  const tiles = h('<div class="grid cols-4"></div>');
+  tiles.appendChild(statTile('Promised to visit', n(f.promised), 'said so on a call'));
+  tiles.appendChild(statTile('Walked in', n(f.arrived),
+    `${ratio(f.arrived, f.promised)} of the promises kept`));
+  tiles.appendChild(statTile('Converted', n(f.converted),
+    `${ratio(f.converted, f.arrived)} of the visits`,
+    n(f.arrived) > 0 && n(f.converted) / n(f.arrived) >= 0.3 ? 'good' : ''));
+  tiles.appendChild(statTile('Revenue from visits', fmtINR(f.converted_amount),
+    `${fmtINR(f.collected_amount)} collected so far`));
+  panel.appendChild(tiles);
+
+  if (n(f.expected) > 0 || n(f.awaiting_response) > 0) {
+    panel.appendChild(h(`<div class="hint" style="margin-top:10px">
+      ${n(f.expected) > 0 ? `<b>${n(f.expected)}</b> booked in and not here yet. ` : ''}
+      ${n(f.awaiting_response) > 0
+        ? `<b>${n(f.awaiting_response)}</b> were seen and have no counselling response recorded —
+           until one is, they count as a visit and never as a conversion.` : ''}
+    </div>`));
+  }
+  body.appendChild(panel);
+
+  const leftRight = h('<div class="chart-grid" style="margin-bottom:18px"></div>');
+
+  const cns = h(`<div class="panel"><h2 class="mt0">Who converted the most
+    <small>counsellors, by walk-ins turned into deals</small></h2></div>`);
+  if ((w.counsellors ?? []).length === 0) {
+    cns.appendChild(h('<div class="empty">No counselled visits in this window.</div>'));
+  } else {
+    cns.appendChild(barChart(w.counsellors.map((c) => ({
+      label: c.full_name, value: n(c.converted),
+    }))));
+    cns.appendChild(h(`
+      <table class="table" data-testid="overview-walkin-counsellors" style="margin-top:12px"><thead><tr>
+        <th>Counsellor</th><th class="num">Visits</th><th class="num">Converted</th>
+        <th class="num">Rate</th><th class="num">Booked</th>
+      </tr></thead><tbody>
+      ${w.counsellors.map((c) => `
+        <tr><td>${esc(c.full_name)}</td>
+          <td class="num">${n(c.visits)}</td>
+          <td class="num"><b>${n(c.converted)}</b></td>
+          <td class="num">${pctOf(c.conversion_pct)}</td>
+          <td class="num">${fmtINR(c.booked_amount)}</td></tr>`).join('')}
+      </tbody></table>`));
+  }
+  leftRight.appendChild(cns);
+
+  const callers = h(`<div class="panel"><h2 class="mt0">Who called the most walk-ins
+    <small>credited to whoever sent them in, not whoever greeted them</small></h2></div>`);
+  if ((w.callers ?? []).length === 0) {
+    callers.appendChild(h('<div class="empty">No walk-ins in this window.</div>'));
+  } else {
+    callers.appendChild(barChart(w.callers.map((c) => ({
+      label: c.full_name, value: n(c.walkins),
+    }))));
+    callers.appendChild(h(`
+      <table class="table" data-testid="overview-walkin-callers" style="margin-top:12px"><thead><tr>
+        <th>Person</th><th class="num">Walk-ins</th><th class="num">Converted</th><th class="num">Rate</th>
+      </tr></thead><tbody>
+      ${w.callers.map((c) => `
+        <tr><td>${esc(c.full_name)} <span class="hint">${esc(c.role ?? '')}</span></td>
+          <td class="num"><b>${n(c.walkins)}</b></td>
+          <td class="num">${n(c.converted)}</td>
+          <td class="num">${pctOf(c.conversion_pct)}</td></tr>`).join('')}
+      </tbody></table>`));
+  }
+  leftRight.appendChild(callers);
+  body.appendChild(leftRight);
+
+  const prod = h(`<div class="panel"><h2 class="mt0">Which product converted the most
+    <small>counted on the office visits where it was pitched</small></h2></div>`);
+  if ((w.products ?? []).length === 0) {
+    prod.appendChild(h('<div class="empty">No products recorded against visits in this window.</div>'));
+  } else {
+    prod.appendChild(h(`
+      <div style="overflow-x:auto">
+      <table class="table" data-testid="overview-walkin-products"><thead><tr>
+        <th>Product</th><th class="num">Visits pitched</th><th class="num">Converted</th>
+        <th class="num">Conversion</th><th class="num">Booked</th>
+      </tr></thead><tbody>
+      ${w.products.map((p) => `
+        <tr><td>${esc(p.product_name)}</td>
+          <td class="num">${n(p.visits)}</td>
+          <td class="num"><b>${n(p.converted)}</b></td>
+          <td class="num">${pctOf(p.conversion_pct)}</td>
+          <td class="num">${fmtINR(p.booked_amount)}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="hint" style="margin-top:8px">
+        A converted visit always carries its product, because the deal supplies it.
+        "Not recorded" is a visit that did not convert and whose counsellor did not name
+        what they pitched.
+      </div>`));
+  }
+  body.appendChild(prod);
 }

@@ -4739,3 +4739,316 @@ describe('callyzer: a second sensor on the same verification pipeline', () => {
     assert.equal(denied.statusCode, 403);
   });
 });
+
+/* ===========================================================================
+ * Office visits: the walk-in from booking to counselling response, and the
+ * conversion ratio built on it (0069).
+ * =========================================================================== */
+
+describe('office visits', () => {
+  const ADV_ANNUAL = '44444444-0000-0000-0000-000000000002';
+  const nextWeek = () => new Date(Date.now() + 7 * 86_400_000).toISOString();
+
+  it('lets a caller book a visit and a counsellor take the arrival', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Booked Visitor');
+    const a1 = await login(h.app, EMAILS.callerA1);
+
+    const booked = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-visit`, headers: auth(a1),
+      payload: { counsellorId: USERS.counsellorA, expectedAt: nextWeek(), note: 'wants the annual' },
+    });
+    assert.equal(booked.statusCode, 201);
+    assert.equal(booked.json().status, 'expected');
+    // Credit for the walk-in belongs to the caller who sent them in.
+    assert.equal(booked.json().caller_id, USERS.callerA1);
+    assert.equal(booked.json().counsellor_id, USERS.counsellorA);
+
+    // The arrival completes that booking rather than opening a second visit:
+    // one person in the office is one visit, which is what makes the ratio
+    // a ratio rather than a guess.
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const arrived = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-arrival`, headers: auth(ca), payload: {},
+    });
+    assert.equal(arrived.statusCode, 201);
+    assert.equal(arrived.json().visit_id, booked.json().visit_id, 'same visit, not a second one');
+    assert.equal(arrived.json().status, 'arrived');
+    assert.ok(arrived.json().arrived_at);
+
+    const all = await h.app.inject({
+      method: 'GET', url: `/leads/${leadId}/walkin-visits`, headers: auth(ca),
+    });
+    assert.equal(all.json().length, 1);
+  });
+
+  it('refuses a booked visit with no day — "sometime" is how a visit becomes nothing', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Vague Visitor');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-visit`, headers: auth(a1),
+      payload: { counsellorId: USERS.counsellorA },
+    });
+    assert.equal(res.statusCode, 400);
+  });
+
+  it('records the counselling response, and keeps the lead alive with a next action', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Thinking Visitor');
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const arrived = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-arrival`, headers: auth(ca), payload: {},
+    });
+    const visitId = arrived.json().visit_id;
+
+    const res = await h.app.inject({
+      method: 'POST', url: `/walkins/${visitId}/response`, headers: auth(ca),
+      payload: { outcome: 'thinking', productId: ADV_ANNUAL, notes: 'discussing with spouse' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().outcome, 'thinking');
+    assert.equal(res.json().status, 'counselled');
+    assert.equal(res.json().is_converted, false);
+
+    const lead = await h.app.inject({ method: 'GET', url: `/leads/${leadId}`, headers: auth(ca) });
+    assert.ok(lead.json().lead.next_action_at, 'a counselled lead still carries a next action');
+  });
+
+  it('will not let a caller write the counselling response', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Not Yours To Say');
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const arrived = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-arrival`, headers: auth(ca), payload: {},
+    });
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'POST', url: `/walkins/${arrived.json().visit_id}/response`, headers: auth(a1),
+      payload: { outcome: 'thinking' },
+    });
+    assert.equal(res.statusCode, 403);
+  });
+
+  it('refuses "converted" by hand — the deal is the conversion', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Hand Typed');
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const arrived = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-arrival`, headers: auth(ca), payload: {},
+    });
+    const res = await h.app.inject({
+      method: 'POST', url: `/walkins/${arrived.json().visit_id}/response`, headers: auth(ca),
+      payload: { outcome: 'converted' },
+    });
+    assert.equal(res.statusCode, 400, 'not an accepted outcome on this route at all');
+  });
+
+  it('marks the visit converted when the deal is booked, carrying the product across', async () => {
+    const leadId = makeLeadFor(USERS.callerA2, 'Converted Visitor');
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const arrived = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-arrival`, headers: auth(ca), payload: {},
+    });
+    const visitId = arrived.json().visit_id;
+
+    const deal = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/deals`, headers: auth(ca),
+      payload: {
+        productId: ADV_ANNUAL,
+        bookedAmount: 75000,
+        instalments: [{ dueDate: '2026-10-05', amount: 75000 }],
+      },
+    });
+    assert.equal(deal.statusCode, 201);
+
+    const visits = await h.app.inject({
+      method: 'GET', url: `/leads/${leadId}/walkin-visits`, headers: auth(ca),
+    });
+    const visit = visits.json().find((v: { visit_id: string }) => v.visit_id === visitId);
+    assert.equal(visit.outcome, 'converted', 'the deal marks the visit, nobody types it');
+    assert.equal(visit.is_converted, true);
+    assert.equal(visit.product_id, ADV_ANNUAL);
+    assert.equal(visit.deal_id, deal.json().deal.id);
+  });
+
+  it('answers all four conversion questions from the same rows', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'GET', url: '/dashboards/walkins?from=2000-01-01&to=2100-01-01', headers: auth(admin),
+    });
+    assert.equal(res.statusCode, 200);
+    const d = res.json();
+
+    // How many walk-ins converted.
+    assert.ok(Number(d.funnel.arrived) > 0, 'visits were recorded');
+    assert.ok(Number(d.funnel.converted) > 0, 'at least one converted');
+
+    // Who converted the most.
+    const cns = d.counsellors.find((c: { user_id: string }) => c.user_id === USERS.counsellorA);
+    assert.ok(cns, 'the counsellor who took the visits is on the board');
+    assert.ok(Number(cns.converted) > 0);
+
+    // Which product converted the most.
+    assert.ok(d.products.some((p: { product_id: string; converted: number }) =>
+      p.product_id === ADV_ANNUAL && Number(p.converted) > 0));
+
+    // Who called the most walk-ins in — credited to the caller, never the
+    // counsellor who greeted them.
+    const caller = d.callers.find((c: { user_id: string }) => c.user_id === USERS.callerA2);
+    assert.ok(caller, 'the caller who sent them in gets the walk-in');
+    assert.ok(Number(caller.walkins) > 0);
+  });
+
+  it('shows the desk, and flags a visit nobody has answered for', async () => {
+    const leadId = makeLeadFor(USERS.callerB1, 'Left Waiting');
+    const cb = await login(h.app, EMAILS.counsellorB);
+    const arrived = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-arrival`, headers: auth(cb), payload: {},
+    });
+    fixtureSql(`update crm.walkin_visits set arrived_at = now() - interval '4 hours'
+                 where id = '${arrived.json().visit_id}';`);
+
+    const desk = await h.app.inject({ method: 'GET', url: '/walkins/desk', headers: auth(cb) });
+    assert.equal(desk.statusCode, 200);
+    const row = desk.json().visits.find(
+      (v: { visit_id: string }) => v.visit_id === arrived.json().visit_id);
+    assert.ok(row, 'the visit is on the desk');
+    assert.equal(row.response_overdue, true, 'somebody has been sitting there with no response');
+    assert.ok(desk.json().counsellors.length > 0, 'the desk offers who can take a walk-in');
+  });
+
+  it('does not show one team’s visits to the other team’s counsellor', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Team A Only');
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const arrived = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-arrival`, headers: auth(ca), payload: {},
+    });
+    const cb = await login(h.app, EMAILS.counsellorB);
+    const desk = await h.app.inject({ method: 'GET', url: '/walkins/desk', headers: auth(cb) });
+    assert.ok(
+      !desk.json().visits.some((v: { visit_id: string }) => v.visit_id === arrived.json().visit_id),
+      'RLS keeps the other team’s walk-ins off this desk',
+    );
+  });
+
+  it('keeps the lead page walk-in button and the visit record in step', async () => {
+    // Both are the same act since 0069. Two walk-in numbers that disagree is
+    // worse than one nobody built.
+    const leadId = makeLeadFor(USERS.callerA1, 'One Number Only');
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const marked = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin`, headers: auth(a1), payload: { walkedIn: true },
+    });
+    assert.equal(marked.statusCode, 200);
+    assert.ok(marked.json().walked_in_at);
+
+    const visits = await h.app.inject({
+      method: 'GET', url: `/leads/${leadId}/walkin-visits`, headers: auth(a1),
+    });
+    assert.equal(visits.json().length, 1, 'the tick created the visit record too');
+    assert.equal(visits.json()[0].status, 'arrived');
+  });
+});
+
+/* ===========================================================================
+ * Separate leaderboards, and individual targets.
+ * =========================================================================== */
+
+describe('leaderboards, one per job', () => {
+  it('ranks callers among callers and counsellors among counsellors', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const [callers, counsellors, mixed] = await Promise.all([
+      h.app.inject({ method: 'GET', url: '/performance/overall?days=30&role=caller', headers: auth(admin) }),
+      h.app.inject({ method: 'GET', url: '/performance/overall?days=30&role=counsellor', headers: auth(admin) }),
+      h.app.inject({ method: 'GET', url: '/performance/overall?days=30', headers: auth(admin) }),
+    ]);
+    assert.equal(callers.statusCode, 200);
+    assert.ok(callers.json().every((r: { role: string }) => r.role === 'caller'));
+    assert.ok(counsellors.json().every((r: { role: string }) => r.role === 'counsellor'));
+    // The default board still carries both, so nothing that asked for the old
+    // shape breaks.
+    assert.ok(mixed.json().length >= callers.json().length);
+
+    // Each board is ranked from 1 within itself: that is the whole point of
+    // splitting them.
+    if (callers.json().length > 0) assert.equal(Number(callers.json()[0].rank), 1);
+    if (counsellors.json().length > 0) assert.equal(Number(counsellors.json()[0].rank), 1);
+  });
+
+  it('rejects a role nobody is', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'GET', url: '/performance/overall?days=7&role=mentor', headers: auth(admin),
+    });
+    assert.equal(res.statusCode, 400);
+  });
+});
+
+describe('individual targets', () => {
+  const thisMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' })
+    .format(new Date()).slice(0, 7);
+
+  it('gives everyone a target without one having to be set', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({ method: 'GET', url: '/targets', headers: auth(admin) });
+    assert.equal(res.statusCode, 200);
+    const people = res.json().people;
+    const caller = people.find((p: { user_id: string }) => p.user_id === USERS.callerA1);
+    const counsellor = people.find((p: { user_id: string }) => p.user_id === USERS.counsellorB);
+    assert.ok(Number(caller.walkin_target) > 0, 'a caller carries the floor walk-in standard');
+    assert.equal(caller.revenue_target, null, 'a caller carries no revenue target');
+    assert.ok(Number(counsellor.revenue_target) > 0, 'a counsellor carries a share of breakeven');
+  });
+
+  it('lets a counsellor set one, and clear it back to the default', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const set = await h.app.inject({
+      method: 'PUT', url: `/targets/${USERS.callerA1}`, headers: auth(ca),
+      payload: { month: thisMonth, walkinTarget: 25 },
+    });
+    assert.equal(set.statusCode, 200);
+    assert.equal(Number(set.json().walkin_target), 25);
+    assert.equal(set.json().is_custom, true);
+
+    const cleared = await h.app.inject({
+      method: 'PUT', url: `/targets/${USERS.callerA1}`, headers: auth(ca),
+      payload: { month: thisMonth, walkinTarget: null },
+    });
+    // Cleared falls back to the role default, never to zero: an empty box must
+    // not read as "no target".
+    assert.ok(Number(cleared.json().walkin_target) > 0);
+  });
+
+  it('counts a caller’s walk-ins towards their own target', async () => {
+    const leadId = makeLeadFor(USERS.callerB2, 'Target Filler');
+    const cb = await login(h.app, EMAILS.counsellorB);
+    await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/walkin-arrival`, headers: auth(cb), payload: {},
+    });
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({ method: 'GET', url: '/targets', headers: auth(admin) });
+    const caller = res.json().people.find((p: { user_id: string }) => p.user_id === USERS.callerB2);
+    assert.ok(Number(caller.walkins) > 0, 'the caller who sent them in gets the walk-in');
+  });
+
+  it('does not let a caller set anybody’s target, including their own', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({
+      method: 'PUT', url: `/targets/${USERS.callerA1}`, headers: auth(a1),
+      payload: { month: thisMonth, walkinTarget: 1 },
+    });
+    assert.equal(res.statusCode, 403);
+  });
+
+  it('refuses a target set backwards into a closed month', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'PUT', url: `/targets/${USERS.counsellorA}`, headers: auth(admin),
+      payload: { month: '2024-01', revenueTarget: 1000 },
+    });
+    assert.equal(res.statusCode, 409);
+  });
+
+  it('gives a person their own number for self-reflection', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/target', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().user_id, USERS.callerA1);
+  });
+});

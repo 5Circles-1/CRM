@@ -393,6 +393,111 @@ it('caller: reads a training module, answers the check, and acknowledges it', as
   await signOut();
 });
 
+it('caller: the Re-tap tab explains itself before it lists anything', async () => {
+  await signIn(EMAILS.callerA1);
+  await page.goto(`${base}/ui/#/retap`);
+  await page.waitForSelector('[data-testid=retap-explainer]');
+
+  // The three questions somebody opening an unfamiliar tab actually has.
+  const text = await page.locator('[data-testid=retap-explainer]').innerText();
+  assert.match(text, /What it is/i);
+  assert.match(text, /Who shows up here/i);
+  assert.match(text, /What to do/i);
+  // And the one thing that is most often misread: the green leads that are
+  // deliberately NOT here.
+  assert.match(text, /green light/i);
+
+  await page.screenshot({ path: path.join(SHOTS, '13-retap-explainer.png'), fullPage: true });
+  await signOut();
+});
+
+/**
+ * The whole office-visit loop in one browser: a caller sends a client to a
+ * counsellor, the counsellor marks them in, and the counselling response is
+ * recorded — then the ratio picks all of it up.
+ *
+ * This runs the real screens because the ratio is only trustworthy if the
+ * three acts behind it are things a person can actually do.
+ */
+it('office visits: a caller books one, a counsellor takes it and answers for it', async () => {
+  await signIn(EMAILS.callerA1);
+
+  // The caller sends one of their own leads in to a counsellor.
+  await page.goto(`${base}/ui/#/day`);
+  await page.waitForSelector('.leadcard');
+  await page.locator('.leadcard').first().click();
+  await page.waitForSelector('[data-testid=book-visit-btn]');
+  await page.click('[data-testid=book-visit-btn]');
+  await page.waitForSelector('[data-testid=visit-save]');
+  await page.click('[data-testid=visit-save]');
+  await page.waitForSelector('[data-testid=visit-save]', { state: 'detached' });
+
+  // It is on the Expected list, for everyone, straight away.
+  await page.goto(`${base}/ui/#/walkins`);
+  await page.waitForSelector('[data-testid=walkin-expected] table');
+  const expected = await page.locator('[data-testid=walkin-expected] tbody tr').count();
+  assert.ok(expected >= 1, 'the booked visit should be on the Expected list');
+  await page.screenshot({ path: path.join(SHOTS, '10-walkins-caller.png'), fullPage: true });
+  await signOut();
+
+  // The counsellor marks them in and records what was said.
+  await signIn(EMAILS.counsellorA);
+  await page.goto(`${base}/ui/#/walkins`);
+  await page.waitForSelector('[data-testid=walkin-expected] table');
+  await page.locator('[data-testid=walkin-expected] button', { hasText: 'They are here' })
+    .first().click();
+  await page.waitForSelector('[data-testid=record-response]');
+
+  await page.click('[data-testid=record-response]');
+  await page.waitForSelector('[data-testid=response-outcome]');
+  await page.selectOption('[data-testid=response-outcome]', 'thinking');
+  await page.click('[data-testid=response-save]');
+  await page.waitForSelector('[data-testid=response-save]', { state: 'detached' });
+
+  await page.waitForSelector('[data-testid=walkin-answered] table');
+  const answered = await page.locator('[data-testid=walkin-answered] tbody tr').count();
+  assert.ok(answered >= 1, 'the counselled visit should be answered for');
+
+  // And the visit is a visit, not yet a conversion — only money makes one.
+  const converted = fixtureSql(
+    `select count(*) from crm.walkin_visits where outcome = 'converted';`,
+  ).trim();
+  assert.equal(converted, '0', 'nothing converts without a deal');
+  await page.screenshot({ path: path.join(SHOTS, '11-walkins-counsellor.png'), fullPage: true });
+  await signOut();
+});
+
+it('targets: an admin sets a caller\u2019s walk-in target and it shows as theirs', async () => {
+  await signIn(EMAILS.admin);
+  await page.goto(`${base}/ui/#/targets`);
+  await page.waitForSelector('[data-testid=targets-callers] table');
+
+  await page.locator('[data-testid=targets-callers] button', { hasText: 'Set target' })
+    .first().click();
+  await page.waitForSelector('[data-testid=target-walkins]');
+  await page.fill('[data-testid=target-walkins]', '18');
+  await page.click('[data-testid=target-save]');
+  await page.waitForSelector('[data-testid=target-save]', { state: 'detached' });
+
+  await page.waitForSelector('[data-testid=targets-callers] table');
+  const stored = fixtureSql(
+    `select count(*) from crm.user_targets where monthly_walkin_target = 18;`,
+  ).trim();
+  assert.equal(stored, '1', 'the target is one person\u2019s number, stored against them');
+  await page.screenshot({ path: path.join(SHOTS, '12-targets.png'), fullPage: true });
+  await signOut();
+});
+
+it('leaderboards: the floor shows callers and counsellors on separate boards', async () => {
+  await signIn(EMAILS.admin);
+  await page.goto(`${base}/ui/#/floor`);
+  await page.waitForSelector('[data-testid=caller-podium], [data-testid=counsellor-podium]');
+  const text = await page.locator('.content').innerText();
+  assert.ok(text.includes('Callers'), 'a board of callers');
+  assert.ok(text.includes('Counsellors'), 'a board of counsellors');
+  await signOut();
+});
+
 it('admin: the Data tab parks old leads behind a two-step button', async () => {
   // A lead old enough to archive, created here so no earlier flow depends on
   // it. This test runs last on purpose: parking is the end of the story.

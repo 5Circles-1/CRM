@@ -477,21 +477,34 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
    * places - which is how a caller returning from five days off silently
    * lost the guaranteed fresh-lead share (0061, 0062). `days_present` rides
    * along so the board can say what each person's number is out of.
+   *
+   * `role` picks WHO IS ON THE BOARD, and that is not cosmetic. The formula
+   * normalises every component against the best rate on the board, so a board
+   * holding both roles measures a caller's revenue against a counsellor's and
+   * a counsellor's dials against a caller's - two jobs, one yardstick, and the
+   * loser is whichever role the weights happen to suit less. Asking for one
+   * role normalises within that role, which is the only way "best caller" and
+   * "best counsellor" both mean something (owner, 15 Sep). It stays one
+   * formula: the same crm.rate_standings the nightly ACE pick uses.
    */
   app.get('/performance/overall', async (req) => {
     req.requireUser();
-    const { days } = z
-      .object({ days: z.coerce.number().int().min(1).max(90).default(1) })
+    const { days, role } = z
+      .object({
+        days: z.coerce.number().int().min(1).max(90).default(1),
+        role: z.enum(['caller', 'counsellor', 'all']).default('all'),
+      })
       .parse(req.query);
+
+    const roles = role === 'all' ? ['caller', 'counsellor'] : [role];
 
     return req.tx((q) =>
       q.many(
-        `select user_id, full_name, role, days_present,
+        `select user_id, full_name, role, team_id, days_present,
                 dials, connects, interested, walked_in, deals, revenue,
-                talk_seconds, points as overall_points, rank
-           from crm.rate_standings($1::int, 'floor', true,
-                                   array['caller','counsellor'], 1)`,
-        [days],
+                talk_seconds, dials_per_day, points as overall_points, rank
+           from crm.rate_standings($1::int, 'floor', true, $2::text[], 1)`,
+        [days, roles],
       ),
     );
   });

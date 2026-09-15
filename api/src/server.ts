@@ -21,6 +21,8 @@ import { ingestRoutes } from './routes/ingest.ts';
 import { deviceLogRoutes } from './routes/deviceLogs.ts';
 import { callyzerRoutes } from './routes/callyzer.ts';
 import { dealRoutes } from './routes/deals.ts';
+import { walkinRoutes } from './routes/walkins.ts';
+import { targetRoutes } from './routes/targets.ts';
 import { messageRoutes } from './routes/messages.ts';
 
 export async function buildServer(config: Config, db?: Database): Promise<FastifyInstance> {
@@ -74,6 +76,8 @@ export async function buildServer(config: Config, db?: Database): Promise<Fastif
     await deviceLogRoutes(scope);
     await callyzerRoutes(scope);
     await dealRoutes(scope);
+    await walkinRoutes(scope);
+    await targetRoutes(scope);
     await messageRoutes(scope);
   });
 

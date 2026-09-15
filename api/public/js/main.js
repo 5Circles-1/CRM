@@ -18,6 +18,8 @@ import * as events from './views/events.js';
 import * as training from './views/training.js';
 import * as reminders from './views/reminders.js';
 import * as retap from './views/retap.js';
+import * as walkins from './views/walkins.js';
+import * as targets from './views/targets.js';
 import * as fresh from './views/fresh.js';
 import { startTour } from './views/training.js';
 import * as team from './views/team.js';
@@ -29,6 +31,7 @@ const NAV = [
   { hash: '#/fresh', label: 'Fresh leads', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
   { hash: '#/retap', label: 'Re-tap', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/walkins', label: 'Office visits', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
   { hash: '#/overview', label: 'Overview', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   // The client book was renamed Collections, and the dues queue Outstanding
@@ -41,6 +44,7 @@ const NAV = [
   { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/leads', label: 'Find lead', roles: ['caller', 'counsellor', 'admin', 'ops'] },
   { hash: '#/people', label: 'Performance', roles: ['caller', 'counsellor', 'admin', 'ops'] },
+  { hash: '#/targets', label: 'Targets', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/history', label: 'Previous months', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/team', label: 'Team', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
   { hash: '#/score', label: 'My Score', roles: ['caller', 'counsellor'] },
@@ -54,8 +58,8 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, fresh, reminders, retap, floor, overview, collections, advisory, mentors, events, training,
-  dash, leads, people, score, attendance, admin, lead, team, history,
+  day, fresh, reminders, retap, walkins, floor, overview, collections, advisory, mentors, events,
+  training, dash, leads, people, targets, score, attendance, admin, lead, team, history,
 };
 
 /**
@@ -66,6 +70,7 @@ const VIEWS = {
 const HELP_FOR = {
   day: 'the-callers-job', fresh: 'the-callers-job',
   reminders: 'the-callers-job', retap: 'the-callers-job',
+  walkins: 'the-counsellors-job', targets: 'the-counsellors-job',
   floor: 'the-counsellors-job', overview: 'how-the-crm-works',
   collections: 'the-counsellors-job', advisory: 'the-counsellors-job',
   mentors: 'the-mentors-job', events: 'how-the-crm-works',
@@ -77,7 +82,9 @@ const HELP_FOR = {
 };
 
 const TITLES = {
-  day: 'My Pipeline', fresh: 'Fresh leads', reminders: 'Alerts', retap: 'Re-tap', floor: 'Floor', overview: 'Overview', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
+  day: 'My Pipeline', fresh: 'Fresh leads', reminders: 'Alerts', retap: 'Re-tap',
+  walkins: 'Office visits', targets: 'Targets',
+  floor: 'Floor', overview: 'Overview', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
   events: 'Events', training: 'Training',
   dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',

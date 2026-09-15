@@ -69,6 +69,7 @@ export async function render(outlet, me, params) {
           ${open ? '<button class="btn primary" data-act="call" data-testid="log-call-btn">Log a call</button>' : ''}
           <button class="btn" data-act="whatsapp" data-testid="whatsapp-btn">${lead.whatsapp_sent_at ? '✓ WhatsApp sent' : 'Mark WhatsApp sent'}</button>
           <button class="btn" data-act="walkin" data-testid="walkin-btn">${lead.walked_in_at ? '✓ Walked in' : 'Mark walked in'}</button>
+          ${open && !lead.walked_in_at ? '<button class="btn" data-act="bookvisit" data-testid="book-visit-btn">🏢 Send to counsellor</button>' : ''}
           ${open ? '<button class="btn" data-act="callback">Set callback</button>' : ''}
           ${open ? `<button class="btn" data-act="reminder" data-testid="reminder-btn">${lead.reminder_muted ? '🔕 Reminders off' : '⏰ Reminder'}</button>` : ''}
           ${open && me.role === 'caller' ? '<button class="btn" data-act="qualify">Qualify → counsellor</button>' : ''}
@@ -186,6 +187,7 @@ export async function render(outlet, me, params) {
     if (act === 'callback') callbackModal(lead, () => render(outlet, me, params));
     if (act === 'reminder') reminderModal(lead, () => render(outlet, me, params));
     if (act === 'qualify') qualifyModal(lead, () => render(outlet, me, params));
+    if (act === 'bookvisit') bookVisitModal(lead, () => render(outlet, me, params));
     if (act === 'transfer') transferModal(lead, () => render(outlet, me, params));
     if (act === 'deal') dealModal(lead, () => render(outlet, me, params));
     if (act === 'claim') {
@@ -563,6 +565,62 @@ function qualifyModal(lead, onDone) {
         note: body.querySelector('[name=note]').value.trim() || undefined,
       });
       toast('Qualified — the counsellor has it now.');
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+}
+
+/**
+ * The caller's door into the Office visits tab: book this client in to see a
+ * counsellor on a named day.
+ *
+ * Separate from "Qualify → counsellor", which hands the lead over for more
+ * phone work. This is a visit, with a date and a desk, and it is what the
+ * office-visits-to-conversions ratio counts. The date is required for the same
+ * reason a will_visit outcome needs one (0067): "coming in sometime" is how a
+ * promised visit quietly became nothing.
+ */
+async function bookVisitModal(lead, onDone) {
+  const desk = await get('/walkins/desk').catch(() => ({ counsellors: [] }));
+  const counsellors = desk.counsellors ?? [];
+  const body = h(`
+    <div>
+      <p class="hint mt0">
+        Books this client in to see a counsellor. They appear under <b>Expected</b> on the
+        Office visits tab, and whoever is at the desk marks them in when they arrive.
+      </p>
+      <label class="f">Counsellor
+        <select name="counsellor" data-testid="visit-counsellor">
+          ${counsellors.length === 0
+            ? '<option value="">— the team lead —</option>'
+            : counsellors.map((c) => `<option value="${esc(c.id)}"${
+                c.id === lead.counsellor_id ? ' selected' : ''}>${esc(c.full_name)} — ${
+                Number(c.open_visits)} open</option>`).join('')}
+        </select>
+      </label>
+      <label class="f">Coming in on
+        <input type="datetime-local" name="when" value="${tomorrowAt(12)}" data-testid="visit-when">
+      </label>
+      <label class="f">What they want to discuss
+        <textarea name="note" rows="2" maxlength="1000"></textarea>
+      </label>
+    </div>`);
+  const footer = h('<div><button class="btn primary" data-testid="visit-save">Book the visit</button></div>');
+  const { close } = openModal('Send to counsellor', body, footer);
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    const when = body.querySelector('[name=when]').value;
+    if (!when) { toast('Say which day they are coming in.', 'err'); return; }
+    try {
+      await post(`/leads/${lead.id}/walkin-visit`, {
+        counsellorId: body.querySelector('[name=counsellor]').value || undefined,
+        expectedAt: localToIso(when),
+        note: body.querySelector('[name=note]').value.trim() || undefined,
+      });
+      toast('Booked — it is on the Office visits tab.');
       close();
       onDone();
     } catch (err) {
