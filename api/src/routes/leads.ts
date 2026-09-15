@@ -134,7 +134,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
    * Separate from the will_visit outcome on purpose: a promise to visit and a
    * visit are different numbers, and only one of them turns into revenue.
    *
-   * Since 0069 this goes through crm.record_walkin_arrival rather than writing
+   * Since 0071 this goes through crm.record_walkin_arrival rather than writing
    * leads.walked_in_at directly. It has to: a visit recorded here but not in
    * crm.walkin_visits would sit in the Overview walk-in tile and be missing
    * from the conversion ratio, and two walk-in numbers that disagree is worse
@@ -184,6 +184,35 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
       );
       if (!row) throw notFound('no lead with that id');
       return row;
+    });
+  });
+
+  /**
+   * The inbound-call register: every client who rang the office, who punched
+   * the call in and when, who owns it now, and the follow-up promise (0069).
+   *
+   * No role gate and no ownership filter on purpose: the view is
+   * security_invoker, so RLS scopes it - a caller gets the inbound calls
+   * they own, a counsellor their team's, admin/ops/viewer the whole floor.
+   */
+  app.get('/leads/inbound', async (req) => {
+    const user = req.requireUser();
+    const query = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(500).default(200),
+        offset: z.coerce.number().int().min(0).default(0),
+      })
+      .parse(req.query);
+
+    return req.tx(async (q) => {
+      const rows = await q.many<{ lead_id: string }>(
+        `select * from crm.v_inbound_calls
+          order by punched_at desc
+          limit $1 offset $2`,
+        [query.limit, query.offset],
+      );
+      await logLeadAccess(q, user.id, rows.map((r) => r.lead_id), 'list', req.ip);
+      return { count: rows.length, calls: rows };
     });
   });
 

@@ -325,8 +325,11 @@ function cityModal(lead, onDone) {
  * reminds you at all, and a one-off time you want to be nudged. Muting is the
  * answer to "stop nagging me about this one"; the time is "but do remind me
  * on Friday".
+ *
+ * Exported: the inbound-call register offers the same reminder on every row,
+ * and two copies of this dialog would drift.
  */
-function reminderModal(lead, onDone) {
+export function reminderModal(lead, onDone) {
   const body = h(`
     <div>
       <label class="f" style="flex-direction:row;align-items:center;gap:10px">

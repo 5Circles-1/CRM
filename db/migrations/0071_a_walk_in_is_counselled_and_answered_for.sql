@@ -1,4 +1,4 @@
--- 0069_a_walk_in_is_counselled_and_answered_for.sql
+-- 0071_a_walk_in_is_counselled_and_answered_for.sql
 --
 -- The owner's rule (15 Sep): "There has to be a proper Office Visits to
 -- Conversions Ratio - the counsellor needs to punch in the walk-in client or
@@ -681,7 +681,7 @@ select
   coalesce(d.booked_at, l.walked_in_at),
   case when d.id is not null then 'converted' else 'thinking' end,
   d.product_id, d.id,
-  'Backfilled from the lead''s walk-in date when visits became rows (0069).',
+  'Backfilled from the lead''s walk-in date when visits became rows (0071).',
   l.walked_in_at
 from crm.leads l
 left join lateral (

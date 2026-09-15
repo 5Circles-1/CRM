@@ -1,4 +1,4 @@
--- 0070_a_target_is_one_persons_number.sql
+-- 0072_a_target_is_one_persons_number.sql
 --
 -- The owner's rule (15 Sep): "Add Individual Targets for counsellors in terms
 -- of revenue and callers in terms of walkins."
@@ -21,7 +21,7 @@
 --   are behind on. Booked is shown next to it as information.
 --
 --   CALLER -> WALK-INS. What a caller can actually control is how many people
---   they put in the office; the deal is the counsellor's to close. 0069 made
+--   they put in the office; the deal is the counsellor's to close. 0071 made
 --   this countable per caller for the first time (crm.walkin_visits.caller_id
 --   is who sent them in, never who greeted them), which is what makes it a
 --   fair target rather than a shared one.
@@ -284,7 +284,7 @@ as $$
        and crm.ist_date(d.booked_at) between cfg.month_start and cfg.month_end
      group by s.id
   ),
-  -- Walk-ins credited to whoever sent them in (0069). Deliberately NOT
+  -- Walk-ins credited to whoever sent them in (0071). Deliberately NOT
   -- leads.walked_in_at counted against the counsellor: that is the closer's
   -- number and it is not what a caller is being asked for.
   visits as (

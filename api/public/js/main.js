@@ -21,6 +21,7 @@ import * as retap from './views/retap.js';
 import * as walkins from './views/walkins.js';
 import * as targets from './views/targets.js';
 import * as fresh from './views/fresh.js';
+import * as inbound from './views/inbound.js';
 import { startTour } from './views/training.js';
 import * as team from './views/team.js';
 import * as history from './views/history.js';
@@ -29,6 +30,7 @@ import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 const NAV = [
   { hash: '#/day', label: 'My Pipeline', roles: ['caller', 'counsellor'] },
   { hash: '#/fresh', label: 'Fresh leads', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/inbound', label: 'Inbound calls', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
   { hash: '#/retap', label: 'Re-tap', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/walkins', label: 'Office visits', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
@@ -58,8 +60,8 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, fresh, reminders, retap, walkins, floor, overview, collections, advisory, mentors, events,
-  training, dash, leads, people, targets, score, attendance, admin, lead, team, history,
+  day, fresh, inbound, reminders, retap, walkins, floor, overview, collections, advisory, mentors,
+  events, training, dash, leads, people, targets, score, attendance, admin, lead, team, history,
 };
 
 /**
@@ -68,7 +70,7 @@ const VIEWS = {
  * at rather than a search away.
  */
 const HELP_FOR = {
-  day: 'the-callers-job', fresh: 'the-callers-job',
+  day: 'the-callers-job', fresh: 'the-callers-job', inbound: 'the-callers-job',
   reminders: 'the-callers-job', retap: 'the-callers-job',
   walkins: 'the-counsellors-job', targets: 'the-counsellors-job',
   floor: 'the-counsellors-job', overview: 'how-the-crm-works',
@@ -82,7 +84,8 @@ const HELP_FOR = {
 };
 
 const TITLES = {
-  day: 'My Pipeline', fresh: 'Fresh leads', reminders: 'Alerts', retap: 'Re-tap',
+  day: 'My Pipeline', fresh: 'Fresh leads', inbound: 'Inbound calls',
+  reminders: 'Alerts', retap: 'Re-tap',
   walkins: 'Office visits', targets: 'Targets',
   floor: 'Floor', overview: 'Overview', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
   events: 'Events', training: 'Training',
