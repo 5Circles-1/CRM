@@ -162,6 +162,35 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * The inbound-call register: every client who rang the office, who punched
+   * the call in and when, who owns it now, and the follow-up promise (0069).
+   *
+   * No role gate and no ownership filter on purpose: the view is
+   * security_invoker, so RLS scopes it - a caller gets the inbound calls
+   * they own, a counsellor their team's, admin/ops/viewer the whole floor.
+   */
+  app.get('/leads/inbound', async (req) => {
+    const user = req.requireUser();
+    const query = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(500).default(200),
+        offset: z.coerce.number().int().min(0).default(0),
+      })
+      .parse(req.query);
+
+    return req.tx(async (q) => {
+      const rows = await q.many<{ lead_id: string }>(
+        `select * from crm.v_inbound_calls
+          order by punched_at desc
+          limit $1 offset $2`,
+        [query.limit, query.offset],
+      );
+      await logLeadAccess(q, user.id, rows.map((r) => r.lead_id), 'list', req.ip);
+      return { count: rows.length, calls: rows };
+    });
+  });
+
+  /**
    * Lead detail with its full timeline.
    *
    * No ownership check here on purpose. RLS decides what this user can see, so

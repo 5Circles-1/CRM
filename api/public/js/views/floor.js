@@ -81,7 +81,10 @@ export async function render(outlet, me) {
         A client rang the office? Log it here — an inbound call is the warmest
         lead on the floor, and its follow-up date rings when it is due.
       </div>
-      <button class="btn primary" data-testid="floor-inbound">📞 Inbound call</button>
+      <div class="row" style="gap:8px">
+        <a class="btn" href="#/inbound" data-testid="floor-inbound-list">📋 All inbound calls</a>
+        <button class="btn primary" data-testid="floor-inbound">📞 Inbound call</button>
+      </div>
     </div>`);
   inboundRow.querySelector('button').addEventListener('click', () =>
     addLeadModal(me, (lead) => {
@@ -619,7 +622,9 @@ function renderMonth(outlet, month) {
       <div class="row spread wrap">
         <h2 class="mt0">Leads received in ${esc(month.month)}
           <small>${Number(month.total)} total${Number(month.inbound_total) > 0
-            ? ` · ${Number(month.inbound_total)} inbound 📞` : ''}</small></h2>
+            ? ` · <a href="#/inbound" data-testid="month-inbound-link"
+                 title="Open the inbound-call register: who rang, who punched it in, and the promise made"
+                 >${Number(month.inbound_total)} inbound 📞</a>` : ''}</small></h2>
       </div>
       <div class="row wrap" style="gap:18px">
         ${teams.map((t) => `

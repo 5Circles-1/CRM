@@ -19,6 +19,7 @@ import * as training from './views/training.js';
 import * as reminders from './views/reminders.js';
 import * as retap from './views/retap.js';
 import * as fresh from './views/fresh.js';
+import * as inbound from './views/inbound.js';
 import { startTour } from './views/training.js';
 import * as team from './views/team.js';
 import * as history from './views/history.js';
@@ -27,6 +28,7 @@ import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 const NAV = [
   { hash: '#/day', label: 'My Pipeline', roles: ['caller', 'counsellor'] },
   { hash: '#/fresh', label: 'Fresh leads', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
+  { hash: '#/inbound', label: 'Inbound calls', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
   { hash: '#/retap', label: 'Re-tap', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
@@ -54,7 +56,7 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, fresh, reminders, retap, floor, overview, collections, advisory, mentors, events, training,
+  day, fresh, inbound, reminders, retap, floor, overview, collections, advisory, mentors, events, training,
   dash, leads, people, score, attendance, admin, lead, team, history,
 };
 
@@ -64,7 +66,7 @@ const VIEWS = {
  * at rather than a search away.
  */
 const HELP_FOR = {
-  day: 'the-callers-job', fresh: 'the-callers-job',
+  day: 'the-callers-job', fresh: 'the-callers-job', inbound: 'the-callers-job',
   reminders: 'the-callers-job', retap: 'the-callers-job',
   floor: 'the-counsellors-job', overview: 'how-the-crm-works',
   collections: 'the-counsellors-job', advisory: 'the-counsellors-job',
@@ -77,7 +79,7 @@ const HELP_FOR = {
 };
 
 const TITLES = {
-  day: 'My Pipeline', fresh: 'Fresh leads', reminders: 'Alerts', retap: 'Re-tap', floor: 'Floor', overview: 'Overview', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
+  day: 'My Pipeline', fresh: 'Fresh leads', inbound: 'Inbound calls', reminders: 'Alerts', retap: 'Re-tap', floor: 'Floor', overview: 'Overview', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
   events: 'Events', training: 'Training',
   dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
   attendance: 'Attendance', admin: 'Admin', lead: 'Lead',

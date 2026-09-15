@@ -3262,6 +3262,61 @@ describe('manual leads and the payment punch-in', () => {
     assert.equal(undated.statusCode, 409);
   });
 
+  it('the inbound register lists every punched-in call, names the puncher, and scopes by RLS', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const b1 = await login(h.app, EMAILS.callerB1);
+
+    // The whole floor, for the admin - each row carrying who punched it in.
+    const all = await h.app.inject({ method: 'GET', url: '/leads/inbound', headers: auth(admin) });
+    assert.equal(all.statusCode, 200);
+    const calls = all.json().calls;
+
+    const answered = calls.find((c: { full_name: string }) => c.full_name === 'Rang The Office');
+    assert.ok(answered, 'the caller-logged inbound call is on the register');
+    assert.equal(answered.punched_by_id, USERS.callerA1, 'the register says who punched it in');
+    assert.ok(answered.punched_by, 'by name, not just an id');
+    assert.equal(answered.owner_id, USERS.callerA1, 'and who owns it now');
+    assert.ok(answered.next_action_at, 'the promised follow-up rides along');
+
+    // Punched in by one person, owned by another: both facts survive.
+    const routed = calls.find((c: { full_name: string }) => c.full_name === 'Rang Reception');
+    assert.ok(routed, 'the admin-logged call is there too');
+    assert.equal(routed.punched_by_id, USERS.admin);
+    assert.equal(routed.owner_id, USERS.counsellorA, 'routed to the team lead at punch-in');
+
+    // RLS is the scope, not the route: another caller sees neither call...
+    const other = await h.app.inject({ method: 'GET', url: '/leads/inbound', headers: auth(b1) });
+    assert.equal(other.statusCode, 200);
+    assert.ok(
+      !other.json().calls.some((c: { full_name: string }) =>
+        ['Rang The Office', 'Rang Reception'].includes(c.full_name)),
+      'a caller cannot read a colleague\'s inbound calls',
+    );
+
+    // ...while the caller who answered sees their own, and only their own.
+    const mine = await h.app.inject({ method: 'GET', url: '/leads/inbound', headers: auth(a1) });
+    assert.equal(mine.statusCode, 200);
+    assert.ok(mine.json().calls.some((c: { lead_id: string }) => c.lead_id === answered.lead_id));
+    assert.ok(
+      mine.json().calls.every((c: { caller_id: string | null; counsellor_id: string | null }) =>
+        c.caller_id === USERS.callerA1 || c.counsellor_id === USERS.callerA1),
+      'a caller\'s register is exactly their own calls',
+    );
+
+    // The reminder option on a register row: set it, and the register shows it.
+    const at = new Date(Date.now() + 3 * 3600_000).toISOString();
+    const set = await h.app.inject({
+      method: 'PUT', url: `/leads/${answered.lead_id}/reminder`, headers: auth(a1),
+      payload: { at, note: 'ring before the promised slot' },
+    });
+    assert.equal(set.statusCode, 200);
+    const after = await h.app.inject({ method: 'GET', url: '/leads/inbound', headers: auth(a1) });
+    const row = after.json().calls.find((c: { lead_id: string }) => c.lead_id === answered.lead_id);
+    assert.ok(row.reminder_at, 'the reminder is visible on the register row');
+    assert.equal(row.reminder_note, 'ring before the promised slot');
+  });
+
   it('the punch-in searches open deals and spreads the amount across instalments', async () => {
     const lead = makeLeadFor(USERS.callerA1, 'Punch Payer');
     fixtureSql(`

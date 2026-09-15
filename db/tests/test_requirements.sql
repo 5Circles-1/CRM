@@ -2361,6 +2361,38 @@ select crm_test.check(
   (select queue_owner_id = :CNS_A from crm.v_my_pipeline
     where lead_id = :'_inb2'), null);
 
+-- The register (0069): the list behind the Floor's inbound count. Every
+-- inbound call, who punched it in, who owns it now, the promise clock.
+select crm_test.check(
+  'INB', 'the register lists the call with the person who punched it in',
+  (select punched_by_id = :A1 and owner_id = :A1
+     and next_action_at is not null
+     from crm.v_inbound_calls where lead_id = :'_inb1'), null);
+
+select crm_test.check(
+  'INB', 'a counsellor''s own punch-in shows them as both puncher and owner',
+  (select punched_by_id = :CNS_A and owner_id = :CNS_A
+     from crm.v_inbound_calls where lead_id = :'_inb2'), null);
+
+select crm_test.check(
+  'INB', 'only inbound calls are on the register - sheet leads never appear',
+  not exists (select 1 from crm.v_inbound_calls v
+               join crm.leads l on l.id = v.lead_id
+              where l.source_id <> '33333333-0000-0000-0000-000000000004'), null);
+
+-- The reminder option rides on the register row itself, so the screen can
+-- offer "remind me about this one" without a second fetch.
+update crm.leads
+   set reminder_at = now() + interval '3 hours',
+       reminder_note = 'call before the promised slot'
+ where id = :'_inb1';
+
+select crm_test.check(
+  'INB', 'the per-lead reminder is visible on the register row',
+  (select reminder_at is not null
+     and reminder_note = 'call before the promised slot'
+     from crm.v_inbound_calls where lead_id = :'_inb1'), null);
+
 select set_config('app.user_id', '', false) as _ \gset
 
 -- =============================================================================
