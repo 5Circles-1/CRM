@@ -5,6 +5,8 @@
  *   caller     - log in, see My Day, open a lead, log a call with a callback
  *   counsellor - see the floor, transfer a Not Answered lead from the queue
  *   admin      - see the breakeven thermometer with the grossed-up numbers
+ *   admin      - transfer Not Answered leads from the floor, across teams
+ *   admin      - move a caller to another team from Admin -> Users
  *
  * Run with: npm run test:e2e   (needs Postgres up, like npm test)
  */
@@ -209,6 +211,69 @@ it('counsellor: sees the floor and transfers a Not Answered lead', async () => {
     select count(*) from crm.lead_transfers where transferred_by = '${USERS.counsellorA}';
   `).trim();
   assert.equal(moved, '1', 'the transfer must be recorded with the counsellor as the actor');
+
+  await signOut();
+});
+
+/**
+ * The bug this covers: an ADMIN belongs to no team, and the "Give to" picker
+ * used to be scoped to the ACTING user's team. crm.current_user_team() came
+ * back NULL, the dropdown rendered with no options at all, and every Transfer
+ * button on Floor could only answer "No caller available to receive it" while
+ * the floor was full of callers. The dropdown having options is therefore the
+ * assertion, not an incidental step on the way to the click.
+ */
+it('admin: transfers Not Answered leads from the floor, across teams and in bulk', async () => {
+  // Team B leads, so the admin is also reaching across a team boundary - the
+  // second thing the old scoping made impossible.
+  const leadIds = fixtureSql(`
+    with picked as (
+      select id from crm.leads
+       where caller_id = '${USERS.callerB1}' and status in ('new','working','callback')
+       order by created_at limit 2
+    ), dialled as (
+      insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, is_verified)
+      select p.id, '${USERS.callerB1}', 'not_answered', 0, true
+        from picked p, generate_series(1, 4)
+      returning lead_id
+    )
+    select distinct lead_id from dialled;
+  `).trim().split('\n').map((s) => s.trim()).filter(Boolean);
+  assert.equal(leadIds.length, 2, 'fixture: two Team B leads should now carry an NA streak');
+
+  await signIn(EMAILS.admin);
+  await page.waitForSelector('[data-testid=transfer-queue]');
+
+  const options = await page.locator('[data-testid=transfer-queue] tbody tr .t-target option').count();
+  assert.ok(options > 0, 'an admin, who is on no team, must still be offered callers to hand a lead to');
+  await page.screenshot({ path: path.join(SHOTS, '12-admin-transfer-queue.png'), fullPage: true });
+
+  // Hand the whole list over in one action, the way a floor manager clearing a
+  // not-answered pile actually works.
+  await page.locator('[data-testid=transfer-bulk-target]').selectOption(USERS.callerA2);
+  page.once('dialog', (d) => d.accept());
+  await page.locator('[data-testid=transfer-bulk-go]').click();
+
+  await page.waitForFunction(
+    `document.querySelectorAll('[data-testid=transfer-queue] tbody tr[data-row]').length === 0`
+    + ` || !document.querySelector('[data-testid=transfer-queue]')`,
+  );
+
+  for (const leadId of leadIds) {
+    const owner = fixtureSql(`select caller_id from crm.leads where id = '${leadId}';`).trim();
+    assert.equal(owner, USERS.callerA2, 'the lead moved to the chosen caller, on the other team');
+    const team = fixtureSql(`select team_id from crm.leads where id = '${leadId}';`).trim();
+    assert.equal(
+      team,
+      fixtureSql(`select crm.team_of('${USERS.callerA2}', current_date);`).trim(),
+      'and it follows them onto their team',
+    );
+  }
+
+  const byAdmin = fixtureSql(`
+    select count(*) from crm.lead_transfers where transferred_by = '${USERS.admin}';
+  `).trim();
+  assert.equal(byAdmin, '2', 'both transfers are recorded with the admin as the actor');
 
   await signOut();
 });
@@ -495,6 +560,54 @@ it('leaderboards: the floor shows callers and counsellors on separate boards', a
   const text = await page.locator('.content').innerText();
   assert.ok(text.includes('Callers'), 'a board of callers');
   assert.ok(text.includes('Counsellors'), 'a board of counsellors');
+  await signOut();
+});
+
+/**
+ * Admin -> Users showed a person's team, and badged a caller who had none
+ * ("no team - gets no leads"), but there was no way to act on either: the team
+ * was only settable on the day the person was created. Correcting it meant
+ * hand-written SQL against the live database, which is not something the
+ * person reading that badge can do.
+ */
+it('admin: moves a caller to another team from the Users screen', async () => {
+  const teamOf = (userId: string) => fixtureSql(`
+    select coalesce(t.name, '<none>') from crm.users u
+      left join crm.team_memberships tm on tm.user_id = u.id and tm.period @> current_date
+      left join crm.teams t on t.id = tm.team_id
+     where u.id = '${userId}';`).trim();
+  assert.equal(teamOf(USERS.callerA2), 'Team A', 'fixture: they start on Team A');
+
+  await signIn(EMAILS.admin);
+  await page.goto(`${base}/ui/#/admin`);
+  await page.click('button[data-tab="users"]');
+  await page.waitForSelector('[data-testid=user-team]');
+
+  // Caller A2's row, found by name rather than position - the list is ordered
+  // by role then name, and a fixture added elsewhere would shift an index.
+  const row = page.locator('tr', { hasText: 'Caller A2' }).first();
+  await row.locator('[data-testid=user-team]').click();
+
+  await page.waitForSelector('[data-testid=team-select]');
+  const teamB = fixtureSql(`select id from crm.teams where name = 'Team B';`).trim();
+  await page.selectOption('[data-testid=team-select]', teamB);
+  await page.screenshot({ path: path.join(SHOTS, '13-admin-change-team.png') });
+  await page.click('[data-testid=team-save]');
+
+  await page.waitForFunction(
+    `!document.querySelector('[data-testid=team-select]')`,
+    null, { timeout: 5000 },
+  );
+  assert.equal(teamOf(USERS.callerA2), 'Team B', 'the move lands in the database');
+  assert.equal(
+    fixtureSql(`select t.name from crm.team_memberships tm
+                  join crm.teams t on t.id = tm.team_id
+                 where tm.user_id = '${USERS.callerA2}'
+                   and tm.period @> (current_date - 1);`).trim(),
+    'Team A',
+    'and yesterday still reads as Team A - a move is a new spell, not an overwrite',
+  );
+
   await signOut();
 });
 

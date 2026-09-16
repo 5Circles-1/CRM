@@ -578,6 +578,280 @@ describe('lead transfer', () => {
   });
 });
 
+/**
+ * The "Give to" list behind requirement 8's Transfer button.
+ *
+ * It used to inner-join today's team membership and compare it to
+ * crm.current_user_team(). An admin holds no team membership, so the
+ * comparison was `= NULL`, the list came back empty, and every Transfer button
+ * on Floor could only answer "No caller available to receive it" while the
+ * floor was full of callers. The list must offer what crm.transfer_lead()
+ * accepts - every active caller - or the rule lives in two places and one of
+ * them is wrong.
+ */
+describe('transfer targets', () => {
+  it('is not empty for an admin, who belongs to no team', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({ method: 'GET', url: '/transfers/targets', headers: auth(admin) });
+
+    assert.equal(res.statusCode, 200);
+    const names = res.json().map((t: { full_name: string }) => t.full_name);
+    for (const seeded of ['Caller A1', 'Caller A2', 'Caller B1', 'Caller B2']) {
+      assert.ok(
+        names.includes(seeded),
+        `an admin must be offered every active caller, not the empty set (missing ${seeded})`,
+      );
+    }
+  });
+
+  it('offers a counsellor the other team too, because transfer_lead accepts it', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/transfers/targets', headers: auth(ca) });
+
+    assert.equal(res.statusCode, 200);
+    const names = res.json().map((t: { full_name: string }) => t.full_name);
+    assert.ok(names.includes('Caller A1'), 'their own team is offered');
+    assert.ok(names.includes('Caller B1'), 'so is the other team - the picker must not be narrower than the rule');
+  });
+
+  it('names each target team, so a hand-off across one is visible before it happens', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({ method: 'GET', url: '/transfers/targets', headers: auth(admin) });
+
+    const rows = res.json() as Array<{ id: string; full_name: string; team_name: string | null; tier: string }>;
+    const seeded = rows.filter((t) => t.full_name.startsWith('Caller '));
+    assert.equal(seeded.length, 4);
+    for (const t of seeded) {
+      assert.ok(t.team_name, `${t.full_name} must carry a team name for the picker to group on`);
+    }
+    for (const t of rows) {
+      assert.ok(typeof t.tier === 'string', 'the tier rides along: RESTRICTED is a valid manual target, labelled');
+    }
+  });
+
+  it('keeps a caller whose team membership has lapsed', async () => {
+    // The old inner join dropped them silently - a caller visibly on the floor
+    // who simply could not be chosen, with no message saying why. Expire the
+    // membership, look, then put it back: every later test on this database
+    // reads team membership, and a fixture that does not clean up after itself
+    // fails them somewhere else entirely.
+    const upper = fixtureSql(
+      `select coalesce(upper(period)::text, 'null')
+         from crm.team_memberships
+        where user_id = '${USERS.callerB2}' and period @> current_date;`,
+    ).trim();
+    fixtureSql(`
+      update crm.team_memberships
+         set period = daterange(lower(period), current_date - 1)
+       where user_id = '${USERS.callerB2}' and period @> current_date;
+    `);
+    try {
+      const admin = await login(h.app, EMAILS.admin);
+      const res = await h.app.inject({ method: 'GET', url: '/transfers/targets', headers: auth(admin) });
+      const row = res.json().find((t: { id: string }) => t.id === USERS.callerB2);
+
+      assert.ok(row, 'an active caller with no current membership is still a legal transfer target');
+      assert.equal(row.team_name, null, 'and reads as team-less rather than vanishing');
+    } finally {
+      fixtureSql(`
+        update crm.team_memberships
+           set period = daterange(lower(period), ${upper === 'null' ? 'null' : `'${upper}'::date`})
+         where user_id = '${USERS.callerB2}'
+           and upper(period) = current_date - 1;
+      `);
+    }
+  });
+
+  it('hands a lead across teams when that is the choice made', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Cross-team');
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/leads/${leadId}/transfer`,
+      headers: auth(admin),
+      payload: { toCallerId: USERS.callerB1, reason: 'caller_unavailable' },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().caller_id, USERS.callerB1);
+    assert.equal(
+      res.json().team_id,
+      fixtureSql(`select crm.team_of('${USERS.callerB1}', current_date);`).trim(),
+      'the lead follows the caller onto their team',
+    );
+  });
+});
+
+/**
+ * Changing a person's team.
+ *
+ * Admin -> Users badged a caller with no team ("no team - gets no leads") and
+ * then offered nothing to do about it: teamId was accepted only at user
+ * creation, so a correction afterwards meant SQL against the live database.
+ */
+describe('admin: a person\'s team', () => {
+  const teamId = (name: string) =>
+    fixtureSql(`select id from crm.teams where name = '${name}';`).trim();
+  const teamOf = (userId: string) =>
+    fixtureSql(`select coalesce(t.name, '<none>')
+                  from crm.users u
+                  left join crm.team_memberships tm
+                    on tm.user_id = u.id and tm.period @> current_date
+                  left join crm.teams t on t.id = tm.team_id
+                 where u.id = '${userId}';`).trim();
+
+  it('does not let a counsellor move anybody', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'PUT',
+      url: `/admin/users/${USERS.callerA1}/team`,
+      headers: auth(ca),
+      payload: { teamId: teamId('Team B') },
+    });
+    assert.equal(res.statusCode, 403);
+    assert.equal(teamOf(USERS.callerA1), 'Team A', 'and the refusal changed nothing');
+  });
+
+  it('gives a team to somebody who has none', async () => {
+    // The exact state the red badge names, and the reason this route exists.
+    fixtureSql(`
+      update crm.team_memberships
+         set period = daterange(lower(period), current_date)
+       where user_id = '${USERS.callerB2}' and period @> current_date
+         and lower(period) < current_date;
+    `);
+    assert.equal(teamOf(USERS.callerB2), '<none>', 'fixture: they start with no team');
+
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'PUT',
+      url: `/admin/users/${USERS.callerB2}/team`,
+      headers: auth(admin),
+      payload: { teamId: teamId('Team B') },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().changed, true);
+    assert.equal(res.json().from, null);
+    assert.equal(teamOf(USERS.callerB2), 'Team B');
+  });
+
+  it('corrects a membership made today in place, leaving no empty range behind', async () => {
+    // callerB2 joined Team B a moment ago, in the test above. Moving them now
+    // is somebody fixing their own mistake: closing that row would leave a
+    // zero-length daterange for ever, and the app cannot DELETE it.
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'PUT',
+      url: `/admin/users/${USERS.callerB2}/team`,
+      headers: auth(admin),
+      payload: { teamId: teamId('Team A') },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(teamOf(USERS.callerB2), 'Team A');
+    assert.equal(
+      fixtureSql(`select count(*) from crm.team_memberships
+                   where user_id = '${USERS.callerB2}' and isempty(period);`).trim(),
+      '0',
+      'no zero-length membership row is left behind',
+    );
+  });
+
+  it('moves an older membership by closing it, keeping who was where when', async () => {
+    // Backdate so this is a real move rather than a same-day correction. The
+    // spells this suite has already closed are cleared first - the exclusion
+    // constraint is doing its job, and a fixture must not reach back over one.
+    fixtureSql(`
+      delete from crm.team_memberships
+       where user_id = '${USERS.callerB2}' and not (period @> current_date);
+      update crm.team_memberships
+         set period = daterange(current_date - 30, upper(period))
+       where user_id = '${USERS.callerB2}' and period @> current_date;
+    `);
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'PUT',
+      url: `/admin/users/${USERS.callerB2}/team`,
+      headers: auth(admin),
+      payload: { teamId: teamId('Team B') },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(teamOf(USERS.callerB2), 'Team B');
+    assert.equal(
+      fixtureSql(`select count(*) from crm.team_memberships
+                   where user_id = '${USERS.callerB2}';`).trim(),
+      '2',
+      'the old row stays, closed: a move is a new spell, not an overwrite',
+    );
+    assert.equal(
+      fixtureSql(`select t.name from crm.team_memberships tm
+                    join crm.teams t on t.id = tm.team_id
+                   where tm.user_id = '${USERS.callerB2}'
+                     and tm.period @> (current_date - 1);`).trim(),
+      'Team A',
+      'and yesterday still reads as Team A',
+    );
+  });
+
+  it('is a no-op when they are already on that team', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const before = fixtureSql(
+      `select count(*) from crm.team_memberships where user_id = '${USERS.callerB2}';`).trim();
+    const res = await h.app.inject({
+      method: 'PUT',
+      url: `/admin/users/${USERS.callerB2}/team`,
+      headers: auth(admin),
+      payload: { teamId: teamId('Team B') },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().changed, false);
+    assert.equal(
+      fixtureSql(`select count(*) from crm.team_memberships where user_id = '${USERS.callerB2}';`).trim(),
+      before,
+      'saving the team they already hold must not stack another membership row',
+    );
+  });
+
+  it('refuses a team that does not exist', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'PUT',
+      url: `/admin/users/${USERS.callerB2}/team`,
+      headers: auth(admin),
+      payload: { teamId: '00000000-0000-0000-0000-0000000000ff' },
+    });
+    assert.equal(res.statusCode, 400);
+  });
+
+  it('puts a newcomer at the back of the rotation, like the create route does', async () => {
+    const order = fixtureSql(`
+      select tm.rotation_order from crm.team_memberships tm
+       where tm.user_id = '${USERS.callerB2}' and tm.period @> current_date;
+    `).trim();
+    const highest = fixtureSql(`
+      select max(tm.rotation_order) from crm.team_memberships tm
+       where tm.team_id = (select id from crm.teams where name = 'Team B')
+         and tm.period @> current_date;
+    `).trim();
+    assert.equal(order, highest, 'rotation order only breaks ties, so the back of the queue is fair');
+  });
+
+  // Put the seed back exactly as the rest of the suite expects to find it:
+  // one open Team B membership, opened well before today. Fixtures run as the
+  // superuser, so this can DELETE where the application deliberately cannot.
+  after(() => {
+    fixtureSql(`
+      delete from crm.team_memberships where user_id = '${USERS.callerB2}';
+      insert into crm.team_memberships (user_id, team_id, rotation_order, period)
+      select '${USERS.callerB2}', id, 2, daterange(current_date - 30, null)
+        from crm.teams where name = 'Team B';
+    `);
+  });
+});
+
 describe('attendance', () => {
   it('opens and closes a session and reports the minutes', async () => {
     const b1 = await login(h.app, EMAILS.callerB1);

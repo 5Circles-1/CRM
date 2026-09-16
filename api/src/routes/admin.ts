@@ -229,6 +229,98 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
    * quarantined calls. Kept as its own small route because it is the ONE
    * mapping fact; there is deliberately no second table to edit.
    */
+  /**
+   * Put a person on a team, or move them to another one.
+   *
+   * Admin -> Users showed the team, and even badged a caller who had none
+   * ("no team - gets no leads"), but nothing on the screen could act on it:
+   * `teamId` was accepted only when the user was first created, so correcting
+   * it afterwards meant hand-written SQL against the live database. A screen
+   * that names a problem and offers no button for it is half a feature.
+   *
+   * Membership is a period, not a flag. crm.team_memberships holds a daterange
+   * per user under an exclusion constraint that forbids overlaps, and every
+   * "which team is this person on" read in the schema asks
+   * `period @> current_date`. So a move closes today's membership and opens the
+   * next one, and who was on which team last month still reads correctly.
+   *
+   * A membership that only STARTED today is corrected in place instead. That is
+   * somebody fixing a mistake they just made, there is no history worth
+   * keeping, and closing it would leave a zero-length range behind for ever -
+   * the app cannot DELETE (the privilege is revoked), so it would be litter.
+   */
+  app.put('/admin/users/:id/team', async (req) => {
+    req.requireRole('admin');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({ teamId: uuid, rotationOrder: z.number().int().min(1).optional() })
+      .parse(req.body);
+
+    return req.tx(async (q) => {
+      const target = await q.one<{ full_name: string; role: string }>(
+        `select full_name, role from crm.users where id = $1 and is_active`,
+        [id],
+      );
+      if (!target) throw notFound('no active user with that id');
+
+      const team = await q.one<{ name: string }>(
+        `select name from crm.teams where id = $1 and is_active`,
+        [body.teamId],
+      );
+      if (!team) throw badRequest('no active team with that id');
+
+      const current = await q.one<{ id: string; team_id: string; starts_today: boolean }>(
+        `select id, team_id, lower(period) = current_date as starts_today
+           from crm.team_memberships
+          where user_id = $1 and period @> current_date`,
+        [id],
+      );
+
+      const from = current?.team_id ?? null;
+      if (from === body.teamId) {
+        return { userId: id, teamId: body.teamId, teamName: team.name, from, changed: false };
+      }
+
+      // The same expression POST /admin/users defaults with, so the two doors
+      // into a team cannot disagree about where a newcomer lands in the
+      // rotation. Rotation order only breaks ties between callers who are
+      // level on leads today, so the back of the queue is the fair place.
+      const order = body.rotationOrder ?? null;
+
+      if (current?.starts_today) {
+        await q.query(
+          `update crm.team_memberships
+              set team_id = $2,
+                  rotation_order = coalesce($3, (
+                    select coalesce(max(rotation_order), 0) + 1
+                      from crm.team_memberships
+                     where team_id = $2 and period @> current_date))
+            where id = $1`,
+          [current.id, body.teamId, order],
+        );
+      } else {
+        if (current) {
+          await q.query(
+            `update crm.team_memberships
+                set period = daterange(lower(period), current_date)
+              where id = $1`,
+            [current.id],
+          );
+        }
+        await q.query(
+          `insert into crm.team_memberships (user_id, team_id, rotation_order)
+           values ($1, $2, coalesce($3, (
+             select coalesce(max(rotation_order), 0) + 1
+               from crm.team_memberships where team_id = $2 and period @> current_date
+           )))`,
+          [id, body.teamId, order],
+        );
+      }
+
+      return { userId: id, teamId: body.teamId, teamName: team.name, from, changed: true };
+    });
+  });
+
   app.put('/admin/users/:id/dialing-msisdn', async (req) => {
     req.requireRole('admin');
     const { id } = z.object({ id: uuid }).parse(req.params);

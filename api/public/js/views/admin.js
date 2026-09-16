@@ -202,6 +202,10 @@ async function users(body, me) {
           <td>${u.is_active ? '<span class="badge b-ok">active</span>' : '<span class="badge b-mute">deactivated</span>'}</td>
           <td class="right">${me.role !== 'admin' ? '' : u.is_active
             ? `${u.role === 'caller' ? `<button class="btn small u-tier" data-id="${esc(u.id)}">Tier</button>` : ''}
+               ${u.role === 'caller' || u.role === 'counsellor' ? `
+                 <button class="btn small${u.team_name ? '' : ' primary'} u-team"
+                         data-id="${esc(u.id)}" data-testid="user-team">${
+                   u.team_name ? 'Team' : 'Set team'}</button>` : ''}
                <button class="btn small u-sim" data-id="${esc(u.id)}">SIM</button>
                <button class="btn small u-avatar" data-id="${esc(u.id)}">${u.avatar_url ? 'Change icon' : 'Set icon'}</button>
                <button class="btn small u-pwd" data-id="${esc(u.id)}">Reset password</button>
@@ -225,6 +229,11 @@ async function users(body, me) {
 
     if (e.target.classList.contains('u-avatar')) {
       avatarModal(list.find((u) => u.id === id), () => users(body, me));
+      return;
+    }
+
+    if (e.target.classList.contains('u-team')) {
+      teamModal(list.find((u) => u.id === id), teams, () => users(body, me));
       return;
     }
 
@@ -257,6 +266,52 @@ async function users(body, me) {
     if (e.target.classList.contains('u-pwd')) passwordModal(id, () => users(body, me));
     if (e.target.classList.contains('u-tier')) tierModal(list.find((u) => u.id === id), () => users(body, me));
     if (e.target.classList.contains('u-sim')) simModal(list.find((u) => u.id === id), () => users(body, me));
+  });
+}
+
+/**
+ * Put someone on a team, or move them to another one.
+ *
+ * The row already showed the team and badged a caller who had none; until now
+ * it offered nothing to do about either, and the only way to correct a team
+ * was SQL against the live database.
+ */
+function teamModal(user, teams, onDone) {
+  if (!user) return;
+  const bodyEl = h(`
+    <div>
+      <p class="hint mt0">
+        ${user.team_name
+          ? `${esc(user.full_name)} is on <b>${esc(user.team_name)}</b>.`
+          : `${esc(user.full_name)} is on <b>no team</b>.${
+            user.role === 'caller'
+              ? ' Distribution walks the teams, so they are receiving no fresh leads at all.' : ''}`}
+      </p>
+      <label class="f">Team
+        <select name="team" data-testid="team-select">
+          ${teams.filter((t) => t.is_active !== false).map((t) =>
+            `<option value="${esc(t.id)}"${t.id === user.team_id ? ' selected' : ''}>${esc(t.name)} — ${
+              Number(t.caller_count)} caller${Number(t.caller_count) === 1 ? '' : 's'}</option>`).join('')}
+        </select>
+      </label>
+      <div class="hint">
+        Takes effect today. Leads they already own stay with them — only newly
+        distributed leads follow the new team.
+      </div>
+    </div>`);
+  const footer = h(`<div><button class="btn primary" data-testid="team-save">Save team</button></div>`);
+  const { close } = openModal(`Team for ${user.full_name}`, bodyEl, footer);
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    const teamId = bodyEl.querySelector('[name=team]').value;
+    try {
+      const r = await put(`/admin/users/${user.id}/team`, { teamId });
+      toast(r.changed ? `Moved to ${r.teamName}.` : `Already on ${r.teamName}.`);
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
   });
 }
 

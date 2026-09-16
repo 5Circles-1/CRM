@@ -51,6 +51,45 @@ const WAIT_WHY = (w) => ({
     + 'so these should be moving within a minute. If the number is not falling, press Hand out now.',
 }[w.reason] ?? 'held at team level.');
 
+/**
+ * How one caller reads in a "Give to" list: are they on the floor right now,
+ * and how much did they already take today.
+ *
+ * A RESTRICTED caller stays on the list and says so. The tier stops the
+ * DISTRIBUTION engine handing them fresh leads; it was never meant to stop a
+ * counsellor handing them one specific lead by name.
+ */
+const targetLabel = (t) =>
+  `${t.full_name} — ${t.on_shift ? 'on floor' : 'off floor'}, ${Number(t.leads_today)} today`
+  + (t.tier === 'restricted' ? ' · restricted' : '');
+
+/** The same line, plus the team, for a picker that spans the whole floor. */
+const bulkTargetLabel = (t) => esc(`${targetLabel(t)}${t.team_name ? ` · ${t.team_name}` : ''}`);
+
+/**
+ * The options for one lead's "Give to" select.
+ *
+ * Everyone active is offered, because crm.transfer_lead() accepts everyone
+ * active - a picker narrower than the rule it fronts is the rule living in a
+ * second place, and that second place is where this screen broke. The lead's
+ * own team is grouped first; the rest are grouped under a label that says what
+ * choosing them does, since a transfer re-stamps the lead's team.
+ */
+function targetOptions(targets, lead) {
+  const pool = targets.filter((t) => t.id !== lead.caller_id);
+  if (pool.length === 0) return '';
+
+  const opt = (t) => `<option value="${esc(t.id)}">${esc(targetLabel(t))}</option>`;
+  const same = lead.team_id ? pool.filter((t) => t.team_id === lead.team_id) : [];
+  const other = pool.filter((t) => !same.includes(t));
+
+  // Only group when the grouping says something. One team on the floor, or a
+  // lead that belongs to no team, reads better as a plain list.
+  if (same.length === 0 || other.length === 0) return pool.map(opt).join('');
+  return `<optgroup label="${esc(lead.team_name ?? 'This lead’s team')}">${same.map(opt).join('')}</optgroup>`
+    + `<optgroup label="Other teams — moves the lead across">${other.map(opt).join('')}</optgroup>`;
+}
+
 export async function render(outlet, me) {
   const [floor, immediate, leakage, candidates, targets, qualified, negotiation, today,
          overallToday, avatars, leadFlow, followups, intake, month] = await Promise.all([
@@ -443,48 +482,116 @@ export async function render(outlet, me) {
   }
 
   // --- transfer queue (requirement 8) ---
+  //
+  // The picker offers every active caller, because crm.transfer_lead() accepts
+  // every active caller. It used to offer only the ACTING user's team, which
+  // meant an admin - who holds no team membership - got an empty dropdown on
+  // every row and the button could only answer "No caller available to receive
+  // it" while the floor was full. Same-team callers still come first, under a
+  // named group, so crossing a team stays a decision rather than a slip.
   const transferPanel = h(`
     <div class="panel">
       <h2>Not answered — reassign? <small>leads with ${'≥'}4 unanswered attempts</small></h2>
       ${candidates.length === 0 ? '<div class="empty" data-testid="transfer-empty">Nothing waiting for a transfer decision.</div>' : `
+      ${targets.length === 0 ? `
+        <div class="hint" data-testid="transfer-no-targets" style="margin-bottom:8px">
+          ⚠️ There is no active caller to hand these to. Add or re-activate one in
+          <b>Admin → Users</b>; a caller needs the <b>caller</b> role and an active account.
+        </div>` : `
+        <div class="row spread wrap" data-testid="transfer-bulk" style="margin-bottom:10px;gap:8px">
+          <div class="hint">Handing over the whole list? Pick the caller, then move them in one go.</div>
+          <div class="row" style="gap:8px">
+            <select class="t-bulk-target" data-testid="transfer-bulk-target"
+                    style="padding:6px;border:1px solid var(--line);border-radius:7px">
+              ${targets.map((t) => `<option value="${esc(t.id)}">${bulkTargetLabel(t)}</option>`).join('')}
+            </select>
+            <button class="btn t-bulk-go" data-testid="transfer-bulk-go">Give all ${candidates.length} to them</button>
+          </div>
+        </div>`}
       <table class="table" data-testid="transfer-queue"><thead><tr>
         <th>Lead</th><th>Current caller</th><th class="num">NA streak</th><th class="num">Attempts</th>
         <th>Give to</th><th></th>
       </tr></thead><tbody>
-      ${candidates.map((c) => `
-        <tr data-row="${esc(c.lead_id)}">
+      ${candidates.map((c) => {
+        const options = targetOptions(targets, c);
+        return `
+        <tr data-row="${esc(c.lead_id)}" data-caller="${esc(c.caller_id ?? '')}">
           <td><a href="#/lead/${esc(c.lead_id)}">${esc(c.full_name ?? 'Unnamed')}</a>
               <span class="hint mono">${esc(c.phone_e164)}</span></td>
-          <td>${esc(c.caller_name ?? '—')}</td>
+          <td>${esc(c.caller_name ?? '—')}${c.team_name ? ` <span class="hint">${esc(c.team_name)}</span>` : ''}</td>
           <td class="num">${Number(c.na_streak)}</td>
           <td class="num">${Number(c.attempt_count)}</td>
-          <td>
-            <select class="t-target" style="padding:6px;border:1px solid var(--line);border-radius:7px">
-              ${targets.filter((t) => t.id !== c.caller_id)
-                .map((t) => `<option value="${esc(t.id)}">${esc(t.full_name)} (${Number(t.leads_today)} today)</option>`).join('')}
-            </select>
-          </td>
-          <td class="right"><button class="btn small primary t-go" data-lead="${esc(c.lead_id)}" data-testid="transfer-go">Transfer</button></td>
-        </tr>`).join('')}
+          <td>${options === ''
+            ? '<span class="hint">Nobody else to give it to — this is the only active caller.</span>'
+            : `<select class="t-target" style="padding:6px;border:1px solid var(--line);border-radius:7px">${options}</select>`}</td>
+          <td class="right">${options === '' ? ''
+            : `<button class="btn small primary t-go" data-lead="${esc(c.lead_id)}" data-testid="transfer-go">Transfer</button>`}</td>
+        </tr>`;
+      }).join('')}
       </tbody></table>`}
     </div>`);
   outlet.appendChild(transferPanel);
 
+  /** Move one lead and take its row off the queue. Throws if the server refused. */
+  async function transferOne(leadId, toCallerId) {
+    await post(`/leads/${leadId}/transfer`, { toCallerId, reason: 'not_answered_streak' });
+    transferPanel.querySelector(`tr[data-row="${leadId}"]`)?.remove();
+  }
+
   transferPanel.addEventListener('click', async (e) => {
-    if (!e.target.classList?.contains('t-go')) return;
-    const leadId = e.target.dataset.lead;
-    const row = transferPanel.querySelector(`tr[data-row="${leadId}"]`);
-    const to = row.querySelector('.t-target').value;
-    if (!to) { toast('No caller available to receive it.', 'err'); return; }
-    e.target.disabled = true;
-    try {
-      await post(`/leads/${leadId}/transfer`, { toCallerId: to, reason: 'not_answered_streak' });
-      toast('Transferred.');
-      row.remove();
-    } catch (err) {
-      toast(err.message, 'err');
-      e.target.disabled = false;
+    if (e.target.classList?.contains('t-go')) {
+      const leadId = e.target.dataset.lead;
+      const row = transferPanel.querySelector(`tr[data-row="${leadId}"]`);
+      const to = row.querySelector('.t-target')?.value;
+      // Reached only if the select rendered empty, which now means exactly one
+      // thing: this lead's current caller is the only active caller there is.
+      if (!to) { toast('Nobody else to give it to — add a caller in Admin → Users.', 'err'); return; }
+      e.target.disabled = true;
+      try {
+        await transferOne(leadId, to);
+        toast('Transferred.');
+      } catch (err) {
+        toast(err.message, 'err');
+        e.target.disabled = false;
+      }
+      return;
     }
+
+    if (!e.target.classList?.contains('t-bulk-go')) return;
+
+    // Whole-list hand-over. Sequential on purpose: each transfer_lead() call
+    // takes a row lock and writes an event, and a burst of parallel posts would
+    // report "done" while half of them were still queued behind each other.
+    const btn = e.target;
+    const select = transferPanel.querySelector('.t-bulk-target');
+    const to = select.value;
+    const toName = select.options[select.selectedIndex]?.textContent.split(' — ')[0] ?? 'that caller';
+    const rows = [...transferPanel.querySelectorAll('tr[data-row]')]
+      .filter((r) => r.dataset.caller !== to);
+    if (rows.length === 0) { toast('They already own every lead on this list.'); return; }
+    if (!confirm(`Give ${rows.length} lead${rows.length === 1 ? '' : 's'} to ${toName}?`)) return;
+
+    btn.disabled = true;
+    const original = btn.textContent;
+    let moved = 0;
+    const failures = [];
+    for (const [i, row] of rows.entries()) {
+      btn.textContent = `Transferring ${i + 1} of ${rows.length}…`;
+      try {
+        await transferOne(row.dataset.row, to);
+        moved += 1;
+      } catch (err) {
+        // Most often the two-transfer cap (409). Name the lead, not the row.
+        failures.push(`${row.querySelector('a')?.textContent.trim() ?? 'a lead'}: ${err.message}`);
+      }
+    }
+    btn.textContent = original;
+    btn.disabled = false;
+    toast(failures.length === 0
+      ? `${moved} lead${moved === 1 ? '' : 's'} given to ${toName}.`
+      : `${moved} moved, ${failures.length} could not: ${failures.slice(0, 3).join('; ')}`,
+      failures.length === 0 ? 'ok' : 'err');
+    if (moved > 0) render(outlet, me);
   });
 
   // --- my negotiations ---
