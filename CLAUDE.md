@@ -80,6 +80,24 @@ Do not undo these without understanding why they exist.
   and a RESTRICTED caller stays on the list: that tier stops the *engine*
   handing them fresh leads, never a human handing them one by name.
 
+- **A team is changeable, because a screen that names a problem must offer a
+  button for it.** Admin → Users showed a person's team and badged a caller who
+  had none ("no team — gets no leads"), but `teamId` was accepted only when the
+  user was first created — so correcting it afterwards meant hand-written SQL
+  against the live database, by the one person least likely to be able to write
+  it. `PUT /admin/users/:id/team` (admin only) is the button behind that badge.
+  Membership is a *period*, not a flag: `crm.team_memberships` holds a daterange
+  per user under an exclusion constraint forbidding overlaps, and every "which
+  team is this person on" read asks `period @> current_date`. So a move closes
+  today's spell and opens the next, and last month still reads correctly. A
+  membership that only started **today** is corrected in place instead — that is
+  somebody fixing their own mistake, and closing it would strand a zero-length
+  range for ever, since the app cannot `DELETE`. Rotation order defaults to the
+  same expression `POST /admin/users` uses, so the two doors into a team cannot
+  disagree about where a newcomer lands. The button shows only for callers and
+  counsellors: admin and ops hold no team by design, and a "Set team" call to
+  action on them would invent a missing setting.
+
 - **Absence is covered forward, never sideways** (0056, owner decision). A
   fresh lead whose team has no caller on the floor goes to the team lead
   (counsellor) if they are on the floor; otherwise it parks visibly. The
@@ -349,7 +367,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(370 database assertions, 323 API tests, 16 browser E2E flows), the
+(370 database assertions, 330 API tests, 17 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Callyzer
 integration** (migration 0063, `api/src/integrations/callyzer/`) — webhook +

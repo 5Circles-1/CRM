@@ -6,6 +6,7 @@
  *   counsellor - see the floor, transfer a Not Answered lead from the queue
  *   admin      - see the breakeven thermometer with the grossed-up numbers
  *   admin      - transfer Not Answered leads from the floor, across teams
+ *   admin      - move a caller to another team from Admin -> Users
  *
  * Run with: npm run test:e2e   (needs Postgres up, like npm test)
  */
@@ -559,6 +560,54 @@ it('leaderboards: the floor shows callers and counsellors on separate boards', a
   const text = await page.locator('.content').innerText();
   assert.ok(text.includes('Callers'), 'a board of callers');
   assert.ok(text.includes('Counsellors'), 'a board of counsellors');
+  await signOut();
+});
+
+/**
+ * Admin -> Users showed a person's team, and badged a caller who had none
+ * ("no team - gets no leads"), but there was no way to act on either: the team
+ * was only settable on the day the person was created. Correcting it meant
+ * hand-written SQL against the live database, which is not something the
+ * person reading that badge can do.
+ */
+it('admin: moves a caller to another team from the Users screen', async () => {
+  const teamOf = (userId: string) => fixtureSql(`
+    select coalesce(t.name, '<none>') from crm.users u
+      left join crm.team_memberships tm on tm.user_id = u.id and tm.period @> current_date
+      left join crm.teams t on t.id = tm.team_id
+     where u.id = '${userId}';`).trim();
+  assert.equal(teamOf(USERS.callerA2), 'Team A', 'fixture: they start on Team A');
+
+  await signIn(EMAILS.admin);
+  await page.goto(`${base}/ui/#/admin`);
+  await page.click('button[data-tab="users"]');
+  await page.waitForSelector('[data-testid=user-team]');
+
+  // Caller A2's row, found by name rather than position - the list is ordered
+  // by role then name, and a fixture added elsewhere would shift an index.
+  const row = page.locator('tr', { hasText: 'Caller A2' }).first();
+  await row.locator('[data-testid=user-team]').click();
+
+  await page.waitForSelector('[data-testid=team-select]');
+  const teamB = fixtureSql(`select id from crm.teams where name = 'Team B';`).trim();
+  await page.selectOption('[data-testid=team-select]', teamB);
+  await page.screenshot({ path: path.join(SHOTS, '13-admin-change-team.png') });
+  await page.click('[data-testid=team-save]');
+
+  await page.waitForFunction(
+    `!document.querySelector('[data-testid=team-select]')`,
+    null, { timeout: 5000 },
+  );
+  assert.equal(teamOf(USERS.callerA2), 'Team B', 'the move lands in the database');
+  assert.equal(
+    fixtureSql(`select t.name from crm.team_memberships tm
+                  join crm.teams t on t.id = tm.team_id
+                 where tm.user_id = '${USERS.callerA2}'
+                   and tm.period @> (current_date - 1);`).trim(),
+    'Team A',
+    'and yesterday still reads as Team A - a move is a new spell, not an overwrite',
+  );
+
   await signOut();
 });
 
