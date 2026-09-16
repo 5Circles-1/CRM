@@ -488,6 +488,83 @@ exception when check_violation then
   perform crm_test.check('R8', 'transfers are capped at 2 per lead', true, null);
 end $$;
 
+
+-- Every refusal must carry a SQLSTATE the API can map (0073).
+--
+-- Three of these raised bare P0001, which is in no map in
+-- api/src/http/errors.ts, so an ordinary refusal reached the floor as a 500
+-- reading "something went wrong" - the same words for a lead somebody else had
+-- already moved, a target who cannot receive leads, and a lead id that does not
+-- resolve. A refusal nobody can read is a refusal nobody can act on.
+do $$
+declare v_lead uuid;
+begin
+  select id into v_lead from crm.leads where full_name = 'Lead 6';
+  perform crm.transfer_lead(v_lead, (select caller_id from crm.leads where id = v_lead),
+                            'load_balance', '22222222-0000-0000-0000-000000000005');
+  perform crm_test.check('R8', 'handing a lead to the caller who already has it is refused as a conflict',
+                         false, 'the no-op transfer unexpectedly succeeded');
+exception
+  when check_violation then
+    perform crm_test.check('R8', 'handing a lead to the caller who already has it is refused as a conflict',
+                           true, null);
+  when others then
+    perform crm_test.check('R8', 'handing a lead to the caller who already has it is refused as a conflict',
+                           false, 'wrong sqlstate: ' || sqlstate || ' - the API maps only coded refusals');
+end $$;
+
+do $$
+declare v_lead uuid;
+begin
+  select id into v_lead from crm.leads where full_name = 'Lead 6';
+  -- A counsellor is not a caller, so they cannot be handed a lead this way.
+  perform crm.transfer_lead(v_lead, '22222222-0000-0000-0000-000000000006',
+                            'load_balance', '22222222-0000-0000-0000-000000000005');
+  perform crm_test.check('R8', 'a target who is not an active caller is refused as a conflict',
+                         false, 'the transfer to a non-caller unexpectedly succeeded');
+exception
+  when check_violation then
+    perform crm_test.check('R8', 'a target who is not an active caller is refused as a conflict',
+                           true, null);
+  when others then
+    perform crm_test.check('R8', 'a target who is not an active caller is refused as a conflict',
+                           false, 'wrong sqlstate: ' || sqlstate || ' - the API maps only coded refusals');
+end $$;
+
+do $$
+begin
+  perform crm.transfer_lead('00000000-0000-0000-0000-0000000000aa',
+                            '22222222-0000-0000-0000-000000000002',
+                            'load_balance', '22222222-0000-0000-0000-000000000005');
+  perform crm_test.check('R8', 'a lead that does not resolve is refused as not-found',
+                         false, 'transferring a nonexistent lead unexpectedly succeeded');
+exception
+  when no_data_found then
+    perform crm_test.check('R8', 'a lead that does not resolve is refused as not-found', true, null);
+  when others then
+    perform crm_test.check('R8', 'a lead that does not resolve is refused as not-found',
+                           false, 'wrong sqlstate: ' || sqlstate || ' - the API maps only coded refusals');
+end $$;
+
+-- The wording matters as much as the code: "that caller" is a uuid's way of
+-- saying nothing, and this text is read on the floor mid-shift.
+do $$
+declare v_lead uuid; v_msg text;
+begin
+  select id into v_lead from crm.leads where full_name = 'Lead 6';
+  begin
+    perform crm.transfer_lead(v_lead, (select caller_id from crm.leads where id = v_lead),
+                              'load_balance', '22222222-0000-0000-0000-000000000005');
+  exception when check_violation then
+    v_msg := sqlerrm;
+  end;
+  perform crm_test.check(
+    'R8', 'a refusal names the caller, because the message is read on the floor',
+    v_msg like '%' || (select u.full_name from crm.users u
+                        join crm.leads l on l.caller_id = u.id where l.id = v_lead) || '%',
+    coalesce(v_msg, 'no refusal was raised at all'));
+end $$;
+
 -- The automatic sweep SHIPS DISABLED (0049): the floor's rule is that a lead
 -- stays with its caller until a counsellor moves it by hand. First prove the
 -- default, then switch the engine on for these tests so its logic stays

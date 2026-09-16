@@ -546,6 +546,15 @@ export async function render(outlet, me) {
       // Reached only if the select rendered empty, which now means exactly one
       // thing: this lead's current caller is the only active caller there is.
       if (!to) { toast('Nobody else to give it to — add a caller in Admin → Users.', 'err'); return; }
+      // This table is a snapshot, and a floor has more than one supervisor on
+      // it. If somebody else moved this lead to the very person we are about
+      // to hand it to, the server refuses - so reload instead of sending a
+      // transfer that cannot succeed.
+      if (to === row.dataset.caller) {
+        toast('That lead is already with them — refreshing the list.');
+        render(outlet, me);
+        return;
+      }
       e.target.disabled = true;
       try {
         await transferOne(leadId, to);
@@ -553,6 +562,9 @@ export async function render(outlet, me) {
       } catch (err) {
         toast(err.message, 'err');
         e.target.disabled = false;
+        // A refusal nearly always means this list is older than the database.
+        // Reload it, so the next click works from what is actually true.
+        render(outlet, me);
       }
       return;
     }
