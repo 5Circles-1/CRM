@@ -589,6 +589,109 @@ describe('lead transfer', () => {
  * accepts - every active caller - or the rule lives in two places and one of
  * them is wrong.
  */
+/**
+ * What a refused transfer looks like to the person who clicked Transfer.
+ *
+ * crm.transfer_lead makes six checks; three of them used to raise bare, which
+ * is SQLSTATE P0001, which is in no map in src/http/errors.ts - so an ordinary
+ * refusal fell through to the catch-all and the floor read "something went
+ * wrong". The same five words for a lead a colleague had already moved, for a
+ * target who cannot receive leads, and for a lead id that does not resolve.
+ * A 500 also says "this server is broken", which sends people to the wrong
+ * place entirely. Migration 0073 gives every refusal a SQLSTATE.
+ */
+describe('a refused transfer says why', () => {
+  let leadId: string;
+
+  before(() => {
+    leadId = makeLeadFor(USERS.callerA1, 'Refusable');
+  });
+
+  it('never answers a refusal with 500', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const refusals = [
+      { label: 'already that caller', leadId: () => leadId, to: USERS.callerA1 },
+      { label: 'target is not a caller', leadId: () => leadId, to: USERS.counsellorB },
+      { label: 'no such lead', leadId: () => '00000000-0000-0000-0000-0000000000aa', to: USERS.callerA2 },
+    ];
+
+    for (const r of refusals) {
+      const res = await h.app.inject({
+        method: 'POST',
+        url: `/leads/${r.leadId()}/transfer`,
+        headers: auth(ca),
+        payload: { toCallerId: r.to, reason: 'load_balance' },
+      });
+      assert.notEqual(res.statusCode, 500, `${r.label} must not read as a server crash`);
+      assert.doesNotMatch(
+        res.json().message ?? '',
+        /something went wrong/,
+        `${r.label} must say what happened`,
+      );
+    }
+  });
+
+  it('calls a lead already held by that caller a conflict, and names them', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/leads/${leadId}/transfer`,
+      headers: auth(ca),
+      payload: { toCallerId: USERS.callerA1, reason: 'load_balance' },
+    });
+
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message, /already with Caller A1/);
+    assert.match(res.json().message, /refresh/, 'and says what to do about it');
+  });
+
+  it('refuses a target who cannot receive leads, by name', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/leads/${leadId}/transfer`,
+      headers: auth(ca),
+      payload: { toCallerId: USERS.counsellorB, reason: 'load_balance' },
+    });
+
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message, /Counsellor B/);
+    assert.match(res.json().message, /active caller/);
+  });
+
+  it('reads a lead it cannot resolve as 404, not as a crash', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/leads/00000000-0000-0000-0000-0000000000aa/transfer',
+      headers: auth(ca),
+      payload: { toCallerId: USERS.callerA2, reason: 'load_balance' },
+    });
+
+    assert.equal(res.statusCode, 404);
+    assert.match(res.json().message, /no longer exists/);
+  });
+
+  it('still names the cap when the cap is what stopped it', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const capped = makeLeadFor(USERS.callerA1, 'Capped');
+    for (const to of [USERS.callerA2, USERS.callerA1]) {
+      await h.app.inject({
+        method: 'POST', url: `/leads/${capped}/transfer`, headers: auth(ca),
+        payload: { toCallerId: to, reason: 'load_balance' },
+      });
+    }
+    const third = await h.app.inject({
+      method: 'POST', url: `/leads/${capped}/transfer`, headers: auth(ca),
+      payload: { toCallerId: USERS.callerA2, reason: 'load_balance' },
+    });
+
+    assert.equal(third.statusCode, 409);
+    assert.match(third.json().message, /already been transferred 2 times/);
+    assert.match(third.json().message, /cap is 2/);
+  });
+});
+
 describe('transfer targets', () => {
   it('is not empty for an admin, who belongs to no team', async () => {
     const admin = await login(h.app, EMAILS.admin);

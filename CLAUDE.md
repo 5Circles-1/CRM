@@ -80,6 +80,22 @@ Do not undo these without understanding why they exist.
   and a RESTRICTED caller stays on the list: that tier stops the *engine*
   handing them fresh leads, never a human handing them one by name.
 
+- **Every refusal carries a SQLSTATE, or it reaches the floor as a crash**
+  (0073). `crm.transfer_lead` makes six checks. Three raised bare, and a bare
+  `raise exception` is `P0001`, which is in no map in `src/http/errors.ts` — so
+  an ordinary refusal fell through to the catch-all and the floor read
+  **"something went wrong"**: the same five words for a lead a colleague had
+  already moved, for a target who cannot receive leads, and for a lead id that
+  does not resolve. A 500 also asserts the server is broken, which sends people
+  to the wrong place entirely. The rules did not change; their SQLSTATE and
+  wording did — `no_data_found` → 404, `check_violation` → 409 — and the text
+  names the caller, because it is read on the floor mid-shift, where "that
+  caller" is a uuid's way of saying nothing. The Floor list reloads itself after
+  a refusal, since the usual cause is a snapshot older than the database and a
+  second supervisor working the same pile. **When adding a rule to a
+  `SECURITY`-sensitive function, give the raise an errcode or the API cannot
+  tell it from a crash.**
+
 - **A team is changeable, because a screen that names a problem must offer a
   button for it.** Admin → Users showed a person's team and badged a caller who
   had none ("no team — gets no leads"), but `teamId` was accepted only when the
@@ -367,7 +383,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(370 database assertions, 330 API tests, 17 browser E2E flows), the
+(374 database assertions, 335 API tests, 17 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Callyzer
 integration** (migration 0063, `api/src/integrations/callyzer/`) — webhook +
