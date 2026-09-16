@@ -578,6 +578,110 @@ describe('lead transfer', () => {
   });
 });
 
+/**
+ * The "Give to" list behind requirement 8's Transfer button.
+ *
+ * It used to inner-join today's team membership and compare it to
+ * crm.current_user_team(). An admin holds no team membership, so the
+ * comparison was `= NULL`, the list came back empty, and every Transfer button
+ * on Floor could only answer "No caller available to receive it" while the
+ * floor was full of callers. The list must offer what crm.transfer_lead()
+ * accepts - every active caller - or the rule lives in two places and one of
+ * them is wrong.
+ */
+describe('transfer targets', () => {
+  it('is not empty for an admin, who belongs to no team', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({ method: 'GET', url: '/transfers/targets', headers: auth(admin) });
+
+    assert.equal(res.statusCode, 200);
+    const names = res.json().map((t: { full_name: string }) => t.full_name);
+    for (const seeded of ['Caller A1', 'Caller A2', 'Caller B1', 'Caller B2']) {
+      assert.ok(
+        names.includes(seeded),
+        `an admin must be offered every active caller, not the empty set (missing ${seeded})`,
+      );
+    }
+  });
+
+  it('offers a counsellor the other team too, because transfer_lead accepts it', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({ method: 'GET', url: '/transfers/targets', headers: auth(ca) });
+
+    assert.equal(res.statusCode, 200);
+    const names = res.json().map((t: { full_name: string }) => t.full_name);
+    assert.ok(names.includes('Caller A1'), 'their own team is offered');
+    assert.ok(names.includes('Caller B1'), 'so is the other team - the picker must not be narrower than the rule');
+  });
+
+  it('names each target team, so a hand-off across one is visible before it happens', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({ method: 'GET', url: '/transfers/targets', headers: auth(admin) });
+
+    const rows = res.json() as Array<{ id: string; full_name: string; team_name: string | null; tier: string }>;
+    const seeded = rows.filter((t) => t.full_name.startsWith('Caller '));
+    assert.equal(seeded.length, 4);
+    for (const t of seeded) {
+      assert.ok(t.team_name, `${t.full_name} must carry a team name for the picker to group on`);
+    }
+    for (const t of rows) {
+      assert.ok(typeof t.tier === 'string', 'the tier rides along: RESTRICTED is a valid manual target, labelled');
+    }
+  });
+
+  it('keeps a caller whose team membership has lapsed', async () => {
+    // The old inner join dropped them silently - a caller visibly on the floor
+    // who simply could not be chosen, with no message saying why. Expire the
+    // membership, look, then put it back: every later test on this database
+    // reads team membership, and a fixture that does not clean up after itself
+    // fails them somewhere else entirely.
+    const upper = fixtureSql(
+      `select coalesce(upper(period)::text, 'null')
+         from crm.team_memberships
+        where user_id = '${USERS.callerB2}' and period @> current_date;`,
+    ).trim();
+    fixtureSql(`
+      update crm.team_memberships
+         set period = daterange(lower(period), current_date - 1)
+       where user_id = '${USERS.callerB2}' and period @> current_date;
+    `);
+    try {
+      const admin = await login(h.app, EMAILS.admin);
+      const res = await h.app.inject({ method: 'GET', url: '/transfers/targets', headers: auth(admin) });
+      const row = res.json().find((t: { id: string }) => t.id === USERS.callerB2);
+
+      assert.ok(row, 'an active caller with no current membership is still a legal transfer target');
+      assert.equal(row.team_name, null, 'and reads as team-less rather than vanishing');
+    } finally {
+      fixtureSql(`
+        update crm.team_memberships
+           set period = daterange(lower(period), ${upper === 'null' ? 'null' : `'${upper}'::date`})
+         where user_id = '${USERS.callerB2}'
+           and upper(period) = current_date - 1;
+      `);
+    }
+  });
+
+  it('hands a lead across teams when that is the choice made', async () => {
+    const leadId = makeLeadFor(USERS.callerA1, 'Cross-team');
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/leads/${leadId}/transfer`,
+      headers: auth(admin),
+      payload: { toCallerId: USERS.callerB1, reason: 'caller_unavailable' },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().caller_id, USERS.callerB1);
+    assert.equal(
+      res.json().team_id,
+      fixtureSql(`select crm.team_of('${USERS.callerB1}', current_date);`).trim(),
+      'the lead follows the caller onto their team',
+    );
+  });
+});
+
 describe('attendance', () => {
   it('opens and closes a session and reports the minutes', async () => {
     const b1 = await login(h.app, EMAILS.callerB1);

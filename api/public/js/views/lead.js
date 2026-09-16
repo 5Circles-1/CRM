@@ -632,17 +632,41 @@ async function bookVisitModal(lead, onDone) {
   });
 }
 
+/**
+ * Who this lead may be handed to.
+ *
+ * Every active caller, because crm.transfer_lead() accepts every active
+ * caller. The old list was the ACTING user's team only, which handed an admin
+ * - who belongs to no team - an empty dropdown and a Transfer button that
+ * could only post an empty id. This lead's own team is grouped first; the rest
+ * are grouped under a label naming what picking them does, since a transfer
+ * re-stamps the lead's team.
+ */
+function transferOptions(targets, lead) {
+  const pool = targets.filter((t) => t.id !== lead.caller_id);
+  const opt = (t) => `<option value="${esc(t.id)}">${esc(t.full_name)} — ${
+    t.on_shift ? 'on floor' : 'off floor'}, ${Number(t.leads_today)} today${
+    t.tier === 'restricted' ? ' · restricted' : ''}</option>`;
+  const same = lead.team_id ? pool.filter((t) => t.team_id === lead.team_id) : [];
+  const other = pool.filter((t) => !same.includes(t));
+  if (same.length === 0 || other.length === 0) return pool.map(opt).join('');
+  return `<optgroup label="${esc(lead.team_name ?? 'This lead’s team')}">${same.map(opt).join('')}</optgroup>`
+    + `<optgroup label="Other teams — moves the lead across">${other.map(opt).join('')}</optgroup>`;
+}
+
 async function transferModal(lead, onDone) {
   const targets = await get('/transfers/targets').catch(() => []);
+  const options = transferOptions(targets, lead);
   const body = h(`
     <div>
+      ${options === '' ? `
+        <div class="hint" data-testid="transfer-no-targets">
+          There is no other active caller to hand this lead to. Add or re-activate
+          one in <b>Admin → Users</b> — a transfer target needs the <b>caller</b>
+          role and an active account.
+        </div>` : `
       <label class="f">Give this lead to
-        <select name="to" data-testid="transfer-target">
-          ${targets
-            .filter((t) => t.id !== lead.caller_id)
-            .map((t) => `<option value="${esc(t.id)}">${esc(t.full_name)} — ${t.on_shift ? 'on floor' : 'off floor'}, ${Number(t.leads_today)} today</option>`)
-            .join('')}
-        </select>
+        <select name="to" data-testid="transfer-target">${options}</select>
       </label>
       <label class="f">Reason
         <select name="reason" data-testid="transfer-reason">
@@ -655,9 +679,10 @@ async function transferModal(lead, onDone) {
         </select>
       </label>
       <label class="f">Note <input name="note" maxlength="500"></label>
-      <div class="hint">Transfers are capped at 2 per lead; after that it parks in nurture.</div>
+      <div class="hint">Transfers are capped at 2 per lead; after that it parks in nurture.</div>`}
     </div>`);
-  const footer = h(`<div><button class="btn primary" data-testid="transfer-save">Transfer</button></div>`);
+  const footer = h(`<div><button class="btn primary" data-testid="transfer-save"${
+    options === '' ? ' disabled' : ''}>Transfer</button></div>`);
   const { close } = openModal('Transfer lead', body, footer);
 
   footer.querySelector('button').addEventListener('click', async () => {

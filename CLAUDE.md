@@ -66,6 +66,19 @@ Do not undo these without understanding why they exist.
   leads off their own list, difficult leads would circulate forever and nobody
   would own anything. Enforced inside `crm.transfer_lead`, not in the UI.
   Capped at `lead.max_transfers` (2), then the lead goes to nurture.
+  **The "Give to" picker offers exactly what `crm.transfer_lead` accepts — every
+  active caller.** `/transfers/targets` used to narrow that to the *acting*
+  user's team: an admin holds no team membership, so the comparison was
+  `= crm.current_user_team()` against NULL, the dropdown rendered empty, and
+  every Transfer button on Floor could only answer "No caller available to
+  receive it" while the floor was full. A counsellor could not hand a lead
+  across teams either, though the function does exactly that (it re-stamps
+  `team_id` to the new caller's team), and a caller whose membership row had
+  lapsed vanished from the list with no message saying why. A picker narrower
+  than the rule it fronts is the rule living in a second place. The lead's own
+  team is grouped first so crossing one stays a decision rather than a slip,
+  and a RESTRICTED caller stays on the list: that tier stops the *engine*
+  handing them fresh leads, never a human handing them one by name.
 
 - **Absence is covered forward, never sideways** (0056, owner decision). A
   fresh lead whose team has no caller on the floor goes to the team lead
@@ -336,7 +349,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(366 database assertions, 317 API tests, 15 browser E2E flows), the
+(370 database assertions, 323 API tests, 16 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Callyzer
 integration** (migration 0063, `api/src/integrations/callyzer/`) — webhook +
