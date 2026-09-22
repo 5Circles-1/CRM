@@ -13,17 +13,22 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
   app.get('/me', async (req) => {
     const user = req.requireUser();
     return req.tx(async (q) => {
-      const row = await q.one(
+      const row = await q.one<Record<string, unknown>>(
         `select u.id, u.full_name, u.email, u.role, u.employee_code,
                 crm.team_of(u.id, current_date) as team_id,
                 t.name as team_name,
-                crm.is_on_shift(u.id) as on_shift
+                crm.is_on_shift(u.id) as on_shift,
+                crm.setting_bool('tata_tele.enabled', false) as tata_tele_enabled
            from crm.users u
            left join crm.teams t on t.id = crm.team_of(u.id, current_date)
           where u.id = $1`,
         [user.id],
       );
-      return row;
+      if (!row) return row;
+      // The UI shows the Call button only when a click could actually place
+      // a call: the integration is on AND this server holds credentials.
+      const { tata_tele_enabled, ...rest } = row;
+      return { ...rest, cloud_calling: Boolean(tata_tele_enabled) && Boolean(app.tataTele) };
     });
   });
 

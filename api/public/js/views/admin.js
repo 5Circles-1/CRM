@@ -316,17 +316,18 @@ function teamModal(user, teams, onDone) {
 }
 
 /**
- * The Dialing SIM is how device call logs — the companion app's and
- * Callyzer's — are matched back to a person. An unmapped Callyzer number on
- * the Ingestion tab is fixed here, and the next sync re-ingests the
- * quarantined calls on its own.
+ * The Dialing number is how call records — the companion app's and Tata
+ * Tele's — are matched back to a person, and the number Smartflo rings first
+ * on a click-to-call. An unmapped Smartflo agent on the Ingestion tab is
+ * fixed here, and the next sync re-ingests the quarantined calls on its own.
  */
 function simModal(user, onDone) {
   if (!user) return;
   const bodyEl = h(`
     <div>
-      <p class="hint mt0">The personal SIM this person dials from. It must match the number
-        registered in Callyzer for their handset, or their calls cannot be verified.</p>
+      <p class="hint mt0">The number this person answers calls on. It must match the follow-me
+        number of their Smartflo agent — Tata Tele rings this phone first on every
+        click-to-call, and its call records are matched back to the person by it.</p>
       <label class="f">Dialing SIM
         <input name="msisdn" maxlength="20" placeholder="e.g. 98765 43210"
                value="${esc(user.dialing_msisdn ?? '')}">
@@ -582,11 +583,11 @@ function newUserModal(teams, onDone) {
 /* ---------------- ingestion ---------------- */
 
 async function ingest(body, me) {
-  const [sources, runs, teams, callyzer] = await Promise.all([
+  const [sources, runs, teams, tataTele] = await Promise.all([
     get('/admin/sources'),
     get('/ingest/runs'),
     get('/admin/teams'),
-    get('/integrations/callyzer/health').catch(() => null),
+    get('/integrations/tata-tele/health').catch(() => null),
   ]);
   body.innerHTML = '';
   const teamName = (id) => teams.find((t) => t.id === id)?.name ?? null;
@@ -672,7 +673,7 @@ async function ingest(body, me) {
     });
   });
 
-  if (callyzer) renderCallyzer(body, callyzer, me, () => ingest(body, me));
+  if (tataTele) renderTataTele(body, tataTele, me, () => ingest(body, me));
 
   if (sources.length === 0) return;
 
@@ -771,76 +772,94 @@ async function ingest(body, me) {
  * single Meta sheet ends up wired in five times.
  */
 /**
- * Callyzer: handset call verification. A second sensor writing the same
- * device-call-log table as the companion app — this panel answers "is it
- * alive, and is anyone's number unmapped", which are the two ways it fails
- * silently. The alarm on the bell is the loud path; this is the detail.
+ * Tata Tele Smartflo: the floor's dialler and its call sensor. This panel
+ * answers "is cloud calling alive, and is anyone's number unmapped", which
+ * are the two ways it fails silently — a caller whose number Smartflo does
+ * not know can neither click-to-call nor have their dials verified. The
+ * alarm on the bell is the loud path; this is the detail.
  */
-function renderCallyzer(body, cz, me, redraw) {
+function renderTataTele(body, tt, me, redraw) {
   const canAct = me.role === 'admin' || me.role === 'ops';
-  const employees = cz.employees ?? [];
-  const unmapped = employees.filter((e) => !e.user_id);
-  const stale = employees.filter((e) => e.handset_stale);
-  const quarantine = cz.quarantine ?? [];
+  const agents = tt.agents ?? [];
+  const unmapped = agents.filter((a) => !a.user_id);
+  const quarantine = tt.quarantine ?? [];
 
   const badge =
-    cz.state === 'healthy' ? '<span class="badge b-ok">healthy</span>'
-    : cz.state === 'off' ? '<span class="badge b-mute">off</span>'
-    : cz.state === 'attention' ? '<span class="badge b-bad">needs attention</span>'
-    : `<span class="badge b-bad">${esc(cz.state ?? 'unknown')}</span>`;
+    tt.state === 'healthy' ? '<span class="badge b-ok">healthy</span>'
+    : tt.state === 'off' ? '<span class="badge b-mute">off</span>'
+    : tt.state === 'attention' ? '<span class="badge b-bad">needs attention</span>'
+    : tt.state === 'auth' ? '<span class="badge b-bad">login expired</span>'
+    : `<span class="badge b-bad">${esc(tt.state ?? 'unknown')}</span>`;
 
   const panel = h(`
-    <div class="panel" data-testid="callyzer-health">
+    <div class="panel" data-testid="tata-tele-health">
       <div class="row spread wrap">
-        <h2 class="mt0">Callyzer call verification ${badge}</h2>
-        ${canAct && cz.enabled ? '<button class="btn" id="cz-sync">Sync now</button>' : ''}
+        <h2 class="mt0">Tata Tele cloud calling ${badge}</h2>
+        ${canAct && tt.enabled ? '<button class="btn" id="tt-sync">Sync now</button>' : ''}
       </div>
-      ${!cz.enabled ? `
+      ${!tt.enabled ? `
         <div class="hint">The integration is switched off. Turn it on at
-          Admin → Settings → <span class="mono">callyzer.enabled</span> once handsets are enrolled
-          in Callyzer Biz — its call logs then verify dials exactly like the companion app's.</div>` : `
+          Admin → Settings → <span class="mono">tata_tele.enabled</span> once every caller's
+          Dialing number matches their Smartflo agent — the floor then dials with one click
+          and Smartflo's call records verify dials exactly like the companion app's.</div>` : `
         <div class="hint">
-          Last pull ${esc(fmtDT(cz.sync_last_ok_at))} · last webhook ${esc(fmtDT(cz.webhook_last_ok_at))}
-          · today ${Number(cz.logs_today ?? 0)} call${Number(cz.logs_today) === 1 ? '' : 's'}
-          (${Number(cz.matched_today ?? 0)} matched a lead)
-          · ${employees.length} handset${employees.length === 1 ? '' : 's'} enrolled
+          Last pull ${esc(fmtDT(tt.sync_last_ok_at))} · last webhook ${esc(fmtDT(tt.webhook_last_ok_at))}
+          · today ${Number(tt.clicks_today ?? 0)} click${Number(tt.clicks_today) === 1 ? '' : 's'} to call${
+            Number(tt.clicks_failed_today ?? 0) > 0 ? ` (<b>${Number(tt.clicks_failed_today)} failed</b>)` : ''}
+          · ${Number(tt.calls_today ?? 0)} call record${Number(tt.calls_today) === 1 ? '' : 's'}
+          (${Number(tt.matched_today ?? 0)} matched a lead)
+          · ${agents.length} Smartflo agent${agents.length === 1 ? '' : 's'}
         </div>
-        ${cz.sync_last_error ? `
+        ${tt.state === 'auth' ? `
         <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          Last pull failed: ${esc(cz.sync_last_error)}
+          <b>Smartflo is refusing the CRM's login</b> — clicks and the CDR sync are failing.
+          Smartflo rotates API passwords every 90 days; update TATA_TELE_LOGIN_PASSWORD
+          (or TATA_TELE_API_TOKEN) on the server.
+        </div>` : tt.sync_last_error ? `
+        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
+          Last pull failed: ${esc(tt.sync_last_error)}
         </div>` : ''}
-        ${cz.api_key_configured ? '' : `
+        ${tt.credentials_configured ? '' : `
         <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          <b>CALLYZER_API_KEY is not set on the server</b>, so the scheduled pull cannot run.
-          Only the webhook (if configured) is feeding call logs.
+          <b>The Smartflo credentials are not set on the server</b>
+          (TATA_TELE_LOGIN_EMAIL / TATA_TELE_LOGIN_PASSWORD or TATA_TELE_API_TOKEN), so
+          click-to-call and the scheduled pull cannot run. Only the webhook (if configured)
+          is feeding call records.
         </div>`}
-        ${cz.webhook_secret_configured ? `
-        <div class="hint">Webhook: point Callyzer (Connectors → API &amp; Webhook) at
-          <span class="mono">${esc(location.origin)}${esc(cz.webhook_path ?? '')}?secret=…</span>
-          using the same Secret as CALLYZER_WEBHOOK_SECRET.</div>` : `
-        <div class="hint">CALLYZER_WEBHOOK_SECRET is not set — the webhook is off and rows arrive
-          only by the scheduled pull.</div>`}
+        ${tt.webhook_secret_configured ? `
+        <div class="hint">Webhook: in the Smartflo portal (Services → Webhooks) send call-hangup
+          events as JSON to
+          <span class="mono">${esc(location.origin)}${esc(tt.webhook_path ?? '')}?secret=…</span>
+          using the same Secret as TATA_TELE_WEBHOOK_SECRET.</div>` : `
+        <div class="hint">TATA_TELE_WEBHOOK_SECRET is not set — the webhook is off and call records
+          arrive only by the scheduled pull.</div>`}
+        ${Number(tt.callers_unregistered ?? 0) === 0 ? '' : `
+        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
+          ${Number(tt.callers_unregistered)} active caller${Number(tt.callers_unregistered) === 1 ? ' has' : 's have'}
+          no Dialing number at all — click-to-call has no phone to ring for them.
+          Set it on the Users tab.
+        </div>`}
+        ${Number(tt.callers_uncovered ?? 0) === 0 ? '' : `
+        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
+          ${Number(tt.callers_uncovered)} caller${Number(tt.callers_uncovered) === 1 ? "'s" : "s'"} Dialing
+          number${Number(tt.callers_uncovered) === 1 ? ' is' : 's are'} not a Smartflo agent — their
+          clicks will be refused. Add the agent in the Smartflo portal with the same follow-me number.
+        </div>`}
         ${unmapped.length === 0 ? '' : `
         <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          <b>${unmapped.length} Callyzer number${unmapped.length === 1 ? '' : 's'} match no CRM user</b>
+          <b>${unmapped.length} Smartflo agent${unmapped.length === 1 ? '' : 's'} match no CRM user</b>
           — their calls are quarantined, not verified. Set the number as that person's
-          Dialing SIM on the Users tab; the next sync re-ingests the held calls itself.
-          <div style="margin-top:6px">${unmapped.map((e) =>
-            `<span class="mono">${esc(e.emp_msisdn)}</span>${e.emp_name ? ` (${esc(e.emp_name)})` : ''}`).join(' · ')}</div>
-        </div>`}
-        ${stale.length === 0 ? '' : `
-        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          ${stale.length} handset${stale.length === 1 ? ' has' : 's have'} not synced to Callyzer recently
-          — their calls are invisible until the app on the phone syncs again:
-          ${stale.map((e) => esc(e.user_name ?? e.emp_name ?? e.emp_msisdn)).join(', ')}
+          Dialing number on the Users tab; the next sync re-ingests the held calls itself.
+          <div style="margin-top:6px">${unmapped.map((a) =>
+            `<span class="mono">${esc(a.agent_msisdn)}</span>${a.agent_name ? ` (${esc(a.agent_name)})` : ''}`).join(' · ')}</div>
         </div>`}
         ${quarantine.length === 0 ? '' : `
         <details style="margin-top:8px">
-          <summary>${quarantine.length} held call${quarantine.length === 1 ? '' : 's'} (kept whole, nothing dropped)</summary>
-          <table class="table"><thead><tr><th>Number</th><th>Why held</th><th>Last seen</th></tr></thead><tbody>
+          <summary>${quarantine.length} held call record${quarantine.length === 1 ? '' : 's'} (kept whole, nothing dropped)</summary>
+          <table class="table"><thead><tr><th>Agent</th><th>Why held</th><th>Last seen</th></tr></thead><tbody>
           ${quarantine.map((r) => `
             <tr>
-              <td class="mono">${esc(r.emp_msisdn ?? '—')}</td>
+              <td class="mono">${esc(r.agent_identifier ?? '—')}</td>
               <td>${esc(r.reason)}</td>
               <td>${esc(fmtDT(r.last_seen_at))}</td>
             </tr>`).join('')}
@@ -849,13 +868,13 @@ function renderCallyzer(body, cz, me, redraw) {
     </div>`);
   body.appendChild(panel);
 
-  panel.querySelector('#cz-sync')?.addEventListener('click', async (e) => {
+  panel.querySelector('#tt-sync')?.addEventListener('click', async (e) => {
     e.target.disabled = true;
     e.target.textContent = 'Syncing…';
     try {
-      const s = await post('/integrations/callyzer/sync', {});
-      toast(`Callyzer: ${Number(s?.logs?.seen ?? 0)} rows seen, ${Number(s?.logs?.inserted ?? 0)} new, `
-        + `${Number(s?.logs?.matched ?? 0)} matched, ${Number(s?.logs?.quarantined ?? 0)} held.`);
+      const s = await post('/integrations/tata-tele/sync', {});
+      toast(`Tata Tele: ${Number(s?.cdrs?.seen ?? 0)} records seen, ${Number(s?.cdrs?.inserted ?? 0)} new, `
+        + `${Number(s?.cdrs?.matched ?? 0)} matched, ${Number(s?.cdrs?.quarantined ?? 0)} held.`);
       await redraw();
     } catch (err) {
       e.target.disabled = false;

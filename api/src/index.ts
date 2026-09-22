@@ -93,77 +93,95 @@ if (serviceUserId && hasSheetCreds) {
   app.log.warn('no Google credentials configured - sheet sync is off; use the Admin > Ingestion screen or the ingest CLI');
 }
 
-// Scheduled Callyzer reconcile: only when the API key is configured. The
-// webhook (routes/callyzer.ts) works either way; this pull is what makes a
-// dropped webhook cost minutes instead of a call recorded as unverified.
-// Behaviour (on/off, window, base URL) lives in crm.settings and is re-read
-// every run, so flipping callyzer.enabled needs no restart.
-let callyzerTimer: NodeJS.Timeout | null = null;
+// Tata Tele Smartflo: one shared client serves click-to-call and the
+// scheduled CDR reconcile, so both draw on one rate budget and one login.
+// The webhook (routes/tataTele.ts) works without any of this; the pull is
+// what makes a dropped webhook cost minutes instead of a call recorded as
+// unverified. Behaviour (on/off, window, base URL) lives in crm.settings and
+// is re-read every run, so flipping tata_tele.enabled needs no restart.
+let tataTeleTimer: NodeJS.Timeout | null = null;
 
-if (serviceUserId && process.env.CALLYZER_API_KEY) {
-  const { CallyzerWorker } = await import('./integrations/callyzer/worker.ts');
-  const worker = new CallyzerWorker(app.db, serviceUserId, process.env.CALLYZER_API_KEY);
-  const intervalMin = Number(process.env.CALLYZER_SYNC_MINUTES ?? 15);
-  let running = false;
+const { tataTeleAuthFromEnv } = await import('./integrations/tata_tele/client.ts');
+const tataAuth = tataTeleAuthFromEnv();
 
-  const beat = async (ms: number, error: string | null): Promise<void> => {
-    try {
-      await app.db.withUser(serviceUserId, (q) =>
-        q.query('select crm.record_job_run($1, $2, $3)', ['callyzer_sync', ms, error]),
-      );
-    } catch (err) {
-      app.log.warn({ err }, 'could not record callyzer-sync heartbeat');
-    }
-  };
-
-  const syncOnce = async (): Promise<void> => {
-    if (running) return;
-    running = true;
-    const started = Date.now();
-    try {
-      const summary = await worker.syncOnce();
-      // Disabled in settings is a deliberate quiet, not a run: no heartbeat,
-      // or the health panel would show a "working" sync that syncs nothing.
-      if (summary) {
-        app.log.info({ summary }, 'callyzer sync');
-        await beat(Date.now() - started, null);
-      }
-    } catch (err) {
-      app.log.error({ err }, 'callyzer sync failed');
-      await beat(Date.now() - started, err instanceof Error ? err.message : String(err));
-    } finally {
-      running = false;
-    }
-  };
-
-  // Let an admin reconcile (or backfill deeper) from the screen. Unlike the
-  // timer this rethrows, so the screen shows Callyzer's own error - which for
-  // a 403 is the one that matters: the subscription has expired.
-  app.decorate('callyzerSyncNow', async (hours?: number) => {
-    const started = Date.now();
-    try {
-      const summary = await worker.syncOnce(hours);
-      if (summary) await beat(Date.now() - started, null);
-      return summary;
-    } catch (err) {
-      await beat(Date.now() - started, err instanceof Error ? err.message : String(err));
-      throw err;
-    }
+if (tataAuth) {
+  const { TataTeleClient } = await import('./integrations/tata_tele/client.ts');
+  const client = new TataTeleClient({
+    auth: tataAuth,
+    baseUrl: 'https://api-smartflo.tatateleservices.com/v1/',
   });
+  // Click-to-call needs only credentials, not the service account.
+  app.decorate('tataTele', client);
 
-  void syncOnce();
-  callyzerTimer = setInterval(() => void syncOnce(), intervalMin * 60_000);
-  callyzerTimer.unref();
-  app.log.info({ everyMinutes: intervalMin }, 'Callyzer sync scheduled');
-} else if (serviceUserId) {
-  app.log.info('CALLYZER_API_KEY is not set - the Callyzer pull is off; the webhook still works if CALLYZER_WEBHOOK_SECRET is set');
+  if (serviceUserId) {
+    const { TataTeleWorker } = await import('./integrations/tata_tele/worker.ts');
+    const worker = new TataTeleWorker(app.db, serviceUserId, client);
+    const intervalMin = Number(process.env.TATA_TELE_SYNC_MINUTES ?? 15);
+    let running = false;
+
+    const beat = async (ms: number, error: string | null): Promise<void> => {
+      try {
+        await app.db.withUser(serviceUserId, (q) =>
+          q.query('select crm.record_job_run($1, $2, $3)', ['tata_tele_sync', ms, error]),
+        );
+      } catch (err) {
+        app.log.warn({ err }, 'could not record tata-tele-sync heartbeat');
+      }
+    };
+
+    const syncOnce = async (): Promise<void> => {
+      if (running) return;
+      running = true;
+      const started = Date.now();
+      try {
+        const summary = await worker.syncOnce();
+        // Disabled in settings is a deliberate quiet, not a run: no heartbeat,
+        // or the health panel would show a "working" sync that syncs nothing.
+        if (summary) {
+          app.log.info({ summary }, 'tata tele sync');
+          await beat(Date.now() - started, null);
+        }
+      } catch (err) {
+        app.log.error({ err }, 'tata tele sync failed');
+        await beat(Date.now() - started, err instanceof Error ? err.message : String(err));
+      } finally {
+        running = false;
+      }
+    };
+
+    // Let an admin reconcile (or backfill deeper) from the screen. Unlike the
+    // timer this rethrows, so the screen shows Smartflo's own error - which
+    // for a 401 is the one that matters: the login has expired.
+    app.decorate('tataTeleSyncNow', async (hours?: number) => {
+      const started = Date.now();
+      try {
+        const summary = await worker.syncOnce(hours);
+        if (summary) await beat(Date.now() - started, null);
+        return summary;
+      } catch (err) {
+        await beat(Date.now() - started, err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+    });
+
+    void syncOnce();
+    tataTeleTimer = setInterval(() => void syncOnce(), intervalMin * 60_000);
+    tataTeleTimer.unref();
+    app.log.info({ everyMinutes: intervalMin }, 'Tata Tele sync scheduled');
+  }
+} else {
+  app.log.info(
+    'Tata Tele credentials are not set (TATA_TELE_LOGIN_EMAIL/TATA_TELE_LOGIN_PASSWORD or '
+      + 'TATA_TELE_API_TOKEN) - click-to-call and the CDR pull are off; the webhook still works '
+      + 'if TATA_TELE_WEBHOOK_SECRET is set',
+  );
 }
 
 const shutdown = async (signal: string): Promise<void> => {
   app.log.info({ signal }, 'shutting down');
   scheduler?.stop();
   if (ingestTimer) clearInterval(ingestTimer);
-  if (callyzerTimer) clearInterval(callyzerTimer);
+  if (tataTeleTimer) clearInterval(tataTeleTimer);
   await app.close();
   process.exit(0);
 };

@@ -251,7 +251,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
           [id],
         ),
         q.many(
-          // LEFT JOIN to the device row for the Callyzer recording. RLS on
+          // LEFT JOIN to the device row for the Smartflo recording. RLS on
           // device_call_logs decides who gets a row back (owner, admin, and a
           // counsellor on a matched lead); on top of that the recording is
           // withheld from callers below - coaching material, not self-review.

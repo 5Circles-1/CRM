@@ -65,9 +65,11 @@ create role crm_api login password '...' in role crm_app;
 | `SESSION_COOKIE_NAME` | no | Default `crm_session` |
 | `INSECURE_COOKIES` | no | Set `true` only for local plain HTTP |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | for sheets | Otherwise `GOOGLE_APPLICATION_CREDENTIALS` |
-| `CALLYZER_API_KEY` | for Callyzer | Bearer token from the Callyzer dashboard; enables the scheduled pull |
-| `CALLYZER_WEBHOOK_SECRET` | for Callyzer | Shared secret; enables `POST /integrations/callyzer/webhook` |
-| `CALLYZER_SYNC_MINUTES` | no | Default 15 |
+| `TATA_TELE_LOGIN_EMAIL` | for Tata Tele | Smartflo API login; with the password, enables click-to-call and the scheduled CDR pull |
+| `TATA_TELE_LOGIN_PASSWORD` | for Tata Tele | Smartflo rotates it every 90 days — the health panel names the day it starts failing |
+| `TATA_TELE_API_TOKEN` | alternative | A portal-issued token instead of email+password |
+| `TATA_TELE_WEBHOOK_SECRET` | for Tata Tele | Shared secret; enables `POST /integrations/tata-tele/webhook` |
+| `TATA_TELE_SYNC_MINUTES` | no | Default 15 |
 | `PG_POOL_MAX` | no | Default 10 |
 
 ## Endpoints
@@ -111,19 +113,26 @@ to them and admin — supervision sees the reconciled attempts, not the personal
 log (a counsellor additionally sees rows *matched* to leads they can see, which
 is where the coaching recording lives).
 
-**Callyzer** (a second writer to the same table; see migration 0063) —
-`POST /integrations/callyzer/webhook` takes Callyzer's push, authenticated by
-the shared secret (`?secret=` on the URL or an `x-callyzer-secret` header),
-compared in constant time. `GET /integrations/callyzer/health` is the
-counsellor/admin readout: sync and webhook liveness, the handset roster with
-unmapped numbers, open quarantine. `POST /integrations/callyzer/sync`
-(admin/ops) reconciles on demand, optionally deeper (`{"hours": n}`). Both
-the webhook and the scheduled pull feed one `SECURITY DEFINER` door,
-`crm.ingest_callyzer_logs()`: employee SIM → `users.dialing_msisdn` (the one
-mapping fact, editable via `PUT /admin/users/:id/dialing-msisdn`), client
-number → lead match, upsert on re-delivery (notes and recordings arrive late),
-quarantine for anything unplaceable — never a silent drop. Callyzer's Lead
-APIs, statuses and reminders are deliberately not connected: it is a sensor,
+**Tata Tele Smartflo** (the dialler and the sensor; see migration 0074) —
+`POST /leads/:id/call` places a click-to-call: the lead is read under the
+requester's RLS (an invisible lead is a 404, and the API never accepts a raw
+phone number from the browser), Smartflo rings the caller's `dialing_msisdn`
+first, then bridges the client; the click lands in `crm.telephony_calls` with
+Smartflo's `ref_id`, success or refusal. `POST /integrations/tata-tele/webhook`
+takes Smartflo's call-event push, authenticated by the shared secret
+(`?secret=` on the URL or an `x-tata-tele-secret` header), compared in
+constant time. `GET /integrations/tata-tele/health` is the counsellor/admin
+readout: sync and webhook liveness, today's clicks and call records, the agent
+roster with unmapped numbers, open quarantine.
+`POST /integrations/tata-tele/sync` (admin/ops) reconciles on demand,
+optionally deeper (`{"hours": n}`). Both the webhook and the scheduled pull
+feed one `SECURITY DEFINER` door, `crm.ingest_tata_tele_cdrs()`: agent number
+→ `users.dialing_msisdn` (the one mapping fact, editable via
+`PUT /admin/users/:id/dialing-msisdn`), `ref_id` → the click that placed the
+call, client number → lead match, upsert on re-delivery (the same call
+arrives from the webhook and the pull), quarantine for anything unplaceable —
+never a silent drop. Smartflo's lead ids, dispositions, broadcasts and
+dialler campaigns are deliberately not connected: it dials and it reports,
 never a second CRM.
 
 **Admin** — users, teams, sources, quarantine, per-record audit trail, and
@@ -179,10 +188,11 @@ Without `SERVICE_USER_ID` the jobs are disabled and the server logs a warning.
 the real Fastify app with `app.inject()` against a real Postgres: auth and
 lockout, RLS boundaries through HTTP, ingestion idempotency and quarantine,
 the calling pipeline, transfer authority and cap, attendance, dashboards,
-deals/collections/promises, the device-log sync contract, the Callyzer
-webhook/pull/health surface (with a fake Callyzer server), and the boot-time
-RLS guard. `test/callyzer.test.ts` unit-tests the rate-limit queue and the
-client's 429/403 handling against a virtual clock — no database needed.
+deals/collections/promises, the device-log sync contract, the Tata Tele
+click-to-call/webhook/pull/health surface (with a fake Smartflo server), and
+the boot-time RLS guard. `test/tata_tele.test.ts` unit-tests the rate-limit
+queue and the client's token lifecycle and 429/401 handling against a virtual
+clock — no database needed.
 
 `npm run test:e2e` goes one layer further: it boots the server on a real port
 and drives the real UI in headless Chromium — caller logs a call with a

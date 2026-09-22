@@ -1,6 +1,6 @@
-import { get } from '../api.js';
+import { get, post } from '../api.js';
 import { addLeadModal } from '../addlead.js';
-import { agoLabel, esc, fmtDT, h } from '../util.js';
+import { agoLabel, esc, fmtDT, h, toast } from '../util.js';
 
 /**
  * Requirements 4 and 5: the caller's pipeline, ordered so it can be worked top
@@ -143,7 +143,7 @@ export async function render(outlet, me) {
             ${b.blurb ? `<span class="hint" style="font-weight:400"> — ${esc(b.blurb)}</span>` : ''}
           </div>`));
         const wrap = h(`<div data-testid="bucket-${esc(b.key)}"></div>`);
-        for (const l of group) wrap.appendChild(card(l));
+        for (const l of group) wrap.appendChild(card(l, me));
         outlet.appendChild(wrap);
       }
     }
@@ -203,7 +203,7 @@ async function drawBoard(outlet, me, leads) {
     if (total === 0) {
       col.appendChild(h('<div class="empty">Nothing here — clear.</div>'));
     }
-    for (const l of c.items) col.appendChild(card(l));
+    for (const l of c.items) col.appendChild(card(l, me));
     for (const l of c.extra ?? []) {
       col.appendChild(h(`
         <a class="leadcard" href="#/lead/${esc(l.lead_id)}">
@@ -277,7 +277,7 @@ async function drawExtras(outlet, me) {
   }
 }
 
-function card(l) {
+function card(l, me) {
   const when =
     l.bucket === 'overdue' ? `<span class="badge b-bad">overdue ${agoLabel(l.minutes_overdue)}</span>`
     : l.bucket === 'breached' ? `<span class="badge b-bad">breached ${agoLabel(l.minutes_overdue)}</span>`
@@ -295,7 +295,7 @@ function card(l) {
       ? `<span class="badge b-info">${esc(fmtDT(l.callback_at ?? l.next_action_at))}</span>`
     : `<span class="badge b-mute">${esc(fmtDT(l.next_action_at))}</span>`;
 
-  return h(`
+  const el = h(`
     <a class="leadcard" href="#/lead/${esc(l.lead_id)}">
       <div class="r1">
         <span class="name">${esc(l.full_name ?? 'Unnamed lead')}</span>
@@ -323,4 +323,29 @@ function card(l) {
           ? `<span class="note">“${esc(l.callback_note)}”</span>` : ''}
       </div>
     </a>`);
+
+  // Back-to-back dialling (Tata Tele): one click places the call AND opens
+  // the lead, so the outcome is logged where the caller already is. The next
+  // card down is the next call — nobody types a number all day.
+  if (me?.cloud_calling) {
+    const dial = h(`<button class="btn small" data-testid="card-dial"
+      title="Tata Tele rings your phone first, then connects ${esc(l.full_name ?? 'the client')}">📞 Call</button>`);
+    dial.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dial.disabled = true;
+      dial.textContent = '📞 Calling…';
+      try {
+        const r = await post(`/leads/${l.lead_id}/call`);
+        toast(r.message ?? 'Smartflo is ringing your phone.');
+        location.hash = `#/lead/${l.lead_id}`;
+      } catch (err) {
+        dial.disabled = false;
+        dial.textContent = '📞 Call';
+        toast(err.message, 'err');
+      }
+    });
+    el.querySelector('.r1').appendChild(dial);
+  }
+  return el;
 }

@@ -22,11 +22,24 @@ declare module 'fastify' {
      */
     syncSheetsNow?: () => Promise<unknown[]>;
     /**
-     * Reconcile against Callyzer right now, same split as syncSheetsNow:
-     * present only when CALLYZER_API_KEY is configured. Resolves null when
-     * callyzer.enabled is off.
+     * Reconcile against Smartflo right now, same split as syncSheetsNow:
+     * present only when SERVICE_USER_ID and the Tata Tele credentials are
+     * configured. Resolves null when tata_tele.enabled is off.
      */
-    callyzerSyncNow?: (hours?: number) => Promise<unknown | null>;
+    tataTeleSyncNow?: (hours?: number) => Promise<unknown | null>;
+    /**
+     * The one Smartflo client, shared by click-to-call and the sync so they
+     * share the account's rate budget and token. Present only when the
+     * credentials are configured; the routes say so plainly when it is not.
+     */
+    tataTele?: {
+      baseUrl: string;
+      clickToCall(params: {
+        agentNumber: string;
+        destinationNumber: string;
+        callerId?: string;
+      }): Promise<{ refId: string | null; message: string }>;
+    };
   }
 }
 
@@ -44,9 +57,9 @@ function isPublicPath(url: string): boolean {
     path === '/favicon.ico' ||
     path === '/ui' ||
     path.startsWith('/ui/') ||
-    // Callyzer's cloud has no CRM session; the route authenticates every
+    // Smartflo's cloud has no CRM session; the route authenticates every
     // request itself with the shared webhook secret, in constant time.
-    path === '/integrations/callyzer/webhook'
+    path === '/integrations/tata-tele/webhook'
   );
 }
 

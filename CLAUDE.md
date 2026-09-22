@@ -285,22 +285,35 @@ Do not undo these without understanding why they exist.
   (`dial.min_talk_seconds_for_connect`, default 30s). Otherwise disposition
   accuracy is fiction and so is every conversion rate built on it.
 
-- **Callyzer is a sensor, never a second CRM** (0063). It answers one
-  question — did this call really happen, and for how long — as a second
-  writer to `crm.device_call_logs`, namespaced by `source` and a `callyzer:`
-  row-key prefix so the in-house app and Callyzer can never double-count.
-  Its Lead APIs, lead statuses, reminders and lead ids are deliberately not
-  connected: a second system distributing leads would fight the fairness
-  engine, RLS and the `next_action_at` guarantee. The employee mapping IS
-  `users.dialing_msisdn` (one fact, one place); rows that cannot be placed are
-  quarantined whole and re-ingest themselves once the cause is fixed; the
-  account timezone is asserted per row, not assumed, because a wrong zone
-  moves calls across `crm.ist_date()` boundaries. `callyzer.enabled` ships
-  off; the watchdog (`crm.check_callyzer_health`) raises a named bell alarm —
-  a lapsed subscription by name — and stands itself down, like the intake
-  alarm. WhatsApp calls are stored but verify a dial only when
-  `callyzer.count_whatsapp_calls` is on; recordings are coaching material for
-  counsellors and admin, never shown to the caller themselves.
+- **Tata Tele Smartflo is the dialler and the sensor, never a second CRM**
+  (0074, replacing Callyzer, which was retired wholesale before go-live —
+  owner decision 22 Sep). Two jobs only. It **places** the call:
+  `POST /leads/:id/call` bridges the caller's phone to the client's
+  (back-to-back calling, no number ever typed or exposed to the browser),
+  recording every click in `crm.telephony_calls` with Smartflo's `ref_id` —
+  a click that never became a call is a countable row, not silence. And it
+  **reports** the call: CDRs from the webhook and the rate-limited pull land
+  in `crm.device_call_logs` (source `tata_tele`, row-key prefix `tata:`, so
+  the in-house app and Smartflo can never double-count), tied back to the
+  click by `ref_id`, and `answered_seconds`/`billsec` is the stored talk
+  time — ring time verifying a connect is exactly the fiction the table
+  exists to prevent. Smartflo's lead ids, dispositions, broadcasts and
+  dialler campaigns are deliberately not connected: a second system
+  distributing leads would fight the fairness engine, RLS and the
+  `next_action_at` guarantee. The agent mapping IS `users.dialing_msisdn`
+  (one fact, one place — the number Smartflo rings first and reports back);
+  rows that cannot be placed are quarantined whole and re-ingest themselves
+  once the cause is fixed, except the inbound call no agent ever answered,
+  which names nobody, has no fix that ever places it, and is counted rather
+  than parked in quarantine forever. Stamps arrive zoneless and are read in
+  `tata_tele.timezone`, because a wrong zone moves calls across
+  `crm.ist_date()` boundaries. `tata_tele.enabled` ships off; the watchdog
+  (`crm.check_tata_tele_health`) raises a named bell alarm — Smartflo's
+  90-day password rotation by name — and stands itself down, like the intake
+  alarm. Recordings are coaching material for counsellors and admin, never
+  shown to the caller themselves. Historical `callyzer` rows in
+  `device_call_logs` stay: they verified real attempts, and deleting them
+  would falsify every past dial count.
 
 - **Row-level security is the access control, not the API.** The app connects as
   `crm_app` (no BYPASSRLS, not the table owner) and sets `app.user_id` per
@@ -383,17 +396,20 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(374 database assertions, 335 API tests, 17 browser E2E flows), the
+(377 database assertions, 340 API tests, 17 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
-third-party dependencies, compiles to a verified APK), and the **Callyzer
-integration** (migration 0063, `api/src/integrations/callyzer/`) — webhook +
-rate-limited scheduled pull feeding the same `device_call_logs` table and the
-same `is_verified` flip as the app. The log-call form offers the matching
-device call and one click makes the attempt `is_verified`.
+third-party dependencies, compiles to a verified APK), and the **Tata Tele
+Smartflo integration** (migration 0074, `api/src/integrations/tata_tele/`) —
+click-to-call from the lead page and My Pipeline cards, plus webhook +
+rate-limited scheduled CDR pull feeding the same `device_call_logs` table and
+the same `is_verified` flip as the app. The log-call form offers the matching
+call record and one click makes the attempt `is_verified`. The earlier
+Callyzer integration (0063) was retired in 0074, before it ever went live.
 
 Not verifiable from this repository: the app running on a physical handset
-(ten-minute test in android/README.md), the Callyzer pull against their live
-API (needs a paid API key — ₹150/number/month — and enrolled handsets; the
-contract is tested against their documented v2.2 shapes), and anything in the
-go-live runbook that needs a real server. iOS cannot run the companion app
-(no call-log access) — see docs/open-questions.md question 2.
+(ten-minute test in android/README.md), Smartflo against the live account
+(click-to-call, webhook delivery and the CDR pull need the paid Smartflo
+plan, agents configured, and API access enabled by TTBS; the contract is
+tested against their documented v1 shapes with a fake Smartflo server), and
+anything in the go-live runbook that needs a real server. iOS cannot run the
+companion app (no call-log access) — see docs/open-questions.md question 2.

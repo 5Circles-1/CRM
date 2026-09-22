@@ -66,6 +66,9 @@ export async function render(outlet, me, params) {
         </div>
         <div class="row">
           ${lead.pool ? '<button class="btn primary" data-act="claim" data-testid="claim-btn">Pick up &amp; work</button>' : ''}
+          ${open && me.cloud_calling
+            ? '<button class="btn primary" data-act="dial" data-testid="dial-btn" title="Tata Tele rings your phone first, then connects the client — no manual dialling">📞 Call</button>'
+            : ''}
           ${open ? '<button class="btn primary" data-act="call" data-testid="log-call-btn">Log a call</button>' : ''}
           <button class="btn" data-act="whatsapp" data-testid="whatsapp-btn">${lead.whatsapp_sent_at ? '✓ WhatsApp sent' : 'Mark WhatsApp sent'}</button>
           <button class="btn" data-act="walkin" data-testid="walkin-btn">${lead.walked_in_at ? '✓ Walked in' : 'Mark walked in'}</button>
@@ -137,7 +140,7 @@ export async function render(outlet, me, params) {
           <td>${badge(a.disposition)}${a.is_connect ? ' <span class="badge b-ok">connect</span>' : ''}</td>
           <td class="num">${esc(fmtTalk(a.duration_seconds))}</td>
           <td>${a.is_verified ? '<span class="badge b-ok">device</span>' : '<span class="badge b-mute">manual</span>'}${
-            a.recording_url ? ` <a href="${esc(a.recording_url)}" target="_blank" rel="noopener" title="Call recording (Callyzer)">🎧</a>` : ''}</td>
+            a.recording_url ? ` <a href="${esc(a.recording_url)}" target="_blank" rel="noopener" title="Call recording (Tata Tele)">🎧</a>` : ''}</td>
           <td>${esc(a.notes ?? '')}</td>
         </tr>`).join('')}
       </tbody></table>`));
@@ -168,6 +171,23 @@ export async function render(outlet, me, params) {
     const act = e.target?.dataset?.act;
     if (!act) return;
     if (act === 'call') logCallModal(lead, () => render(outlet, me, params));
+
+    if (act === 'dial') {
+      const btn = e.target;
+      btn.disabled = true;
+      btn.textContent = '📞 Calling…';
+      try {
+        const r = await post(`/leads/${lead.id}/call`);
+        toast(r.message ?? 'Smartflo is ringing your phone — the client is dialled when you answer.');
+        // Leave the button disabled a moment: double-clicking rings the
+        // client twice from two bridges, which reads as harassment.
+        setTimeout(() => { btn.disabled = false; btn.textContent = '📞 Call'; }, 8000);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = '📞 Call';
+        toast(err.message, 'err');
+      }
+    }
 
     if (act === 'whatsapp' || act === 'walkin') {
       const sent = act === 'whatsapp' ? !lead.whatsapp_sent_at : !lead.walked_in_at;
@@ -397,6 +417,7 @@ function eventLabel(e) {
     case 'assigned': return 'Assigned to a caller';
     case 'assignment_deferred': return 'Arrived while nobody was on the floor — held for shift start';
     case 'call_logged': return `Call logged: ${String(p.disposition ?? '').replace(/_/g, ' ')} · ${fmtTalk(p.duration_seconds)}${p.is_connect ? ' · connect' : ''}${p.verified ? ' · device-verified' : ''}`;
+    case 'click_to_call': return 'Cloud call placed from the CRM — Tata Tele rang the phones';
     case 'callback_scheduled': return `Callback set for ${fmtDT(p.scheduled_at)}${p.note ? ` — “${p.note}”` : ''}`;
     case 'callback_missed': return `Callback missed (was due ${fmtDT(p.scheduled_at)})`;
     case 'transferred': return `Transferred to another caller (${String(p.reason ?? '').replace(/_/g, ' ')})`;

@@ -299,47 +299,57 @@ single check exercises Meta → Sheet → ingestion → distribution → caller 
 
 ---
 
-## Phase 7b — Connect Callyzer (optional, ~30 minutes + the trial)
+## Phase 7b — Connect Tata Tele Smartflo (~45 minutes, after the account is live)
 
-Callyzer replaces or backs up the in-house companion app as the call-log
-sensor: same table, same `is_verified` flip. Start on their **15-day free
-trial (5 numbers)** before paying — the API + Webhook add-on is
-**₹150 per number per month** on top of the plan.
+Smartflo is the floor's **dialler and its call sensor**: the 📞 Call button
+rings the caller's phone first, then bridges the client — back-to-back
+calling, no number typed by hand — and Smartflo's call records verify every
+dial (same table and same `is_verified` flip as the companion app). Have the
+TTBS onboarding done first: DID/Pilot number allotted, plan active, and the
+**API access enabled on the account** (ask the TTBS account manager — it is a
+provisioning flag, not a portal switch).
 
-0. **Before enrolling any handset**: Callyzer Biz syncs the *whole* personal
-   SIM log and its dashboard shows the admin all of it. Put the written
-   policy in front of the callers and get their consent first. Add each
-   caller's personal contacts to Callyzer's **Exclude Numbers** and set the
-   webhook's *Skip Exclude Numbers* to **No**.
-1. In the Callyzer dashboard, check the **account timezone is IST** — the CRM
-   quarantines rows stamped with any other zone rather than guessing.
-2. Enroll each pilot handset: install **Callyzer Biz**, enter the Device
-   Connect Code, pick the SIM the caller dials from, grant its permissions.
-3. Generate the API token: **Connectors → API & Webhook → API Config →
-   Generate API Access Key**. Configure the webhook in **Webhook Config**:
-   - URL: `https://crm.<your-domain>/integrations/callyzer/webhook?secret=<a long random string>`
-   - Secret: the same string; version **2.2**; Skip Exclude Numbers: **No**.
+1. **Create the agents.** In the Smartflo portal (**Services → Users/Agents**)
+   create one agent per caller and counsellor, each with their **own mobile
+   as the follow-me number** — that is the phone Smartflo rings first. Use
+   the same numbers you will set in the CRM.
+2. **Create the API login.** A dedicated Smartflo user for the CRM (its own
+   email + password, admin API rights). **Diary note: Smartflo expires this
+   password every 90 days.** When it lapses, the CRM's bell rings a named
+   "Smartflo login" alarm — the fix is resetting it and updating `.env`.
+3. **Configure the webhook** (**Services → Webhooks**): trigger **on call
+   hangup**, method **POST**, content type **application/json**, timezone
+   **IST**, and map at least these variables:
+   `$uuid, $call_id, $ref_id, $direction, $call_status, $answered_agent_number,
+   $caller_id_number, $call_to_number, $customer_number_with_prefix,
+   $start_stamp, $end_stamp, $billsec, $duration, $recording_url`
+   - URL: `https://crm.<your-domain>/integrations/tata-tele/webhook?secret=<a long random string>`
 4. On the server, in `.env` add (then `sudo systemctl restart crm`):
    ```bash
-   # CALLYZER_API_KEY=<the access key>
-   # CALLYZER_WEBHOOK_SECRET=<the same random string as in the URL>
+   # TATA_TELE_LOGIN_EMAIL=<the CRM's Smartflo login>
+   # TATA_TELE_LOGIN_PASSWORD=<its password>
+   # TATA_TELE_WEBHOOK_SECRET=<the same random string as in the URL>
    ```
-5. In **Admin → Settings** set `callyzer.enabled` to `true`.
-6. In **Admin → Users**, make sure every enrolled caller's **Dialing SIM** is
-   the number registered in Callyzer — that column IS the mapping. The
-   **Admin → Ingestion → Callyzer** panel lists any number it cannot place;
-   held calls re-ingest themselves once the SIM is set.
+5. In **Admin → Settings** set `tata_tele.enabled` to `true`. If clients
+   should see a specific DID when called, put it in `tata_tele.caller_id`;
+   blank uses the account's Pilot Number.
+6. In **Admin → Users**, make sure every caller's **Dialing number** is
+   exactly their agent's follow-me number — that column IS the mapping, for
+   click-to-call and for verification alike. The **Admin → Ingestion → Tata
+   Tele** panel names any agent it cannot place and any caller Smartflo does
+   not cover; held call records re-ingest themselves once the number is set.
 
-**✓ check:** from an enrolled handset, call your own test lead's number, then
-open the lead and log the call — the form should offer "Phone shows a call…"
-within a sync cycle (~15 minutes, or press **Sync now** on the Callyzer
-panel), and the logged attempt shows the **device** badge. A counsellor
-opening the same lead sees the 🎧 recording link if recordings are on.
+**✓ check:** open your own test lead and press **📞 Call**. Your phone rings,
+then the lead's number is dialled. After hangup, press **Log a call** — the
+form offers "Phone shows a call…" within moments (webhook) or by the next
+sync cycle (~15 minutes, or **Sync now** on the panel), and the logged
+attempt shows the **device** badge. A counsellor opening the same lead sees
+the 🎧 recording link if call recording is on in Smartflo.
 
-Run the trial **in parallel with the companion app for two weeks** — they
-share the table without double-counting — and keep whichever sensor actually
-catches more. If Callyzer's subscription lapses later, the bell alarm names
-it; verification never fails silently.
+The companion app can keep running in parallel — the two sensors share the
+table without double-counting — but with every call placed through Smartflo
+it is redundant on cloud-dialled handsets. If the Smartflo login or webhook
+goes quiet later, the bell alarm names it; verification never fails silently.
 
 ---
 
