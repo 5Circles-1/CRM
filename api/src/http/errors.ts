@@ -16,6 +16,8 @@ export const unauthorized = (m = 'not authenticated') => new HttpError(401, 'una
 export const forbidden = (m = 'not permitted') => new HttpError(403, 'forbidden', m);
 export const notFound = (m = 'not found') => new HttpError(404, 'not_found', m);
 export const conflict = (m: string) => new HttpError(409, 'conflict', m);
+/** An upstream service (Smartflo) failed us: not the user's fault, not ours. */
+export const badGateway = (m: string) => new HttpError(502, 'upstream_failed', m);
 
 /**
  * Map the database's own guarantees onto HTTP.

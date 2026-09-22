@@ -3239,11 +3239,11 @@ select crm_test.check(
   (select value = 'true'::jsonb from crm.settings where key = 'alerts.chime'), null);
 
 -- The two engine emergencies on the bell are the ones that stand themselves
--- down when the problem ends (0058, 0063): lead intake and call verification.
+-- down when the problem ends (0058, 0074): lead intake and cloud calling.
 -- Anything else on this list must earn its place the same way.
 select crm_test.check(
   'POP', 'the bell counts only human-set reminders, the self-resolving emergencies and their all-clears',
-  (select value = '["callback_due","callback_soon","custom_reminder","intake_stalled","intake_recovered","callyzer_stalled","callyzer_recovered"]'::jsonb
+  (select value = '["callback_due","callback_soon","custom_reminder","intake_stalled","intake_recovered","tata_tele_stalled","tata_tele_recovered"]'::jsonb
      from crm.settings where key = 'alerts.bell_kinds'),
   (select value::text from crm.settings where key = 'alerts.bell_kinds'));
 
@@ -4041,284 +4041,321 @@ select crm_test.check(
   null);
 
 -- =============================================================================
--- CALLYZER (0063): a second writer to device_call_logs, never a second CRM.
--- The ingester maps the employee SIM to a user, matches the client number to
--- a lead, upserts (rows are modified after delivery), and quarantines rather
--- than drops anything it cannot place. The watchdog raises a named alarm and
--- stands itself down.
+-- TATA TELE (0074): the floor's dialler and its call sensor, never a second
+-- CRM. Click-to-call originations are rows; Smartflo's CDRs enter through one
+-- ingester that maps the agent number to a user, ties the record to the click
+-- that placed it, matches the client number to a lead, upserts (the same call
+-- is legitimately delivered twice), and quarantines rather than drops
+-- anything it cannot place. The watchdog raises a named alarm and stands
+-- itself down.
 -- =============================================================================
 
 reset role;
 
-update crm.settings set value = 'true'::jsonb where key = 'callyzer.enabled';
+update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';
 
 -- A lead for caller A1's client on a fresh number.
 insert into crm.leads (id, source_id, full_name, phone_e164, caller_id, team_id, status)
-values ('cccccccc-0000-0000-0000-000000000001', :SRC, 'Callyzer Client', '+919811100001',
+values ('cccccccc-0000-0000-0000-000000000001', :SRC, 'Smartflo Client', '+919811100001',
         :A1, :TEAM_A, 'working');
 
--- A mapped employee (A1 dials from +919000000001, per seed), matched client,
--- correct account zone. call_date/call_time carry no zone: they must land as
--- IST wall-clock, or every daily rollup shifts.
-select (r).seen as _s, (r).inserted as _i, (r).matched as _m, (r).quarantined as _q
-  from crm.ingest_callyzer_logs(jsonb_build_array(jsonb_build_object(
-    'id', 'cz-1', 'emp_country_code', '91', 'emp_number', '9000000001',
-    'client_country_code', '91', 'client_number', '9811100001',
-    'duration', '45', 'call_type', 'Outgoing',
-    'call_date', '2026-08-20', 'call_time', '11:05:00',
-    'note', 'first talk', 'call_recording_url', 'https://media1.callyzer.co/rec1.mp3',
-    'call_method', 'PhoneCall', 'call_mode', 'Voice',
-    'synced_at', '2026-08-20 11:06:00 IST'))) r \gset
+-- The click: recorded by the route as the caller themselves, through RLS -
+-- proving the insert policy admits exactly that shape.
+set role crm_app;
+select set_config('app.user_id', :A1, false) as _a1ctx \gset
+insert into crm.telephony_calls (id, lead_id, user_id, agent_msisdn, destination_msisdn, provider_ref_id)
+values ('dddddddd-0000-0000-0000-000000000001', 'cccccccc-0000-0000-0000-000000000001',
+        '22222222-0000-0000-0000-000000000001', '+919000000001', '+919811100001', 'C2C-REF-1');
+
+-- Only the definer-rights ingester may touch a click afterwards: RLS would
+-- silently no-op a denied UPDATE, so the privilege itself is revoked.
+do $$
+begin
+  update crm.telephony_calls set status = 'failed'
+   where id = 'dddddddd-0000-0000-0000-000000000001';
+  perform crm_test.check('TT', 'crm_app cannot rewrite a click-to-call row', false,
+                         'the update unexpectedly succeeded');
+exception when insufficient_privilege then
+  perform crm_test.check('TT', 'crm_app cannot rewrite a click-to-call row', true, null);
+end $$;
+reset role;
+
+-- The webhook delivery for that click: ref_id ties it back, billsec is the
+-- talk time, start_stamp carries no zone and must land as IST wall-clock.
+select (r).seen as _s, (r).inserted as _i, (r).matched as _m, (r).linked as _l, (r).quarantined as _q
+  from crm.ingest_tata_tele_cdrs(jsonb_build_array(jsonb_build_object(
+    'uuid', 'tt-1', 'call_id', '1715235734.1001', 'ref_id', 'C2C-REF-1',
+    'direction', 'outbound', 'call_status', 'answered',
+    'answered_agent_number', '919000000001', 'call_to_number', '919811100001',
+    'start_stamp', '2026-08-20 11:05:00', 'billsec', '62',
+    'recording_url', 'https://cloudphone.tatateleservices.com/file/recording?id=1'))) r \gset
 
 select crm_test.check(
-  'CZ', 'a Callyzer row lands on the right caller and matches the lead',
+  'TT', 'a Smartflo record lands on the right caller and matches the lead',
   :_s = 1 and :_i = 1 and :_m = 1 and :_q = 0
   and exists (select 1 from crm.device_call_logs
-               where device_row_key = 'callyzer:cz-1'
-                 and user_id = :A1 and source = 'callyzer'
-                 and direction = 'outgoing' and duration_seconds = 45
+               where device_row_key = 'tata:tt-1'
+                 and user_id = :A1 and source = 'tata_tele'
+                 and direction = 'outgoing' and duration_seconds = 62
                  and matched_lead_id = 'cccccccc-0000-0000-0000-000000000001'),
   null);
 
 select crm_test.check(
-  'CZ', 'call_date/call_time are interpreted as IST wall-clock',
-  (select started_at from crm.device_call_logs where device_row_key = 'callyzer:cz-1')
+  'TT', 'the CDR is tied back to the click that placed it (ref_id)',
+  :_l = 1
+  and exists (select 1 from crm.telephony_calls
+               where id = 'dddddddd-0000-0000-0000-000000000001'
+                 and device_log_id = (select id from crm.device_call_logs
+                                       where device_row_key = 'tata:tt-1')
+                 and provider_call_id = '1715235734.1001'),
+  null);
+
+select crm_test.check(
+  'TT', 'stamps with no zone are interpreted as account-timezone wall-clock',
+  (select started_at from crm.device_call_logs where device_row_key = 'tata:tt-1')
     = ('2026-08-20 11:05:00'::timestamp at time zone 'Asia/Kolkata'),
   null);
 
--- Callyzer rows are modified after the fact - a note or recording arrives
--- late. Re-delivery must update in place, never double-count.
+-- The pull re-delivers the same call in CDR spelling (date+time,
+-- answered_seconds, agent_number). Same uuid = same row: an update, never a
+-- double-count - and talk time never shrinks, because the "answered" event
+-- can arrive after the hangup one.
 select (r).inserted as _i, (r).updated as _u
-  from crm.ingest_callyzer_logs(jsonb_build_array(jsonb_build_object(
-    'id', 'cz-1', 'emp_country_code', '91', 'emp_number', '9000000001',
-    'client_country_code', '91', 'client_number', '9811100001',
-    'duration', 50, 'call_type', 'Outgoing',
-    'call_date', '2026-08-20', 'call_time', '11:05:00',
-    'note', 'client asked about Grow+',
-    'call_method', 'PhoneCall', 'call_mode', 'Voice',
-    'synced_at', '2026-08-20 11:30:00 IST'))) r \gset
+  from crm.ingest_tata_tele_cdrs(jsonb_build_array(jsonb_build_object(
+    'id', '9001', 'uuid', 'tt-1', 'call_id', '1715235734.1001',
+    'direction', 'outbound', 'status', 'answered',
+    'agent_number', '+91 9000000001', 'client_number', '919811100001',
+    'date', '2026-08-20', 'time', '11:05:00', 'answered_seconds', 30,
+    'notes', 'client asked about Grow+'))) r \gset
 
 select crm_test.check(
-  'CZ', 're-delivery is an upsert: one row, refreshed in place',
+  'TT', 're-delivery is an upsert: one row, refreshed in place, talk time never shrinks',
   :_i = 0 and :_u = 1
-  and (select count(*) from crm.device_call_logs where device_row_key = 'callyzer:cz-1') = 1
+  and (select count(*) from crm.device_call_logs where device_row_key = 'tata:tt-1') = 1
   and exists (select 1 from crm.device_call_logs
-               where device_row_key = 'callyzer:cz-1'
-                 and duration_seconds = 50
+               where device_row_key = 'tata:tt-1'
+                 and duration_seconds = 62
                  and external_note = 'client asked about Grow+'
                  and recording_url is not null),  -- a recording never un-happens
   null);
 
--- The four Callyzer call_types map one-to-one onto the direction CHECK.
-select crm.ingest_callyzer_logs(jsonb_build_array(
-  jsonb_build_object('id', 'cz-2', 'emp_country_code', '91', 'emp_number', '9000000001',
-    'client_country_code', '91', 'client_number', '9811100001', 'duration', 0,
-    'call_type', 'Incoming', 'call_date', '2026-08-20', 'call_time', '12:00:00',
-    'call_method', 'PhoneCall', 'call_mode', 'Voice'),
-  jsonb_build_object('id', 'cz-3', 'emp_country_code', '91', 'emp_number', '9000000001',
-    'client_country_code', '91', 'client_number', '9811100001', 'duration', 0,
-    'call_type', 'Missed', 'call_date', '2026-08-20', 'call_time', '12:01:00',
-    'call_method', 'PhoneCall', 'call_mode', 'Voice'),
-  jsonb_build_object('id', 'cz-4', 'emp_country_code', '91', 'emp_number', '9000000001',
-    'client_country_code', '91', 'client_number', '9811100001', 'duration', 0,
-    'call_type', 'Rejected', 'call_date', '2026-08-20', 'call_time', '12:02:00',
-    'call_method', 'PhoneCall', 'call_mode', 'Voice'))) \gset _cz_dir_
+-- Directions and outcomes translate exactly: answered inbound is incoming,
+-- missed inbound is missed, an outbound nobody picked up stays an outgoing
+-- dial with zero talk - exactly what verifies a not_answered log.
+select crm.ingest_tata_tele_cdrs(jsonb_build_array(
+  jsonb_build_object('uuid', 'tt-2', 'direction', 'inbound', 'status', 'answered',
+    'answered_agent_number', '919000000001', 'client_number', '919811100001',
+    'date', '2026-08-20', 'time', '12:00:00', 'answered_seconds', 40),
+  jsonb_build_object('uuid', 'tt-3', 'direction', 'inbound', 'status', 'missed',
+    'agent_number', '919000000001', 'client_number', '919811100001',
+    'date', '2026-08-20', 'time', '12:01:00', 'answered_seconds', 0),
+  jsonb_build_object('uuid', 'tt-4', 'direction', 'outbound', 'status', 'missed',
+    'agent_number', '919000000001', 'client_number', '919811100001',
+    'date', '2026-08-20', 'time', '12:02:00', 'duration', 35))) \gset _tt_dir_
 
 select crm_test.check(
-  'CZ', 'Incoming/Missed/Rejected translate exactly, no silent loss',
+  'TT', 'inbound answered/missed and unanswered outbound translate exactly',
   (select array_agg(direction order by device_row_key)
      from crm.device_call_logs
-    where device_row_key in ('callyzer:cz-2', 'callyzer:cz-3', 'callyzer:cz-4'))
-    = array['incoming', 'missed', 'rejected'],
+    where device_row_key in ('tata:tt-2', 'tata:tt-3', 'tata:tt-4'))
+    = array['incoming', 'missed', 'outgoing']
+  and (select duration_seconds from crm.device_call_logs
+        where device_row_key = 'tata:tt-4') = 0,  -- ring time is never talk time
   null);
 
--- An employee number nobody owns is quarantined whole, never dropped.
-select (r).quarantined as _q from crm.ingest_callyzer_logs(jsonb_build_array(
-  jsonb_build_object('id', 'cz-5', 'emp_country_code', '91', 'emp_number', '9822200999',
-    'client_country_code', '91', 'client_number', '9811100001', 'duration', 30,
-    'call_type', 'Outgoing', 'call_date', '2026-08-20', 'call_time', '13:00:00',
-    'call_method', 'PhoneCall', 'call_mode', 'Voice'))) r \gset
+-- An inbound call no agent ever answered names nobody: counted and left to
+-- Smartflo's own reports, never parked in quarantine forever.
+select (r).skipped as _sk, (r).quarantined as _sq
+  from crm.ingest_tata_tele_cdrs(jsonb_build_array(jsonb_build_object(
+    'uuid', 'tt-5', 'direction', 'inbound', 'call_status', 'missed',
+    'caller_id_number', '919811100001', 'start_stamp', '2026-08-20 12:30:00'))) r \gset
 
 select crm_test.check(
-  'CZ', 'an unmapped employee number is quarantined, never dropped',
-  :_q = 1
-  and not exists (select 1 from crm.device_call_logs where device_row_key = 'callyzer:cz-5')
-  and exists (select 1 from crm.callyzer_quarantine
-               where external_id = 'cz-5' and resolved_at is null
-                 and reason like 'no active user has Dialing SIM%'),
+  'TT', 'a floor-level missed inbound call is counted, not quarantined',
+  :_sk = 1 and :_sq = 0
+  and not exists (select 1 from crm.device_call_logs where device_row_key = 'tata:tt-5')
+  and not exists (select 1 from crm.telephony_quarantine where external_id = 'tt-5'),
   null);
 
--- Fix the mapping (a new hire gets that SIM) and re-deliver: the held call
--- ingests and the quarantine entry resolves itself.
+-- An agent number nobody owns is quarantined whole, never dropped.
+select (r).quarantined as _q from crm.ingest_tata_tele_cdrs(jsonb_build_array(
+  jsonb_build_object('uuid', 'tt-6', 'direction', 'outbound', 'status', 'answered',
+    'agent_number', '919822200999', 'client_number', '919811100001',
+    'date', '2026-08-20', 'time', '13:00:00', 'answered_seconds', 30))) r \gset
+
+select crm_test.check(
+  'TT', 'an unmapped agent number is quarantined, never dropped',
+  :_q = 1
+  and not exists (select 1 from crm.device_call_logs where device_row_key = 'tata:tt-6')
+  and exists (select 1 from crm.telephony_quarantine
+               where external_id = 'tt-6' and resolved_at is null
+                 and reason like 'no active user has Dialing number%'),
+  null);
+
+-- Fix the mapping (a new hire gets that number) and re-deliver: the held
+-- call ingests and the quarantine entry resolves itself.
 insert into crm.users (id, full_name, email, role, employee_code, dialing_msisdn)
 values ('22222222-0000-0000-0000-0000000000cc', 'Caller A3', 'a3@5circles.test',
         'caller', 'CLR-99', '+919822200999');
 
-select crm.ingest_callyzer_logs((
-  select jsonb_agg(payload) from crm.callyzer_quarantine where external_id = 'cz-5')) \gset _cz5_
+select crm.ingest_tata_tele_cdrs((
+  select jsonb_agg(payload) from crm.telephony_quarantine where external_id = 'tt-6')) \gset _tt6_
 
 select crm_test.check(
-  'CZ', 'mapping the SIM and re-syncing ingests the held call and resolves the quarantine',
+  'TT', 'mapping the number and re-syncing ingests the held call and resolves the quarantine',
   exists (select 1 from crm.device_call_logs
-           where device_row_key = 'callyzer:cz-5'
+           where device_row_key = 'tata:tt-6'
              and user_id = '22222222-0000-0000-0000-0000000000cc')
-  and not exists (select 1 from crm.callyzer_quarantine
-                   where external_id = 'cz-5' and resolved_at is null),
+  and not exists (select 1 from crm.telephony_quarantine
+                   where external_id = 'tt-6' and resolved_at is null),
   null);
 
--- The account timezone is asserted, not assumed: a synced_at naming another
--- zone is quarantined rather than guessed at, and ingests once it is IST.
-select crm.ingest_callyzer_logs(jsonb_build_array(
-  jsonb_build_object('id', 'cz-6', 'emp_country_code', '91', 'emp_number', '9000000001',
-    'client_country_code', '91', 'client_number', '9811100001', 'duration', 20,
-    'call_type', 'Outgoing', 'call_date', '2026-08-20', 'call_time', '14:00:00',
-    'call_method', 'PhoneCall', 'call_mode', 'Voice',
-    'synced_at', '2026-08-20 01:30:00 PST'))) \gset _cz6a_
+-- An extension identifier is not a phone: named for what it is, held whole.
+select crm.ingest_tata_tele_cdrs(jsonb_build_array(
+  jsonb_build_object('uuid', 'tt-7', 'direction', 'outbound', 'status', 'answered',
+    'agent_number', 'Extension-05001', 'client_number', '919811100001',
+    'date', '2026-08-20', 'time', '13:30:00', 'answered_seconds', 15))) \gset _tt7_
 
 select crm_test.check(
-  'CZ', 'a foreign timezone stamp is quarantined, not silently shifted',
-  not exists (select 1 from crm.device_call_logs where device_row_key = 'callyzer:cz-6')
-  and exists (select 1 from crm.callyzer_quarantine
-               where external_id = 'cz-6' and resolved_at is null
-                 and reason like 'timezone mismatch%'),
+  'TT', 'an extension-style agent id is quarantined with its cause named',
+  exists (select 1 from crm.telephony_quarantine
+           where external_id = 'tt-7' and resolved_at is null
+             and reason like 'agent identifier is not a dialable number%'),
   null);
 
-select crm.ingest_callyzer_logs(jsonb_build_array(
-  jsonb_build_object('id', 'cz-6', 'emp_country_code', '91', 'emp_number', '9000000001',
-    'client_country_code', '91', 'client_number', '9811100001', 'duration', 20,
-    'call_type', 'Outgoing', 'call_date', '2026-08-20', 'call_time', '14:00:00',
-    'call_method', 'PhoneCall', 'call_mode', 'Voice',
-    'synced_at', '2026-08-20 14:01:00 IST'))) \gset _cz6b_
+-- The books balance: every row seen is inserted, updated, skipped or
+-- quarantined - nothing is ever unaccounted for.
+select (r).seen as _s,
+       ((r).inserted + (r).updated + (r).skipped + (r).quarantined) as _accounted
+  from crm.ingest_tata_tele_cdrs(jsonb_build_array(
+    jsonb_build_object('uuid', 'tt-8', 'direction', 'outbound', 'status', 'answered',
+      'agent_number', '919000000001', 'client_number', '919811100001',
+      'date', '2026-08-20', 'time', '16:00:00', 'answered_seconds', 5),
+    jsonb_build_object('uuid', 'tt-1', 'direction', 'outbound', 'status', 'answered',
+      'agent_number', '919000000001', 'client_number', '919811100001',
+      'date', '2026-08-20', 'time', '11:05:00', 'answered_seconds', 62),
+    jsonb_build_object('uuid', 'tt-9', 'direction', 'inbound', 'call_status', 'missed',
+      'caller_id_number', '919811100001', 'start_stamp', '2026-08-20 16:05:00'),
+    jsonb_build_object('uuid', 'tt-10', 'direction', 'sideways', 'status', 'answered',
+      'agent_number', '919000000001', 'client_number', '919811100001',
+      'date', '2026-08-20', 'time', '16:06:00'))) r \gset
 
 select crm_test.check(
-  'CZ', 'the same row ingests once its zone is right, resolving its quarantine',
-  exists (select 1 from crm.device_call_logs where device_row_key = 'callyzer:cz-6')
-  and not exists (select 1 from crm.callyzer_quarantine
-                   where external_id = 'cz-6' and resolved_at is null),
-  null);
+  'TT', 'no row is ever unaccounted for: seen = inserted + updated + skipped + quarantined',
+  :_s = 4 and :_accounted = 4, null);
 
--- WhatsApp calls are stored (nothing is lost) - whether they may VERIFY a
--- dial is the API-side gate on callyzer.count_whatsapp_calls.
-select crm.ingest_callyzer_logs(jsonb_build_array(
-  jsonb_build_object('id', 'cz-7', 'emp_country_code', '91', 'emp_number', '9000000001',
-    'client_country_code', '91', 'client_number', '9811100001', 'duration', 90,
-    'call_type', 'Outgoing', 'call_date', '2026-08-20', 'call_time', '15:00:00',
-    'call_method', 'WhatsAppCall', 'call_mode', 'Voice'))) \gset _cz7_
-
-select crm_test.check(
-  'CZ', 'a WhatsApp call is stored with its method, ready to gate',
-  exists (select 1 from crm.device_call_logs
-           where device_row_key = 'callyzer:cz-7' and call_method = 'WhatsAppCall'),
-  null);
-
--- The books balance: every row seen is inserted, updated or quarantined.
-select (r).seen as _s, ((r).inserted + (r).updated + (r).quarantined) as _accounted
-  from crm.ingest_callyzer_logs(jsonb_build_array(
-    jsonb_build_object('id', 'cz-8', 'emp_country_code', '91', 'emp_number', '9000000001',
-      'client_country_code', '91', 'client_number', '9811100001', 'duration', 5,
-      'call_type', 'Outgoing', 'call_date', '2026-08-20', 'call_time', '16:00:00',
-      'call_method', 'PhoneCall', 'call_mode', 'Voice'),
-    jsonb_build_object('id', 'cz-1', 'emp_country_code', '91', 'emp_number', '9000000001',
-      'client_country_code', '91', 'client_number', '9811100001', 'duration', 50,
-      'call_type', 'Outgoing', 'call_date', '2026-08-20', 'call_time', '11:05:00',
-      'call_method', 'PhoneCall', 'call_mode', 'Voice'),
-    jsonb_build_object('id', 'cz-9', 'emp_country_code', '91', 'emp_number', '9899900000',
-      'client_country_code', '91', 'client_number', '9811100001', 'duration', 5,
-      'call_type', 'Outgoing', 'call_date', '2026-08-20', 'call_time', '16:05:00',
-      'call_method', 'PhoneCall', 'call_mode', 'Voice'))) r \gset
+-- The roster: Smartflo reports agents (/v1/users shape); follow-me numbers
+-- resolve against users.dialing_msisdn - the one mapping, in the one place
+-- it already lived.
+select (r).seen as _s, (r).unmapped as _u from crm.refresh_tata_tele_agents(jsonb_build_array(
+  jsonb_build_object('name', 'Caller A1', 'login_id', 'a1@sf', 'extension', '05001',
+    'user_status', '1',
+    'agent', jsonb_build_object('id', '0501', 'name', 'Caller A1', 'status', 0,
+                                'follow_me_number', '+919000000001')),
+  jsonb_build_object('name', 'Stranger',
+    'agent', jsonb_build_object('id', '0502', 'follow_me_number', '9877700111')))) r \gset
 
 select crm_test.check(
-  'CZ', 'no row is ever unaccounted for: seen = inserted + updated + quarantined',
-  :_s = 3 and :_accounted = 3, null);
-
--- The roster: Callyzer reports handsets; numbers resolve against
--- users.dialing_msisdn - the one mapping, in the one place it already lived.
-select (r).seen as _s, (r).unmapped as _u from crm.refresh_callyzer_employees(jsonb_build_array(
-  jsonb_build_object('emp_country_code', '91', 'emp_number', '9000000001',
-    'emp_name', 'Caller A1', 'app_version', '5.1.2',
-    'last_sync_req_at', '2026-08-20 10:00:00 IST'),
-  jsonb_build_object('emp_country_code', '91', 'emp_number', '9877700111',
-    'emp_name', 'Stranger'))) r \gset
-
-select crm_test.check(
-  'CZ', 'the roster maps known SIMs to users and names the strangers',
+  'TT', 'the roster maps known numbers to users and names the strangers',
   :_s = 2 and :_u = 1
-  and (select user_id from crm.callyzer_employees where emp_msisdn = '+919000000001') = :A1
-  and (select user_id from crm.callyzer_employees where emp_msisdn = '+919877700111') is null,
+  and (select user_id from crm.tata_tele_agents where agent_msisdn = '+919000000001') = :A1
+  and (select user_id from crm.tata_tele_agents where agent_msisdn = '+919877700111') is null,
   null);
 
--- Health: enabled with no heartbeat ever is 'never_run'; after a heartbeat,
--- the unmapped stranger holds it at 'attention'.
-select crm_test.check(
-  'CZ', 'health says never_run while nothing has ever delivered',
-  (select state from crm.v_callyzer_health) = 'never_run', null);
-
-select crm.record_job_run('callyzer_sync', 400, null);
+-- The next full refresh no longer lists the stranger: the ghost row prunes
+-- itself instead of alarming forever.
+select crm.refresh_tata_tele_agents(jsonb_build_array(
+  jsonb_build_object('name', 'Caller A1',
+    'agent', jsonb_build_object('id', '0501', 'follow_me_number', '+919000000001')))) \gset _tt_prune_
 
 select crm_test.check(
-  'CZ', 'health says attention while a number is unmapped',
-  (select state from crm.v_callyzer_health) = 'attention'
-  and (select employees_unmapped from crm.v_callyzer_health) = 1,
+  'TT', 'an agent Smartflo no longer reports is pruned from the roster',
+  not exists (select 1 from crm.tata_tele_agents where agent_msisdn = '+919877700111'),
+  null);
+
+-- Health: enabled with no heartbeat ever is 'never_run'; an auth failure is
+-- named as exactly that; after a clean heartbeat, the open quarantine holds
+-- it at 'attention'.
+select crm_test.check(
+  'TT', 'health says never_run while nothing has ever delivered',
+  (select state from crm.v_tata_tele_health) = 'never_run', null);
+
+select crm.record_job_run('tata_tele_sync', 400, 'Smartflo replied 401');
+select crm_test.check(
+  'TT', 'an expired Smartflo login reads as auth, not a mystery failure',
+  (select state from crm.v_tata_tele_health) = 'auth', null);
+
+select crm.record_job_run('tata_tele_sync', 400, null);
+select crm_test.check(
+  'TT', 'health says attention while quarantined rows are open',
+  (select state from crm.v_tata_tele_health) = 'attention'
+  and (select quarantine_open from crm.v_tata_tele_health) >= 1,
   null);
 
 -- The watchdog announces only while the floor is open (like the intake
 -- alarm), so assert consistency with the clock rather than the clock itself.
-select crm.check_callyzer_health() as _cz_sent \gset
+select crm.check_tata_tele_health() as _tt_sent \gset
 select crm_test.check(
-  'CZ', 'the watchdog alarms during shift hours and holds its tongue after',
-  (crm.is_shift_time(now()) and :_cz_sent > 0)
-  or (not crm.is_shift_time(now()) and :_cz_sent = 0),
-  'sent ' || :_cz_sent);
+  'TT', 'the watchdog alarms during shift hours and holds its tongue after',
+  (crm.is_shift_time(now()) and :_tt_sent > 0)
+  or (not crm.is_shift_time(now()) and :_tt_sent = 0),
+  'sent ' || :_tt_sent);
 
 -- And it stands itself down, at any hour: make everything healthy, leave an
 -- unread alarm ringing, run the watchdog - the alarm resolves and a recovery
 -- note replaces it.
-delete from crm.callyzer_employees where emp_msisdn = '+919877700111';  -- fixture cleanup
-update crm.callyzer_quarantine set resolved_at = now() where resolved_at is null;
+update crm.telephony_quarantine set resolved_at = now() where resolved_at is null;
 insert into crm.notifications (user_id, kind, title, body)
-values (:ADMIN, 'callyzer_stalled', 'Call verification has a problem', 'stale test alarm');
+values (:ADMIN, 'tata_tele_stalled', 'Cloud calling has a problem', 'stale test alarm');
 
-select crm.check_callyzer_health() as _cz_down \gset
+select crm.check_tata_tele_health() as _tt_down \gset
 select crm_test.check(
-  'CZ', 'a healthy state stands the alarm down and announces recovery',
+  'TT', 'a healthy state stands the alarm down and announces recovery',
   not exists (select 1 from crm.notifications
-               where kind = 'callyzer_stalled' and read_at is null)
+               where kind = 'tata_tele_stalled' and read_at is null)
   and exists (select 1 from crm.notifications
-               where user_id = :ADMIN and kind = 'callyzer_recovered'),
+               where user_id = :ADMIN and kind = 'tata_tele_recovered'),
   null);
 
--- RLS: a Callyzer row is still a personal call log. Another caller sees
--- nothing; the caller sees their own; a counsellor sees only the rows
--- MATCHED to leads they can see (where the coaching recording lives), and
--- never the quarantine (raw payloads of personal calls).
+-- RLS: a Smartflo row is still a personal call log, and a click is the
+-- clicker's business. Another caller sees neither; the caller sees their
+-- own; a counsellor sees the rows MATCHED to leads they can see (where the
+-- coaching recording lives) and the clicks on those leads, and never the
+-- quarantine (raw payloads of call data).
 set role crm_app;
 select set_config('app.user_id', '22222222-0000-0000-0000-000000000002', false) as _ \gset
 select crm_test.check(
-  'CZ', 'another caller cannot see a colleague''s Callyzer rows',
-  (select count(*) = 0 from crm.device_call_logs where device_row_key = 'callyzer:cz-1'),
+  'TT', 'another caller cannot see a colleague''s Smartflo rows or clicks',
+  (select count(*) = 0 from crm.device_call_logs where device_row_key = 'tata:tt-1')
+  and (select count(*) = 0 from crm.telephony_calls
+        where id = 'dddddddd-0000-0000-0000-000000000001'),
   null);
 
 select set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false) as _ \gset
 select crm_test.check(
-  'CZ', 'the caller sees their own Callyzer rows',
-  (select count(*) = 1 from crm.device_call_logs where device_row_key = 'callyzer:cz-1'),
+  'TT', 'the caller sees their own Smartflo rows and clicks',
+  (select count(*) = 1 from crm.device_call_logs where device_row_key = 'tata:tt-1')
+  and (select count(*) = 1 from crm.telephony_calls
+        where id = 'dddddddd-0000-0000-0000-000000000001'),
   null);
 
 select set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false) as _ \gset
 select crm_test.check(
-  'CZ', 'the counsellor sees the matched row - and its recording - for coaching',
+  'TT', 'the counsellor sees the matched row - and its recording - for coaching',
   (select count(*) = 1 from crm.device_call_logs
-    where device_row_key = 'callyzer:cz-1' and recording_url is not null),
+    where device_row_key = 'tata:tt-1' and recording_url is not null)
+  and (select count(*) = 1 from crm.telephony_calls
+        where id = 'dddddddd-0000-0000-0000-000000000001'),
   null);
 select crm_test.check(
-  'CZ', 'the counsellor cannot read the quarantine''s raw payloads',
-  (select count(*) = 0 from crm.callyzer_quarantine),
+  'TT', 'the counsellor cannot read the quarantine''s raw payloads',
+  (select count(*) = 0 from crm.telephony_quarantine),
   null);
 
 reset role;
 
 -- Switch the integration back off so the settings row ships as it started.
-update crm.settings set value = 'false'::jsonb where key = 'callyzer.enabled';
+update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';
 
 -- =============================================================================
 -- OFFICE VISITS (WLK): a walk-in is a row, from booked to counselled to

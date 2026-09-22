@@ -138,12 +138,13 @@ export const JOBS: Job[] = [
     sql: 'select crm.check_lead_intake()',
   },
   {
-    name: 'check_callyzer_health',
-    // Same watchdog, for call verification: a lapsed Callyzer subscription or
-    // a silent sync means every dial from here on reads as unverified. Gated
-    // on callyzer.enabled inside the function; stands its own alarm down.
+    name: 'check_tata_tele_health',
+    // Same watchdog, for cloud calling: an expired Smartflo login (their
+    // passwords rotate every 90 days) or a silent sync means clicks fail and
+    // every dial reads as unverified. Gated on tata_tele.enabled inside the
+    // function; stands its own alarm down.
     everyMs: 10 * 60_000,
-    sql: 'select crm.check_callyzer_health()',
+    sql: 'select crm.check_tata_tele_health()',
   },
 ];
 

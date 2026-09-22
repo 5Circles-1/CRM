@@ -76,12 +76,12 @@ export async function deviceLogRoutes(app: FastifyInstance): Promise<void> {
    * attempt has claimed yet. The log-call form uses it to pre-fill duration
    * and attach the device row, which is what makes the attempt verified.
    *
-   * Whether the row came from the in-house app or Callyzer makes no
-   * difference here - that is the point of both writing one table. Two
-   * Callyzer-specific rules do apply:
-   *  - a WhatsApp call may only verify a dial when
-   *    callyzer.count_whatsapp_calls is on (targets were baselined on phone
-   *    calls; the rows are stored either way);
+   * Whether the row came from the in-house app or Tata Tele makes no
+   * difference here - that is the point of both writing one table. Two rules
+   * do apply:
+   *  - a WhatsApp call never verifies a dial (targets were baselined on
+   *    phone calls; such rows exist only from the retired Callyzer sensor
+   *    and are kept, not offered);
    *  - the recording link goes to counsellors and admin for coaching, never
    *    to the caller themselves - shown one's own recordings, coaching turns
    *    into surveillance theatre and invites tampering requests.
@@ -104,8 +104,7 @@ export async function deviceLogRoutes(app: FastifyInstance): Promise<void> {
           where d.user_id = $1
             and d.counterparty_msisdn = $2
             and d.started_at > now() - interval '24 hours'
-            and (coalesce(d.call_method, 'PhoneCall') <> 'WhatsAppCall'
-                 or crm.setting_bool('callyzer.count_whatsapp_calls', false))
+            and coalesce(d.call_method, 'PhoneCall') <> 'WhatsAppCall'
             and not exists (
               select 1 from crm.call_attempts ca where ca.device_log_id = d.id
             )

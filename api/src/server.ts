@@ -19,7 +19,7 @@ import { eventRoutes } from './routes/events.ts';
 import { trainingRoutes } from './routes/training.ts';
 import { ingestRoutes } from './routes/ingest.ts';
 import { deviceLogRoutes } from './routes/deviceLogs.ts';
-import { callyzerRoutes } from './routes/callyzer.ts';
+import { tataTeleRoutes } from './routes/tataTele.ts';
 import { dealRoutes } from './routes/deals.ts';
 import { walkinRoutes } from './routes/walkins.ts';
 import { targetRoutes } from './routes/targets.ts';
@@ -74,7 +74,7 @@ export async function buildServer(config: Config, db?: Database): Promise<Fastif
     await trainingRoutes(scope);
     await ingestRoutes(scope);
     await deviceLogRoutes(scope);
-    await callyzerRoutes(scope);
+    await tataTeleRoutes(scope);
     await dealRoutes(scope);
     await walkinRoutes(scope);
     await targetRoutes(scope);

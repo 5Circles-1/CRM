@@ -27,8 +27,8 @@ import { Database } from '../src/db/pool.ts';
 import { buildServer } from '../src/server.ts';
 import { hashPassword } from '../src/auth/credentials.ts';
 import http from 'node:http';
-import { CallyzerWorker } from '../src/integrations/callyzer/worker.ts';
-import { CallyzerApiError } from '../src/integrations/callyzer/client.ts';
+import { TataTeleWorker } from '../src/integrations/tata_tele/worker.ts';
+import { TataTeleApiError, TataTeleClient } from '../src/integrations/tata_tele/client.ts';
 
 let h: TestHarness;
 
@@ -4828,106 +4828,96 @@ describe('mentors module', () => {
   });
 });
 
-describe('callyzer: a second sensor on the same verification pipeline', () => {
-  const CZ_SECRET = 'test-callyzer-secret';
+describe('tata tele: the dialler and the sensor on one verification pipeline', () => {
+  const TT_SECRET = 'test-tata-secret';
 
-  /** call_date/call_time are wall-clock in the account timezone (IST). */
-  const istParts = (d = new Date()) => ({
-    date: new Intl.DateTimeFormat('en-CA', {
+  /** Smartflo stamps are wall-clock in the account timezone (IST). */
+  const istStamp = (d = new Date()) => {
+    const date = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(d),
-    time: new Intl.DateTimeFormat('en-GB', {
+    }).format(d);
+    const time = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-    }).format(d),
-  });
-
-  /** A webhook payload: one employee (caller A1's SIM) with one call log. */
-  const webhookPayload = (log: Record<string, unknown>, empNumber = '9000000001') => [
-    {
-      emp_name: 'Caller A1',
-      emp_country_code: '91',
-      emp_number: empNumber,
-      emp_tags: [],
-      call_logs: [
-        {
-          call_type: 'Outgoing',
-          call_method: 'PhoneCall',
-          call_mode: 'Voice',
-          ...istToday(),
-          ...log,
-        },
-      ],
-    },
-  ];
-  const istToday = () => {
-    const { date, time } = istParts();
-    return { call_date: date, call_time: time, synced_at: `${date} ${time} IST` };
+    }).format(d);
+    return `${date} ${time}`;
   };
 
+  /** One call-hangup webhook event, in Smartflo's variable names. */
+  const hangupEvent = (over: Record<string, unknown>) => ({
+    call_id: `${Date.now()}.1`,
+    direction: 'outbound',
+    call_status: 'answered',
+    answered_agent_number: '919000000001', // caller A1's Dialing number, per seed
+    start_stamp: istStamp(),
+    ...over,
+  });
+
   let leadId = '';
-  let leadNumber = ''; // national digits, as Callyzer sends them
+  let leadNumber = ''; // national digits, as Smartflo sends them
 
   before(() => {
-    process.env.CALLYZER_WEBHOOK_SECRET = CZ_SECRET;
+    process.env.TATA_TELE_WEBHOOK_SECRET = TT_SECRET;
     process.env.SERVICE_USER_ID = USERS.ops;
-    delete process.env.CALLYZER_API_KEY;
-    fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'callyzer.enabled';`);
+    delete process.env.TATA_TELE_API_TOKEN;
+    delete process.env.TATA_TELE_LOGIN_EMAIL;
+    delete process.env.TATA_TELE_LOGIN_PASSWORD;
+    fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';`);
 
-    leadId = makeLeadFor(USERS.callerA1, 'Callyzer Client');
+    leadId = makeLeadFor(USERS.callerA1, 'Smartflo Client');
     leadNumber = fixtureSql(`select phone_e164 from crm.leads where id = '${leadId}'`)
       .trim().replace('+91', '');
   });
 
   it('the webhook admits nobody without the shared secret', async () => {
     const noSecret = await h.app.inject({
-      method: 'POST', url: '/integrations/callyzer/webhook', payload: [],
+      method: 'POST', url: '/integrations/tata-tele/webhook', payload: {},
     });
     assert.equal(noSecret.statusCode, 401);
 
     const wrong = await h.app.inject({
-      method: 'POST', url: '/integrations/callyzer/webhook?secret=guess', payload: [],
+      method: 'POST', url: '/integrations/tata-tele/webhook?secret=guess', payload: {},
     });
     assert.equal(wrong.statusCode, 401);
 
     // Unconfigured reads the same as wrong: nothing gets in until the secret
     // is deliberately set on the server.
-    delete process.env.CALLYZER_WEBHOOK_SECRET;
+    delete process.env.TATA_TELE_WEBHOOK_SECRET;
     const unconfigured = await h.app.inject({
-      method: 'POST', url: `/integrations/callyzer/webhook?secret=${CZ_SECRET}`, payload: [],
+      method: 'POST', url: `/integrations/tata-tele/webhook?secret=${TT_SECRET}`, payload: {},
     });
     assert.equal(unconfigured.statusCode, 401);
-    process.env.CALLYZER_WEBHOOK_SECRET = CZ_SECRET;
+    process.env.TATA_TELE_WEBHOOK_SECRET = TT_SECRET;
   });
 
   it('a delivery ingests, matches the lead, and repeats as an update, never a duplicate', async () => {
-    const payload = webhookPayload({
-      id: 'wh-1',
-      client_country_code: '91',
-      client_number: leadNumber,
-      duration: '75',
-      note: 'spoke about Swing Advisory',
-      call_recording_url: 'https://media1.callyzer.co/wh1.mp3',
+    const event = hangupEvent({
+      uuid: 'wh-1',
+      call_to_number: `91${leadNumber}`,
+      billsec: '75',
+      recording_url: 'https://cloudphone.tatateleservices.com/file/recording?id=wh1',
     });
 
+    // Smartflo sends one JSON object per event; a batching relay may send an
+    // array. Both are the same door.
     const first = await h.app.inject({
       method: 'POST',
-      url: '/integrations/callyzer/webhook',
-      headers: { 'x-callyzer-secret': CZ_SECRET },
-      payload,
+      url: '/integrations/tata-tele/webhook',
+      headers: { 'x-tata-tele-secret': TT_SECRET },
+      payload: event,
     });
     assert.equal(first.statusCode, 200, first.body);
     assert.partialDeepStrictEqual(first.json(), { received: 1, seen: 1, inserted: 1, matched: 1 });
 
     const again = await h.app.inject({
       method: 'POST',
-      url: `/integrations/callyzer/webhook?secret=${CZ_SECRET}`,
-      payload,
+      url: `/integrations/tata-tele/webhook?secret=${TT_SECRET}`,
+      payload: [event],
     });
     assert.equal(again.statusCode, 200);
     assert.partialDeepStrictEqual(again.json(), { inserted: 0, updated: 1 });
   });
 
-  it('the caller is offered the Callyzer call and one click verifies the dial - recording withheld from them', async () => {
+  it('the caller is offered the Smartflo call and one click verifies the dial - recording withheld from them', async () => {
     const caller = await login(h.app, EMAILS.callerA1);
 
     const sug = await h.app.inject({
@@ -4935,9 +4925,9 @@ describe('callyzer: a second sensor on the same verification pipeline', () => {
     });
     assert.equal(sug.statusCode, 200);
     const suggestion = sug.json().suggestion;
-    assert.ok(suggestion, 'the Callyzer row is offered exactly like a companion-app row');
+    assert.ok(suggestion, 'the Smartflo row is offered exactly like a companion-app row');
     assert.equal(suggestion.duration_seconds, 75);
-    assert.equal(suggestion.source, 'callyzer');
+    assert.equal(suggestion.source, 'tata_tele');
     assert.equal(suggestion.recording_url, null, 'a caller never sees their own recordings');
 
     const logged = await h.app.inject({
@@ -4950,7 +4940,7 @@ describe('callyzer: a second sensor on the same verification pipeline', () => {
       method: 'GET', url: `/leads/${leadId}`, headers: auth(caller),
     });
     const attempt = detail.json().attempts[0];
-    assert.equal(attempt.is_verified, true, 'the Callyzer row is what flips is_verified');
+    assert.equal(attempt.is_verified, true, 'the Smartflo row is what flips is_verified');
     assert.equal(attempt.recording_url, null);
   });
 
@@ -4962,61 +4952,180 @@ describe('callyzer: a second sensor on the same verification pipeline', () => {
     assert.equal(detail.statusCode, 200);
     const attempt = detail.json().attempts[0];
     assert.equal(attempt.is_verified, true);
-    assert.match(attempt.recording_url ?? '', /callyzer/, 'matched rows carry the recording for the counsellor');
+    assert.match(attempt.recording_url ?? '', /recording/, 'matched rows carry the recording for the counsellor');
   });
 
-  it('a WhatsApp call may verify a dial only when the floor turns that on', async () => {
+  it('click-to-call names each missing piece plainly instead of failing vaguely', async () => {
     const caller = await login(h.app, EMAILS.callerA1);
-    const waLead = makeLeadFor(USERS.callerA1, 'WhatsApp Client');
-    const waNumber = fixtureSql(`select phone_e164 from crm.leads where id = '${waLead}'`)
+    const c2cLead = makeLeadFor(USERS.callerA1, 'Refusal Client');
+
+    // No credentials on the server.
+    const unconfigured = await h.app.inject({
+      method: 'POST', url: `/leads/${c2cLead}/call`, headers: auth(caller),
+    });
+    assert.equal(unconfigured.statusCode, 400);
+    assert.match(unconfigured.json().message, /TATA_TELE_LOGIN_EMAIL/);
+
+    // Credentials present, integration switched off.
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async () => ({ refId: 'never', message: 'unused' }),
+    };
+    fixtureSql(`update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';`);
+    const disabled = await h.app.inject({
+      method: 'POST', url: `/leads/${c2cLead}/call`, headers: auth(caller),
+    });
+    assert.equal(disabled.statusCode, 409);
+    assert.match(disabled.json().message, /tata_tele\.enabled/);
+    fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';`);
+
+    // A user with no Dialing number: Smartflo has no phone to ring first.
+    const admin = await login(h.app, EMAILS.admin);
+    const noNumber = await h.app.inject({
+      method: 'POST', url: `/leads/${c2cLead}/call`, headers: auth(admin),
+    });
+    assert.equal(noNumber.statusCode, 400);
+    assert.match(noNumber.json().message, /Dialing number/);
+
+    // A lead the user cannot see reads as 404 - RLS is the access control.
+    const otherTeam = await login(h.app, EMAILS.callerB1);
+    const invisible = await h.app.inject({
+      method: 'POST', url: `/leads/${c2cLead}/call`, headers: auth(otherTeam),
+    });
+    assert.equal(invisible.statusCode, 404);
+
+    delete h.app.tataTele;
+  });
+
+  it('a click places the bridge, records itself, and the CDR ties back by ref_id', async () => {
+    const caller = await login(h.app, EMAILS.callerA1);
+    const clickLead = makeLeadFor(USERS.callerA1, 'Clicked Client');
+    const clickNumber = fixtureSql(`select phone_e164 from crm.leads where id = '${clickLead}'`)
       .trim().replace('+91', '');
 
-    const posted = await h.app.inject({
+    let dialled: { agentNumber: string; destinationNumber: string; callerId?: string } | null = null;
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async (p) => {
+        dialled = p;
+        return { refId: 'C2C-777', message: 'Call originated successfully.' };
+      },
+    };
+
+    const placed = await h.app.inject({
+      method: 'POST', url: `/leads/${clickLead}/call`, headers: auth(caller),
+    });
+    assert.equal(placed.statusCode, 200, placed.body);
+    assert.equal(placed.json().refId, 'C2C-777');
+    assert.match(placed.json().message, /ringing your phone/i);
+    assert.deepEqual(dialled, {
+      agentNumber: '919000000001',
+      destinationNumber: `91${clickNumber}`,
+    }, 'numbers come from the database, never the browser');
+
+    const click = fixtureSql(
+      `select status || '|' || provider_ref_id from crm.telephony_calls
+        where lead_id = '${clickLead}'`,
+    ).trim();
+    assert.equal(click, 'requested|C2C-777');
+    assert.equal(
+      fixtureSql(`select count(*) from crm.lead_events
+                   where lead_id = '${clickLead}' and event_type = 'click_to_call'`).trim(),
+      '1',
+      'the click is on the lead timeline',
+    );
+
+    // Smartflo's webhook echoes ref_id: the CDR finds the click, the click
+    // finds the lead, and the log-call form can now offer the verified row.
+    const hangup = await h.app.inject({
       method: 'POST',
-      url: `/integrations/callyzer/webhook?secret=${CZ_SECRET}`,
-      payload: webhookPayload({
-        id: 'wh-wa', client_country_code: '91', client_number: waNumber,
-        duration: 120, call_method: 'WhatsAppCall',
+      url: `/integrations/tata-tele/webhook?secret=${TT_SECRET}`,
+      payload: hangupEvent({
+        uuid: 'wh-c2c', ref_id: 'C2C-777',
+        call_to_number: `91${clickNumber}`, billsec: '48',
       }),
     });
-    assert.equal(posted.statusCode, 200);
-    assert.partialDeepStrictEqual(posted.json(), { inserted: 1, matched: 1 }, 'stored - nothing is lost');
+    assert.equal(hangup.statusCode, 200);
+    assert.partialDeepStrictEqual(hangup.json(), { inserted: 1, matched: 1, linked: 1 });
 
-    const gated = await h.app.inject({
-      method: 'GET', url: `/leads/${waLead}/device-log-suggestion`, headers: auth(caller),
-    });
-    assert.equal(gated.json().suggestion, null, 'targets were baselined on phone calls');
-
-    fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'callyzer.count_whatsapp_calls';`);
-    const offered = await h.app.inject({
-      method: 'GET', url: `/leads/${waLead}/device-log-suggestion`, headers: auth(caller),
-    });
-    assert.ok(offered.json().suggestion, 'deliberately turned on, it counts');
-    fixtureSql(`update crm.settings set value = 'false'::jsonb where key = 'callyzer.count_whatsapp_calls';`);
+    const linked = fixtureSql(
+      `select count(*) from crm.telephony_calls
+        where lead_id = '${clickLead}' and device_log_id is not null`,
+    ).trim();
+    assert.equal(linked, '1', 'the CDR is tied back to the click that placed it');
   });
 
-  it('a stranger SIM is quarantined and the health panel names the hold', async () => {
+  it('an upstream failure is a 502 that says whose fault it is - and the failed click is still a row', async () => {
+    const caller = await login(h.app, EMAILS.callerA1);
+    const failLead = makeLeadFor(USERS.callerA1, 'Unlucky Client');
+
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async () => {
+        throw new TataTeleApiError(401, 'Token has expired');
+      },
+    };
+
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${failLead}/call`, headers: auth(caller),
+    });
+    assert.equal(res.statusCode, 502);
+    assert.match(res.json().message, /90 days/, 'an expired login is named as exactly that');
+
+    const failed = fixtureSql(
+      `select status || '|' || failure_reason from crm.telephony_calls
+        where lead_id = '${failLead}'`,
+    ).trim();
+    assert.equal(failed, 'failed|Token has expired', 'a click that never became a call is data');
+
+    delete h.app.tataTele;
+  });
+
+  it('/me says whether the Call button should exist at all', async () => {
+    const caller = await login(h.app, EMAILS.callerA1);
+
+    const without = await h.app.inject({ method: 'GET', url: '/me', headers: auth(caller) });
+    assert.equal(without.json().cloud_calling, false, 'no credentials, no button');
+
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async () => ({ refId: null, message: '' }),
+    };
+    const withClient = await h.app.inject({ method: 'GET', url: '/me', headers: auth(caller) });
+    assert.equal(withClient.json().cloud_calling, true);
+
+    fixtureSql(`update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';`);
+    const switchedOff = await h.app.inject({ method: 'GET', url: '/me', headers: auth(caller) });
+    assert.equal(switchedOff.json().cloud_calling, false, 'the setting is the master switch');
+    fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';`);
+
+    delete h.app.tataTele;
+  });
+
+  it('a stranger agent is quarantined and the health panel names the hold', async () => {
     const posted = await h.app.inject({
       method: 'POST',
-      url: `/integrations/callyzer/webhook?secret=${CZ_SECRET}`,
-      payload: webhookPayload(
-        { id: 'wh-stranger', client_country_code: '91', client_number: leadNumber, duration: 30 },
-        '9333300000',
-      ),
+      url: `/integrations/tata-tele/webhook?secret=${TT_SECRET}`,
+      payload: hangupEvent({
+        uuid: 'wh-stranger',
+        answered_agent_number: '919333300000',
+        call_to_number: `91${leadNumber}`,
+        billsec: '30',
+      }),
     });
     assert.equal(posted.statusCode, 200);
     assert.partialDeepStrictEqual(posted.json(), { quarantined: 1 });
 
     const admin = await login(h.app, EMAILS.admin);
     const health = await h.app.inject({
-      method: 'GET', url: '/integrations/callyzer/health', headers: auth(admin),
+      method: 'GET', url: '/integrations/tata-tele/health', headers: auth(admin),
     });
     assert.equal(health.statusCode, 200);
     const body = health.json();
     assert.equal(body.enabled, true);
     assert.ok(body.quarantine_open >= 1);
     assert.ok(body.quarantine.some((r: { external_id: string }) => r.external_id === 'wh-stranger'));
-    assert.equal(body.api_key_configured, false);
+    assert.equal(body.credentials_configured, false);
     assert.equal(body.webhook_secret_configured, true);
     assert.equal(typeof body.state, 'string');
   });
@@ -5024,116 +5133,127 @@ describe('callyzer: a second sensor on the same verification pipeline', () => {
   it('health is floor-management reading: counsellors see it, quarantine payload stays admin/ops', async () => {
     const caller = await login(h.app, EMAILS.callerA1);
     const denied = await h.app.inject({
-      method: 'GET', url: '/integrations/callyzer/health', headers: auth(caller),
+      method: 'GET', url: '/integrations/tata-tele/health', headers: auth(caller),
     });
     assert.equal(denied.statusCode, 403);
 
     const counsellor = await login(h.app, EMAILS.counsellorA);
     const ok = await h.app.inject({
-      method: 'GET', url: '/integrations/callyzer/health', headers: auth(counsellor),
+      method: 'GET', url: '/integrations/tata-tele/health', headers: auth(counsellor),
     });
     assert.equal(ok.statusCode, 200);
     // RLS trims the quarantine to nothing for a counsellor - the payloads are
-    // raw personal-call data. No WHERE clause in the route decides this.
+    // raw call data. No WHERE clause in the route decides this.
     assert.deepEqual(ok.json().quarantine, []);
   });
 
-  it('sync-now says plainly when the server has no API key', async () => {
+  it('sync-now says plainly when the server has no credentials', async () => {
     const admin = await login(h.app, EMAILS.admin);
     const res = await h.app.inject({
-      method: 'POST', url: '/integrations/callyzer/sync', headers: auth(admin), payload: {},
+      method: 'POST', url: '/integrations/tata-tele/sync', headers: auth(admin), payload: {},
     });
     assert.equal(res.statusCode, 400);
-    assert.match(res.json().message, /CALLYZER_API_KEY/);
+    assert.match(res.json().message, /TATA_TELE_LOGIN_EMAIL/);
   });
 
-  it('the pull worker syncs the roster and the log through the same one door', async () => {
+  it('the pull worker logs in, syncs the roster and the CDRs through the same one door', async () => {
     const wkLead = makeLeadFor(USERS.callerA1, 'Pulled Client');
     const wkNumber = fixtureSql(`select phone_e164 from crm.leads where id = '${wkLead}'`)
       .trim().replace('+91', '');
-    const { date, time } = istParts();
 
     let authHeader = '';
     let mode: 'ok' | 'expired' = 'ok';
     const fake = http.createServer((req, res) => {
-      authHeader = String(req.headers.authorization ?? '');
-      let raw = '';
-      req.on('data', (c) => { raw += c; });
-      req.on('end', () => {
-        res.setHeader('content-type', 'application/json');
+      res.setHeader('content-type', 'application/json');
+      const url = new URL(req.url ?? '/', 'http://x');
+      if (req.method === 'POST' && url.pathname === '/v1/auth/login') {
         if (mode === 'expired') {
-          res.statusCode = 403;
-          res.end(JSON.stringify({ result: null, message: 'Your subscription has expired.' }));
+          res.statusCode = 401;
+          res.end(JSON.stringify({ success: false, message: 'These credentials do not match our records.' }));
           return;
         }
-        if (req.method === 'GET' && req.url?.startsWith('/api/v2.2/employee/get')) {
-          res.end(JSON.stringify({
-            message: 'Success',
-            result: [
-              { emp_country_code: '91', emp_number: '9000000001', emp_name: 'Caller A1',
-                app_version: '5.2.0', last_sync_req_at: `${date} ${time} IST` },
-              { emp_country_code: '91', emp_number: '9666600000', emp_name: 'Ghost Handset' },
-            ],
-          }));
-          return;
-        }
-        if (req.method === 'POST' && req.url === '/api/v2.2/call-log/history') {
-          const body = JSON.parse(raw || '{}') as { call_method?: string; page_no?: number };
-          const rows =
-            body.call_method === 'PhoneCall' && body.page_no === 1
-              ? [{
-                  id: 'pull-1', emp_country_code: '91', emp_number: '9000000001',
-                  client_country_code: '91', client_number: wkNumber,
-                  duration: 40, call_type: 'Outgoing',
-                  call_date: date, call_time: time,
-                  call_method: 'PhoneCall', call_mode: 'Voice',
-                  synced_at: `${date} ${time} IST`,
-                }]
-              : [];
-          res.end(JSON.stringify({ message: 'Success', result: rows }));
-          return;
-        }
-        res.statusCode = 404;
-        res.end(JSON.stringify({ result: null, message: 'no such endpoint' }));
-      });
+        res.end(JSON.stringify({ success: true, access_token: 'sf-jwt', expires_in: 3600 }));
+        return;
+      }
+      authHeader = String(req.headers.authorization ?? '');
+      if (req.method === 'GET' && url.pathname === '/v1/users') {
+        res.end(JSON.stringify({
+          has_more: false,
+          data: [
+            { name: 'Caller A1', extension: '05001', user_status: 1,
+              agent: { id: '0501', name: 'Caller A1', status: 0, follow_me_number: '+919000000001' } },
+            { name: 'Ghost Agent',
+              agent: { id: '0502', name: 'Ghost Agent', follow_me_number: '+919666600000' } },
+          ],
+        }));
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/v1/call/records') {
+        const page = Number(url.searchParams.get('page') ?? '1');
+        const rows = page === 1
+          ? [{
+              id: '9001', call_id: '1715235734.9001', uuid: 'pull-1',
+              direction: 'outbound', status: 'answered',
+              agent_number: '919000000001', agent_name: 'caller a1',
+              client_number: `91${wkNumber}`, did_number: '+918069651170',
+              date: istStamp().slice(0, 10), time: istStamp().slice(11),
+              call_duration: 55, answered_seconds: 40,
+            }]
+          : [];
+        res.end(JSON.stringify({ count: rows.length, limit: 100, page, results: rows }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ message: 'no such endpoint' }));
     });
     await new Promise<void>((resolve) => fake.listen(0, '127.0.0.1', resolve));
     const port = (fake.address() as { port: number }).port;
     fixtureSql(`update crm.settings
-                   set value = to_jsonb('http://127.0.0.1:${port}/api/v2.2/'::text)
-                 where key = 'callyzer.base_url';`);
+                   set value = to_jsonb('http://127.0.0.1:${port}/v1/'::text)
+                 where key = 'tata_tele.base_url';`);
 
     try {
-      const worker = new CallyzerWorker(h.db, USERS.ops, 'test-key', { minIntervalMs: 1 });
+      const client = new TataTeleClient({
+        auth: { kind: 'login', email: 'crm@5circles.test', password: 'pw' },
+        baseUrl: 'http://unused.invalid/',
+        minIntervalMs: 1,
+      });
+      const worker = new TataTeleWorker(h.db, USERS.ops, client);
       const summary = await worker.syncOnce();
       assert.ok(summary, 'enabled, so it runs');
-      assert.equal(authHeader, 'Bearer test-key');
-      assert.partialDeepStrictEqual(summary.employees, { seen: 2 });
-      assert.ok(summary.employees.unmapped >= 1, 'the ghost handset is counted unmapped');
-      assert.partialDeepStrictEqual(summary.logs, { seen: 1, inserted: 1, matched: 1, quarantined: 0 });
+      assert.equal(authHeader, 'Bearer sf-jwt', 'the worker logged in and used the JWT');
+      assert.partialDeepStrictEqual(summary.agents, { seen: 2 });
+      assert.ok(summary.agents.unmapped >= 1, 'the ghost agent is counted unmapped');
+      assert.partialDeepStrictEqual(summary.cdrs, { seen: 1, inserted: 1, matched: 1, quarantined: 0 });
 
       const ghost = fixtureSql(
-        `select user_id is null from crm.callyzer_employees where emp_msisdn = '+919666600000'`,
+        `select user_id is null from crm.tata_tele_agents where agent_msisdn = '+919666600000'`,
       ).trim();
       assert.equal(ghost, 't', 'the roster names the stranger for the health panel');
 
-      // A lapsed invoice must surface as exactly what it is.
+      // The 90-day password rotation must surface as exactly what it is.
       mode = 'expired';
+      const expiredClient = new TataTeleClient({
+        auth: { kind: 'login', email: 'crm@5circles.test', password: 'rotated-away' },
+        baseUrl: 'http://unused.invalid/',
+        minIntervalMs: 1,
+      });
+      const expiredWorker = new TataTeleWorker(h.db, USERS.ops, expiredClient);
       await assert.rejects(
-        () => worker.syncOnce(),
-        (err: unknown) => err instanceof CallyzerApiError && err.subscriptionExpired,
+        () => expiredWorker.syncOnce(),
+        (err: unknown) => err instanceof TataTeleApiError && err.authFailed,
       );
 
       // Flipping the setting off is a deliberate quiet, not a failure.
-      fixtureSql(`update crm.settings set value = 'false'::jsonb where key = 'callyzer.enabled';`);
+      fixtureSql(`update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';`);
       assert.equal(await worker.syncOnce(), null);
-      fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'callyzer.enabled';`);
+      fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';`);
     } finally {
       await new Promise<void>((resolve) => fake.close(() => resolve()));
     }
   });
 
-  it('an admin can fix the one mapping fact: the Dialing SIM', async () => {
+  it('an admin can fix the one mapping fact: the Dialing number', async () => {
     const admin = await login(h.app, EMAILS.admin);
 
     const set = await h.app.inject({

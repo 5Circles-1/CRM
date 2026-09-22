@@ -221,13 +221,14 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * Set or clear a person's Dialing SIM after creation.
+   * Set or clear a person's Dialing number after creation.
    *
-   * This number is how device call logs - the in-house app's and Callyzer's
-   * alike - are matched back to a person, so it is the fix for a Callyzer
-   * number showing as unmapped: set it here and the next sync re-ingests the
-   * quarantined calls. Kept as its own small route because it is the ONE
-   * mapping fact; there is deliberately no second table to edit.
+   * This number is how call records - the in-house app's and Smartflo's
+   * alike - are matched back to a person, and the number Smartflo rings
+   * first on a click-to-call. It is the fix for a Smartflo agent showing as
+   * unmapped: set it here and the next sync re-ingests the quarantined
+   * calls. Kept as its own small route because it is the ONE mapping fact;
+   * there is deliberately no second table to edit.
    */
   /**
    * Put a person on a team, or move them to another one.
