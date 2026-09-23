@@ -57,11 +57,19 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
         'select dialing_msisdn from crm.users where id = $1',
         [user.id],
       );
-      const cfg = await q.one<{ enabled: boolean; caller_id: string; base_url: string }>(
+      const cfg = await q.one<{
+        enabled: boolean; caller_id: string; base_url: string;
+        cooldown: number; since_last_click: number | null;
+      }>(
         `select crm.setting_bool('tata_tele.enabled', false)          as enabled,
                 crm.setting_text('tata_tele.caller_id', '')           as caller_id,
                 crm.setting_text('tata_tele.base_url',
-                  'https://api-smartflo.tatateleservices.com/v1/')    as base_url`,
+                  'https://api-smartflo.tatateleservices.com/v1/')    as base_url,
+                crm.setting_int('tata_tele.click_cooldown_seconds', 10) as cooldown,
+                (select extract(epoch from now() - max(tc.requested_at))::int
+                   from crm.telephony_calls tc
+                  where tc.user_id = $1 and tc.status = 'requested')  as since_last_click`,
+        [user.id],
       );
       return { lead, me: me!, cfg: cfg! };
     });
@@ -83,6 +91,15 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
           + 'an admin can set it on Admin > Users',
       );
     }
+    // Two bridges in a few seconds ring the caller's phone twice and, if both
+    // are answered, the client twice - whether from a double-click, a second
+    // tab, or a dialler that got ahead of itself.
+    if (ctx.cfg.since_last_click !== null && ctx.cfg.since_last_click < ctx.cfg.cooldown) {
+      throw conflict(
+        `you placed a call ${ctx.cfg.since_last_click} second${ctx.cfg.since_last_click === 1 ? '' : 's'} ago - `
+          + 'Smartflo is still ringing your phone for it. Answer that one, or wait a moment and try again.',
+      );
+    }
 
     app.tataTele.baseUrl = ctx.cfg.base_url;
 
@@ -95,11 +112,12 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
     }) =>
       req
         .tx(async (q) => {
-          await q.query(
+          const row = await q.one<{ id: string; requested_at: string }>(
             `insert into crm.telephony_calls
                (lead_id, user_id, agent_msisdn, destination_msisdn,
                 provider_ref_id, status, failure_reason)
-             values ($1, $2, $3, $4, $5, $6, $7)`,
+             values ($1, $2, $3, $4, $5, $6, $7)
+             returning id, requested_at`,
             [
               ctx.lead.id, user.id, ctx.me.dialing_msisdn, ctx.lead.phone_e164,
               fields.refId ?? null, fields.status, fields.reason ?? null,
@@ -112,8 +130,12 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
               [ctx.lead.id, user.id, JSON.stringify({ ref_id: fields.refId ?? null })],
             );
           }
+          return row;
         })
-        .catch((err) => req.log.warn({ err }, 'could not record click-to-call'));
+        .catch((err) => {
+          req.log.warn({ err }, 'could not record click-to-call');
+          return null;
+        });
 
     try {
       const placed = await app.tataTele.clickToCall({
@@ -121,10 +143,14 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
         destinationNumber: digitsOnly(ctx.lead.phone_e164),
         ...(ctx.cfg.caller_id ? { callerId: ctx.cfg.caller_id } : {}),
       });
-      await record({ refId: placed.refId, status: 'requested' });
+      const row = await record({ refId: placed.refId, status: 'requested' });
       return {
         ok: true,
         refId: placed.refId,
+        // The server's clock, not the browser's: the call record Smartflo
+        // sends back is matched against this moment.
+        callId: row?.id ?? null,
+        requestedAt: row?.requested_at ?? new Date().toISOString(),
         message: `Smartflo is ringing your phone first - ${
           ctx.lead.full_name ?? 'the client'
         } is dialled the moment you answer.`,

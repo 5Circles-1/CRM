@@ -315,6 +315,34 @@ Do not undo these without understanding why they exist.
   `device_call_logs` stay: they verified real attempts, and deleting them
   would falsify every past dial count.
 
+- **Power dialling works the due list; the outcome between calls stays
+  human** (0075, owner request 23 Sep). The Power dial screen (`#/dial`, or
+  "▶ Power dial my list" on My Pipeline) rings the next due lead after a
+  `power_dial.countdown_seconds` countdown, and the next one the moment the
+  outcome is saved — no picking, no Call button. *What is due, in what order*
+  is `crm.v_dial_queue`, never the browser: immediate, then a **callback whose
+  time has come** (the client chose it, and it is marked missed after
+  `sla.callback_grace_minutes`), then fresh work and re-enquiries alike, then
+  due visit follow-ups, overdue, breached; within a rank the pipeline
+  screen's own order. Work agreed for later is never rung early. A lead
+  called within `power_dial.redial_gap_minutes` is held back — `wrong_person`
+  and `language_barrier` leave an overdue lead overdue, and without the gap
+  the dialler would ring the same client straight back — except a due
+  callback and an undialled re-enquiry, which are appointments. Auto-dialling
+  keeps to `power_dial.start_hour`–`end_hour` IST (TRAI's 09:00–21:00); one
+  press of Call on a lead never does. The outcome is never skipped: it sets
+  the follow-up, fires callbacks, keeps green leads green and feeds every
+  score, so the dialler waits for it — with no pre-chosen answer, because a
+  default "Connected — interested" saved by reflex invents a green lead. A
+  save gives Tata Tele's call record up to 15 s to land and links it (matched
+  by the click's server time, `?since=`, so an older unlogged call is never
+  taken for this one), because an unverified dial reads as a fabricated one.
+  Safe unattended: Smartflo rings the *caller* first, so a client is only
+  dialled when someone answers; a second click inside
+  `tata_tele.click_cooldown_seconds` is refused (409); leaving the screen
+  stops the loop. The dialler is its own route because My Pipeline redraws
+  itself every 30 s, which would throw away an outcome form mid-call.
+
 - **Row-level security is the access control, not the API.** The app connects as
   `crm_app` (no BYPASSRLS, not the table owner) and sets `app.user_id` per
   request. A missing `WHERE` clause in a route handler is then a bug that
@@ -396,15 +424,18 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(377 database assertions, 340 API tests, 17 browser E2E flows), the
+(387 database assertions, 347 API tests, 18 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Tata Tele
 Smartflo integration** (migration 0074, `api/src/integrations/tata_tele/`) —
 click-to-call from the lead page and My Pipeline cards, plus webhook +
 rate-limited scheduled CDR pull feeding the same `device_call_logs` table and
 the same `is_verified` flip as the app. The log-call form offers the matching
-call record and one click makes the attempt `is_verified`. The earlier
-Callyzer integration (0063) was retired in 0074, before it ever went live.
+call record and one click makes the attempt `is_verified`. **Power dialling**
+(0075, `public/js/views/dial.js`) works a caller's due list back to back on
+top of it, sharing one call-outcome form with the lead page
+(`public/js/callform.js`). The earlier Callyzer integration (0063) was
+retired in 0074, before it ever went live.
 
 Not verifiable from this repository: the app running on a physical handset
 (ten-minute test in android/README.md), Smartflo against the live account

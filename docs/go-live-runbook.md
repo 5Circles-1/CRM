@@ -351,6 +351,33 @@ table without double-counting — but with every call placed through Smartflo
 it is redundant on cloud-dialled handsets. If the Smartflo login or webhook
 goes quiet later, the bell alarm names it; verification never fails silently.
 
+### Power dialling — how the floor uses it
+
+Once the ✓ check passes, callers and counsellors get **Power dial** in the
+menu and **▶ Power dial my list** on My Pipeline. Tell the floor:
+
+1. Press **▶ Power dial my list**. After a short countdown the CRM calls
+   your first due lead — your phone rings first; answer it and the client is
+   dialled.
+2. After each call, save what happened. No conversation? One tap —
+   **Not answered / Busy / Switched off**. Otherwise choose the outcome
+   (there is no default, on purpose), add the follow-up date if asked, and
+   press **Save & call next**. The next lead rings by itself.
+3. **Skip this lead** during the countdown, **⏸ Pause** any time (or
+   *Pause after this call* while talking), **■ Stop** to finish. Leaving the
+   screen stops it too.
+
+It calls in the same order as My Pipeline — immediate leads, callbacks whose
+time has come, fresh leads and re-enquiries, then overdue follow-ups — and
+never calls anything booked for later. Tunables in **Admin → Settings**:
+`power_dial.countdown_seconds` (5), `power_dial.redial_gap_minutes` (30),
+`power_dial.start_hour`/`end_hour` (9–21 IST), and
+`tata_tele.click_cooldown_seconds` (10).
+
+**✓ check:** on a pilot caller's login with two or three due leads, press
+**▶ Power dial my list**, answer, tap **Not answered** — the next lead
+should ring within seconds, and the saved attempt shows the **device** badge.
+
 ---
 
 ## Phase 8 — Pilot (two weeks)

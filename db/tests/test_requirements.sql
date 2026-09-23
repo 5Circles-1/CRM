@@ -4358,6 +4358,149 @@ reset role;
 update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';
 
 -- =============================================================================
+-- POWER DIALLING (PD, 0075): the CRM works a caller's due list back to back.
+-- What is due, and in what order, is crm.v_dial_queue - one rule shared with
+-- nothing else to drift from. Fixtures belong to a dedicated caller so the
+-- rest of this file's leads cannot reorder the queue under the assertions.
+-- =============================================================================
+
+reset role;
+
+\set PD '''22222222-0000-0000-0000-0000000000dd'''
+insert into crm.users (id, full_name, email, role, employee_code, dialing_msisdn)
+values (:PD, 'PD Caller', 'pd@5circles.test', 'caller', 'CLR-PD', '+919812300001');
+
+insert into crm.leads (id, source_id, full_name, phone_e164, caller_id, team_id, status, priority) values
+  ('dd000000-0000-0000-0000-000000000001', :SRC, 'PD Immediate', '+919812300101', :PD, :TEAM_A, 'new',     'immediate'),
+  ('dd000000-0000-0000-0000-000000000002', :SRC, 'PD Fresh',     '+919812300102', :PD, :TEAM_A, 'new',     'normal'),
+  ('dd000000-0000-0000-0000-000000000003', :SRC, 'PD Callback',  '+919812300103', :PD, :TEAM_A, 'working', 'normal'),
+  ('dd000000-0000-0000-0000-000000000004', :SRC, 'PD Held',      '+919812300104', :PD, :TEAM_A, 'working', 'normal'),
+  ('dd000000-0000-0000-0000-000000000005', :SRC, 'PD Overdue',   '+919812300105', :PD, :TEAM_A, 'working', 'normal'),
+  ('dd000000-0000-0000-0000-000000000006', :SRC, 'PD Future',    '+919812300106', :PD, :TEAM_A, 'working', 'normal'),
+  ('dd000000-0000-0000-0000-000000000007', :SRC, 'PD Reenquiry', '+919812300107', :PD, :TEAM_A, 'working', 'normal');
+
+-- "Call me back in ten minutes": a call ten minutes ago, and the time the
+-- client chose has just arrived - inside the re-dial gap, on purpose.
+insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition)
+values ('dd000000-0000-0000-0000-000000000003', :PD, now() - interval '10 minutes', 45, 'wrong_person');
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+values ('dd000000-0000-0000-0000-000000000003', :PD, :PD, now() - interval '1 minute', 'call me in 10');
+
+-- Called five minutes ago with an outcome that leaves an overdue lead overdue:
+-- exactly the loop the re-dial gap exists to break.
+insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition)
+values ('dd000000-0000-0000-0000-000000000004', :PD, now() - interval '5 minutes', 40, 'wrong_person');
+update crm.leads set next_action_at = now() - interval '2 hours'
+ where id = 'dd000000-0000-0000-0000-000000000004';
+
+-- Overdue, last called two hours ago.
+insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition)
+values ('dd000000-0000-0000-0000-000000000005', :PD, now() - interval '2 hours', 40, 'wrong_person');
+update crm.leads set next_action_at = now() - interval '3 hours'
+ where id = 'dd000000-0000-0000-0000-000000000005';
+
+-- Agreed for later: never auto-dialled early.
+insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition)
+values ('dd000000-0000-0000-0000-000000000006', :PD, now() - interval '3 hours', 40, 'wrong_person');
+update crm.leads set next_action_at = now() + interval '2 hours'
+ where id = 'dd000000-0000-0000-0000-000000000006';
+
+-- Not answered ten minutes ago (retry pushed hours out), then asked again
+-- through a form: fresh work again, gap or no gap.
+insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition)
+values ('dd000000-0000-0000-0000-000000000007', :PD, now() - interval '10 minutes', 0, 'not_answered');
+insert into crm.lead_events (lead_id, event_type, payload)
+values ('dd000000-0000-0000-0000-000000000007', 're_enquiry', '{}');
+
+set role crm_app;
+select set_config('app.user_id', :PD, false) as _pd \gset
+
+select crm_test.check(
+  'R5', 'power dialling reaches the immediate lead before any other work',
+  (select lead_id from crm.v_dial_queue
+    where queue_owner_id = :PD and dialable order by dial_position limit 1)
+    = 'dd000000-0000-0000-0000-000000000001',
+  null);
+
+select crm_test.check(
+  'PD', 'the queue runs immediate, due callback, fresh, re-enquiry, overdue - the held lead last',
+  (select array_agg(full_name order by dial_position)
+     from crm.v_dial_queue where queue_owner_id = :PD)
+    = array['PD Immediate', 'PD Callback', 'PD Fresh', 'PD Reenquiry', 'PD Overdue', 'PD Held'],
+  (select string_agg(full_name || ':' || dial_reason, ', ' order by dial_position)
+     from crm.v_dial_queue where queue_owner_id = :PD));
+
+select crm_test.check(
+  'PD', 'a callback whose time has come is dialled even minutes after the last call',
+  exists (select 1 from crm.v_dial_queue
+           where lead_id = 'dd000000-0000-0000-0000-000000000003'
+             and dial_reason = 'callback_due' and dialable),
+  null);
+
+select crm_test.check(
+  'PD', 'a re-enquiry is dialled like a fresh lead, even right after a call',
+  exists (select 1 from crm.v_dial_queue
+           where lead_id = 'dd000000-0000-0000-0000-000000000007'
+             and dial_reason = 'reenquiry' and dialable),
+  null);
+
+select crm_test.check(
+  'PD', 'a lead called minutes ago is held back, not rung straight back',
+  exists (select 1 from crm.v_dial_queue
+           where lead_id = 'dd000000-0000-0000-0000-000000000004'
+             and not dialable
+             and redial_held_until > now()
+             and redial_held_until <= now() + make_interval(
+                   mins => crm.setting_int('power_dial.redial_gap_minutes', 30))),
+  null);
+
+select crm_test.check(
+  'PD', 'work agreed for later is never auto-dialled early',
+  not exists (select 1 from crm.v_dial_queue
+               where lead_id = 'dd000000-0000-0000-0000-000000000006'),
+  null);
+
+reset role;
+
+-- Logging the outcome is what moves the dialler on: a not-answered fresh lead
+-- leaves the queue by the same trigger that schedules its retry.
+insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition)
+values ('dd000000-0000-0000-0000-000000000002', :PD, now(), 0, 'not_answered');
+
+set role crm_app;
+select set_config('app.user_id', :PD, false) as _pd \gset
+select crm_test.check(
+  'PD', 'a logged outcome takes the lead out of the dialable queue',
+  not exists (select 1 from crm.v_dial_queue
+               where lead_id = 'dd000000-0000-0000-0000-000000000002' and dialable),
+  null);
+
+-- A queue is read under the reader's RLS: a colleague cannot see it.
+select set_config('app.user_id', :A2, false) as _a2 \gset
+select crm_test.check(
+  'PD', 'another caller cannot see a colleague''s dial queue',
+  not exists (select 1 from crm.v_dial_queue where queue_owner_id = :PD),
+  null);
+
+reset role;
+
+select crm_test.check(
+  'PD', 'power dialling keeps to 09:00-21:00 IST',
+  not crm.power_dial_open('2026-09-23 08:59:59+05:30')
+  and crm.power_dial_open('2026-09-23 09:00:00+05:30')
+  and crm.power_dial_open('2026-09-23 20:59:59+05:30')
+  and not crm.power_dial_open('2026-09-23 21:00:00+05:30'),
+  null);
+
+select crm_test.check(
+  'PD', 'the dialler''s numbers are settings, not code',
+  (select count(*) = 5 from crm.settings
+    where key in ('power_dial.countdown_seconds', 'power_dial.redial_gap_minutes',
+                  'power_dial.start_hour', 'power_dial.end_hour',
+                  'tata_tele.click_cooldown_seconds')),
+  null);
+
+-- =============================================================================
 -- OFFICE VISITS (WLK): a walk-in is a row, from booked to counselled to
 -- converted (0071, owner decision 15 Sep). "Office visits to conversions" was
 -- not a ratio the CRM could compute: the numerator was per counsellor and the

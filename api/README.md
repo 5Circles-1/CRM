@@ -83,6 +83,18 @@ a database trigger, not at token expiry.
 **The caller's screens** (R4, R6, R7) — `GET /me`, `/me/day`, `/me/day/summary`,
 `/me/score`, `/me/attendance`.
 
+**Power dialling** (R4, R5; migration 0075) — `GET /me/dial-next?exclude=<ids>`
+returns the next dialable lead from `crm.v_dial_queue` (the order rule lives
+there, not here), how many remain, the countdown, and whether the IST window
+is open; with nothing dialable it says why (`held` after a recent call, and
+`next_due_at`, the next later-today follow-up). `exclude` is only the
+browser session's own skips. The screen then calls `POST /leads/:id/call`,
+which now returns `callId` and the server's `requestedAt`, and refuses a
+second click inside `tata_tele.click_cooldown_seconds` with 409.
+`GET /leads/:id/device-log-suggestion?since=<iso>` offers only a call record
+that started after that moment, so the dialler links this call's record and
+never an older unlogged one.
+
 **Working leads** (R3, R5, R9) — `GET /leads`, `GET /leads/:id`,
 `POST /leads/:id/calls`, `POST /leads/:id/callbacks`, `POST /callbacks/:id/cancel`,
 `POST /leads/:id/qualify`, `GET /queues/immediate`.

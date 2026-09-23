@@ -4862,6 +4862,9 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
     delete process.env.TATA_TELE_LOGIN_EMAIL;
     delete process.env.TATA_TELE_LOGIN_PASSWORD;
     fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';`);
+    // These tests click as one caller seconds apart; the double-click guard
+    // has its own test in the power-dialling block.
+    fixtureSql(`update crm.settings set value = '0'::jsonb where key = 'tata_tele.click_cooldown_seconds';`);
 
     leadId = makeLeadFor(USERS.callerA1, 'Smartflo Client');
     leadNumber = fixtureSql(`select phone_e164 from crm.leads where id = '${leadId}'`)
@@ -5289,6 +5292,194 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
       payload: { dialingMsisdn: '9811100000' },
     });
     assert.equal(denied.statusCode, 403);
+  });
+});
+
+/* ===========================================================================
+ * Power dialling (0075): the CRM works a caller's due list back to back.
+ * A dedicated caller, so earlier tests' leads cannot reorder the queue.
+ * =========================================================================== */
+
+describe('power dialling: the due list, back to back', () => {
+  const DIALLER = '22222222-0000-0000-0000-0000000000e1';
+  const DIALLER_EMAIL = 'dialler@5circles.test';
+  const TEAM_A = '11111111-0000-0000-0000-000000000001';
+  let token = '';
+  let immediateId = '';
+  let freshId = '';
+  let laterId = '';
+
+  const leadFor = (name: string, phone: string, status: string, priority: string): string =>
+    fixtureSql(`
+      insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status, priority)
+      values ('${SOURCES.meta}', '${name}', '${phone}', '${DIALLER}', '${TEAM_A}', '${status}', '${priority}')
+      returning id;
+    `).trim().split('\n')[0]!.trim();
+
+  const setting = (key: string, value: string) =>
+    fixtureSql(`update crm.settings set value = '${value}'::jsonb where key = '${key}';`);
+
+  before(async () => {
+    fixtureSql(`
+      insert into crm.users (id, full_name, email, role, employee_code, dialing_msisdn)
+      values ('${DIALLER}', 'Power Dialler', '${DIALLER_EMAIL}', 'caller', 'CLR-PWR', '+919812399901')
+      on conflict do nothing;
+    `);
+    const hash = await hashPassword(TEST_PASSWORD);
+    await h.db.withoutUser((q) => q.query('select crm.set_password($1, $2, false)', [DIALLER, hash]));
+    token = await login(h.app, DIALLER_EMAIL);
+
+    // Open the window around the clock: the suite runs at any hour.
+    setting('power_dial.start_hour', '0');
+    setting('power_dial.end_hour', '24');
+    fixtureSql(`update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';`);
+
+    immediateId = leadFor('Dial Immediate', '+919812399911', 'new', 'immediate');
+    freshId = leadFor('Dial Fresh', '+919812399912', 'new', 'normal');
+    // Contacted hours ago, next step agreed for later: never auto-dialled early.
+    laterId = leadFor('Dial Later', '+919812399913', 'working', 'normal');
+    fixtureSql(`
+      insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition)
+      values ('${laterId}', '${DIALLER}', now() - interval '3 hours', 40, 'wrong_person');
+      update crm.leads set next_action_at = now() + interval '90 minutes' where id = '${laterId}';
+    `);
+  });
+
+  after(() => {
+    setting('power_dial.start_hour', '9');
+    setting('power_dial.end_hour', '21');
+    setting('tata_tele.click_cooldown_seconds', '10');
+    delete h.app.tataTele;
+  });
+
+  const next = (exclude: string[] = []) =>
+    h.app.inject({
+      method: 'GET',
+      url: `/me/dial-next${exclude.length ? `?exclude=${exclude.join(',')}` : ''}`,
+      headers: auth(token),
+    });
+
+  it('hands out the due work most urgent first, honours skips, and never dials early', async () => {
+    const first = await next();
+    assert.equal(first.statusCode, 200, first.body);
+    const a = first.json();
+    assert.equal(a.open, true);
+    assert.equal(a.countdown_seconds, 5);
+    assert.equal(a.lead.lead_id, immediateId, 'the immediate lead rings first');
+    assert.equal(a.lead.dial_reason, 'immediate');
+    assert.equal(a.remaining, 2, 'the later lead is not due');
+
+    const second = (await next([immediateId])).json();
+    assert.equal(second.lead.lead_id, freshId, 'a skipped lead is passed over');
+    assert.equal(second.remaining, 1);
+
+    const done = (await next([immediateId, freshId])).json();
+    assert.equal(done.lead, null);
+    assert.equal(done.remaining, 0);
+    // "Next" is the lead agreed for later - never a skipped fresh lead, which
+    // is due already. Null only when the later one falls past midnight IST.
+    const laterDue = fixtureSql(
+      `select extract(epoch from next_action_at)::bigint from crm.leads where id = '${laterId}'`,
+    ).trim();
+    assert.ok(
+      done.next_due_at === null
+        || Math.round(new Date(done.next_due_at).getTime() / 1000) === Number(laterDue),
+      `the quiet queue names the work agreed for later, got ${done.next_due_at}`,
+    );
+  });
+
+  it('keeps to its hours: outside the window it hands out nothing', async () => {
+    setting('power_dial.start_hour', '0');
+    setting('power_dial.end_hour', '0');
+    try {
+      const closed = (await next()).json();
+      assert.equal(closed.open, false);
+      assert.equal(closed.lead, null);
+      assert.equal(closed.remaining, 2, 'the due work is still counted, just not dialled');
+      assert.deepEqual(closed.window, { start_hour: 0, end_hour: 0 });
+    } finally {
+      setting('power_dial.end_hour', '24');
+    }
+  });
+
+  it('a queue is its owner\'s: a colleague is never handed these leads', async () => {
+    const a1 = await login(h.app, EMAILS.callerA1);
+    const res = await h.app.inject({ method: 'GET', url: '/me/dial-next', headers: auth(a1) });
+    assert.equal(res.statusCode, 200);
+    assert.ok(![immediateId, freshId, laterId].includes(res.json().lead?.lead_id));
+  });
+
+  it('refuses a malformed skip list instead of guessing', async () => {
+    const res = await h.app.inject({
+      method: 'GET', url: '/me/dial-next?exclude=not-a-uuid', headers: auth(token),
+    });
+    assert.equal(res.statusCode, 400);
+  });
+
+  it('a click returns its id and the server\'s time, and a double-click is refused', async () => {
+    setting('tata_tele.click_cooldown_seconds', '60');
+    const dialled: string[] = [];
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async (p) => {
+        dialled.push(p.destinationNumber);
+        return { refId: `PD-${dialled.length}`, message: 'queued' };
+      },
+    };
+
+    const placed = await h.app.inject({
+      method: 'POST', url: `/leads/${immediateId}/call`, headers: auth(token),
+    });
+    assert.equal(placed.statusCode, 200, placed.body);
+    const body = placed.json();
+    assert.match(body.callId, /^[0-9a-f-]{36}$/);
+    assert.ok(Math.abs(Date.now() - new Date(body.requestedAt).getTime()) < 60_000,
+      'requestedAt is the server moment the call was placed');
+
+    const again = await h.app.inject({
+      method: 'POST', url: `/leads/${freshId}/call`, headers: auth(token),
+    });
+    assert.equal(again.statusCode, 409);
+    assert.match(again.json().message, /still ringing your phone/);
+    assert.deepEqual(dialled, ['919812399911'], 'the second bridge never reached Smartflo');
+  });
+
+  it('a logged outcome moves the dialler on to the next lead', async () => {
+    const logged = await h.app.inject({
+      method: 'POST', url: `/leads/${immediateId}/calls`, headers: auth(token),
+      payload: { disposition: 'not_answered', durationSeconds: 0 },
+    });
+    assert.ok(logged.statusCode < 300, logged.body);
+
+    const after = (await next()).json();
+    assert.equal(after.lead.lead_id, freshId, 'the dialled lead has left the queue');
+    assert.equal(after.remaining, 1);
+  });
+
+  it('offers only a call record placed after the click, never an older one', async () => {
+    const phone = '+919812399912';
+    fixtureSql(`
+      insert into crm.device_call_logs
+        (user_id, device_row_key, counterparty_msisdn, direction, started_at, duration_seconds, source)
+      values ('${DIALLER}', 'tata:pd-old', '${phone}', 'outgoing', now() - interval '2 hours', 50, 'tata_tele');
+    `);
+    const since = new Date(Date.now() - 60_000).toISOString();
+    const url = (s?: string) =>
+      `/leads/${freshId}/device-log-suggestion${s ? `?since=${encodeURIComponent(s)}` : ''}`;
+
+    const anyAge = (await h.app.inject({ method: 'GET', url: url(), headers: auth(token) })).json();
+    assert.equal(anyAge.suggestion?.duration_seconds, 50, 'without since, the old call is offered');
+
+    const fromClick = (await h.app.inject({ method: 'GET', url: url(since), headers: auth(token) })).json();
+    assert.equal(fromClick.suggestion, null, 'with since, the older call is not this call');
+
+    fixtureSql(`
+      insert into crm.device_call_logs
+        (user_id, device_row_key, counterparty_msisdn, direction, started_at, duration_seconds, source)
+      values ('${DIALLER}', 'tata:pd-new', '${phone}', 'outgoing', now(), 75, 'tata_tele');
+    `);
+    const arrived = (await h.app.inject({ method: 'GET', url: url(since), headers: auth(token) })).json();
+    assert.equal(arrived.suggestion?.duration_seconds, 75, 'the call placed after the click is offered');
   });
 });
 

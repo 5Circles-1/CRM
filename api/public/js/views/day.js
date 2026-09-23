@@ -70,6 +70,8 @@ export async function render(outlet, me) {
           <button class="btn primary" data-testid="day-inbound" id="day-inbound">
             📞 Log inbound call
           </button>
+          ${me?.cloud_calling ? `<a class="btn primary" href="#/dial/start" data-testid="day-power"
+            title="Call your due leads one after another — no clicking between calls">▶ Power dial my list</a>` : ''}
         </div>
       </div>`));
     outlet.querySelector('#day-inbound').addEventListener('click', () =>

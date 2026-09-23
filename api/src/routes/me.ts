@@ -134,6 +134,80 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  /**
+   * Power dialling: the next lead to ring, and how much is left.
+   *
+   * What is due and in what order is crm.v_dial_queue - this route adds only
+   * the session's own skips (`exclude`), which are the browser's to know. When
+   * nothing is dialable it says why the queue is quiet and when it next
+   * won't be, so the screen can say "next at 16:00" instead of just "empty".
+   */
+  app.get('/me/dial-next', async (req) => {
+    const user = req.requireUser();
+    const { exclude } = z
+      .object({
+        exclude: z
+          .string()
+          .optional()
+          .transform((s) => (s ? s.split(',').map((p) => p.trim()).filter(Boolean) : []))
+          .pipe(z.array(uuid).max(500)),
+      })
+      .parse(req.query);
+
+    return req.tx(async (q) => {
+      const cfg = await q.one<{
+        open: boolean; start_hour: number; end_hour: number; countdown_seconds: number;
+      }>(
+        `select crm.power_dial_open()                                  as open,
+                crm.setting_int('power_dial.start_hour', 9)            as start_hour,
+                crm.setting_int('power_dial.end_hour', 21)             as end_hour,
+                crm.setting_int('power_dial.countdown_seconds', 5)     as countdown_seconds`,
+      );
+      const next = await q.one<{ lead_id: string; remaining: number }>(
+        `select q.*, count(*) over ()::int as remaining
+           from crm.v_dial_queue q
+          where q.queue_owner_id = $1
+            and q.dialable
+            and not (q.lead_id = any($2::uuid[]))
+          order by q.dial_position
+          limit 1`,
+        [user.id, exclude],
+      );
+
+      const base = {
+        open: cfg!.open,
+        window: { start_hour: cfg!.start_hour, end_hour: cfg!.end_hour },
+        countdown_seconds: cfg!.countdown_seconds,
+        remaining: next?.remaining ?? 0,
+      };
+
+      if (next && cfg!.open) {
+        await logLeadAccess(q, user.id, [next.lead_id], 'detail', req.ip);
+        return { ...base, lead: next };
+      }
+
+      const outlook = await q.one<{ held: number; held_until: string | null; next_due_at: string | null }>(
+        `select (select count(*)::int from crm.v_dial_queue q
+                  where q.queue_owner_id = $1 and not q.dialable
+                    and not (q.lead_id = any($2::uuid[])))              as held,
+                (select min(q.redial_held_until) from crm.v_dial_queue q
+                  where q.queue_owner_id = $1 and not q.dialable
+                    and not (q.lead_id = any($2::uuid[])))              as held_until,
+                (select min(p.next_action_at) from crm.v_my_pipeline p
+                  where p.queue_owner_id = $1
+                    -- Only work that is genuinely later: fresh work is due
+                    -- already, and a lead skipped this session is not "next".
+                    and p.bucket in ('callback', 'followup_today', 'will_visit')
+                    and not (p.lead_id = any($2::uuid[]))
+                    and p.next_action_at > now()
+                    and p.next_action_at < (crm.ist_date(now()) + 1)::timestamp
+                                             at time zone 'Asia/Kolkata') as next_due_at`,
+        [user.id, exclude],
+      );
+      return { ...base, lead: null, ...outlook };
+    });
+  });
+
   /** The re-tap pool: leads nobody could reach, parked for tapping later. */
   app.get('/me/retap-pool', async (req) => {
     const user = req.requireUser();

@@ -2,6 +2,7 @@ import { get, post } from './api.js';
 import { esc, h, minsLabel, openModal, toast, wireLogoFallback } from './util.js';
 import { renderLogin } from './views/login.js';
 import * as day from './views/day.js';
+import * as dial from './views/dial.js';
 import * as lead from './views/lead.js';
 import * as score from './views/score.js';
 import * as attendance from './views/attendance.js';
@@ -29,6 +30,9 @@ import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
 
 const NAV = [
   { hash: '#/day', label: 'My Pipeline', roles: ['caller', 'counsellor'] },
+  // Only where a click can actually place a call: Tata Tele switched on
+  // and credentials on the server.
+  { hash: '#/dial', label: 'Power dial', roles: ['caller', 'counsellor'], when: (m) => m.cloud_calling },
   { hash: '#/fresh', label: 'Fresh leads', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/inbound', label: 'Inbound calls', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
   { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
@@ -60,7 +64,7 @@ const DEFAULT_ROUTE = {
 };
 
 const VIEWS = {
-  day, fresh, inbound, reminders, retap, walkins, floor, overview, collections, advisory, mentors,
+  day, dial, fresh, inbound, reminders, retap, walkins, floor, overview, collections, advisory, mentors,
   events, training, dash, leads, people, targets, score, attendance, admin, lead, team, history,
 };
 
@@ -70,7 +74,7 @@ const VIEWS = {
  * at rather than a search away.
  */
 const HELP_FOR = {
-  day: 'the-callers-job', fresh: 'the-callers-job', inbound: 'the-callers-job',
+  day: 'the-callers-job', dial: 'the-callers-job', fresh: 'the-callers-job', inbound: 'the-callers-job',
   reminders: 'the-callers-job', retap: 'the-callers-job',
   walkins: 'the-counsellors-job', targets: 'the-counsellors-job',
   floor: 'the-counsellors-job', overview: 'how-the-crm-works',
@@ -84,7 +88,7 @@ const HELP_FOR = {
 };
 
 const TITLES = {
-  day: 'My Pipeline', fresh: 'Fresh leads', inbound: 'Inbound calls',
+  day: 'My Pipeline', dial: 'Power dial', fresh: 'Fresh leads', inbound: 'Inbound calls',
   reminders: 'Alerts', retap: 'Re-tap',
   walkins: 'Office visits', targets: 'Targets',
   floor: 'Floor', overview: 'Overview', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
@@ -127,7 +131,7 @@ async function boot() {
 }
 
 function renderShell(app) {
-  const items = NAV.filter((n) => n.roles.includes(me.role));
+  const items = NAV.filter((n) => n.roles.includes(me.role) && (!n.when || n.when(me)));
   app.innerHTML = '';
   app.appendChild(h(`
     <div class="shell">
