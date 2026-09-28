@@ -318,10 +318,14 @@ function teamModal(user, teams, onDone) {
 /**
  * The Dialing number is how call records — the companion app's and Tata
  * Tele's — are matched back to a person, and the number Smartflo rings first
- * on a click-to-call. An unmapped Smartflo agent on the Ingestion tab is
- * fixed here, and the next sync re-ingests the quarantined calls on its own.
+ * on a click-to-call. Saving it applies the mapping at once: the Smartflo
+ * agent with that number maps to this person, and any calls of theirs being
+ * held are released to them, however old.
+ *
+ * `freeAgents` are Smartflo agents nobody answers yet; offered from the Tata
+ * Tele panel, one click fills the number in instead of retyping ten digits.
  */
-function simModal(user, onDone) {
+function simModal(user, onDone, freeAgents = []) {
   if (!user) return;
   const bodyEl = h(`
     <div>
@@ -332,6 +336,12 @@ function simModal(user, onDone) {
         <input name="msisdn" maxlength="20" placeholder="e.g. 98765 43210"
                value="${esc(user.dialing_msisdn ?? '')}">
       </label>
+      ${freeAgents.length === 0 ? '' : `
+      <div class="hint">Smartflo agents nobody answers yet:
+        ${freeAgents.map((a) => `
+          <button class="btn small" type="button" data-pick="${esc(a.agent_msisdn)}">${
+            esc(a.agent_msisdn)}${a.agent_name ? ` · ${esc(a.agent_name)}` : ''}</button>`).join('')}
+      </div>`}
     </div>`);
   const footer = h(`<div>
     <button class="btn" data-act="clear">Clear</button>
@@ -339,14 +349,22 @@ function simModal(user, onDone) {
   </div>`);
   const { close } = openModal(`Dialing SIM for ${user.full_name}`, bodyEl, footer);
 
+  bodyEl.addEventListener('click', (e) => {
+    const pick = e.target.closest('[data-pick]')?.dataset.pick;
+    if (pick) bodyEl.querySelector('[name=msisdn]').value = pick;
+  });
+
   footer.addEventListener('click', async (e) => {
     const act = e.target.dataset?.act;
     if (!act) return;
     const value = act === 'clear' ? null : bodyEl.querySelector('[name=msisdn]').value.trim();
     if (act === 'save' && !value) { toast('Enter a number, or use Clear.', 'err'); return; }
     try {
-      await put(`/admin/users/${user.id}/dialing-msisdn`, { dialingMsisdn: value });
-      toast(value ? 'Dialing SIM saved.' : 'Dialing SIM cleared.');
+      const r = await put(`/admin/users/${user.id}/dialing-msisdn`, { dialingMsisdn: value });
+      const released = Number(r?.held_calls_released ?? 0);
+      toast(!value ? 'Dialing SIM cleared.'
+        : released ? `Dialing SIM saved — ${released} held call record${released === 1 ? '' : 's'} released to them.`
+          : 'Dialing SIM saved.');
       close();
       onDone();
     } catch (err) {
@@ -521,10 +539,15 @@ function passwordModal(userId, onDone) {
   });
 }
 
-function newUserModal(teams, onDone) {
+/**
+ * `prefill` carries what is already known - from the Tata Tele panel, a
+ * Smartflo agent's name and number - so creating the person behind an
+ * unmatched agent is not an exercise in copying digits between tabs.
+ */
+function newUserModal(teams, onDone, prefill = {}) {
   const bodyEl = h(`
     <div>
-      <label class="f">Full name <input name="name" required></label>
+      <label class="f">Full name <input name="name" required value="${esc(prefill.fullName ?? '')}"></label>
       <label class="f">Email <input name="email" type="email" required></label>
       <div class="frow">
         <label class="f">Role
@@ -541,7 +564,8 @@ function newUserModal(teams, onDone) {
         </label>
       </div>
       <div class="frow">
-        <label class="f">Dialing SIM <input name="msisdn" placeholder="+91…"></label>
+        <label class="f">Dialing SIM <input name="msisdn" placeholder="+91…"
+                                            value="${esc(prefill.dialingMsisdn ?? '')}"></label>
         <label class="f">Employee code <input name="code"></label>
       </div>
       <label class="f">Temporary password
@@ -583,11 +607,14 @@ function newUserModal(teams, onDone) {
 /* ---------------- ingestion ---------------- */
 
 async function ingest(body, me) {
-  const [sources, runs, teams, tataTele] = await Promise.all([
+  const [sources, runs, teams, tataTele, people] = await Promise.all([
     get('/admin/sources'),
     get('/ingest/runs'),
     get('/admin/teams'),
     get('/integrations/tata-tele/health').catch(() => null),
+    // Attaching a Smartflo agent puts its number on a person, which only an
+    // admin may do - so only an admin's panel needs the people to pick from.
+    me.role === 'admin' ? get('/admin/users').catch(() => []) : [],
   ]);
   body.innerHTML = '';
   const teamName = (id) => teams.find((t) => t.id === id)?.name ?? null;
@@ -673,7 +700,7 @@ async function ingest(body, me) {
     });
   });
 
-  if (tataTele) renderTataTele(body, tataTele, me, () => ingest(body, me));
+  if (tataTele) renderTataTele(body, tataTele, me, () => ingest(body, me), { people, teams });
 
   if (sources.length === 0) return;
 
@@ -765,24 +792,50 @@ async function ingest(body, me) {
 }
 
 /**
- * Create a source, or edit one that exists.
- *
- * Create-only was the wrong shape: a mistyped worksheet tab could not be
- * corrected, so the only way forward was to make another source. That is how a
- * single Meta sheet ends up wired in five times.
+ * "asha  RAO" in Smartflo is "Asha Rao" here: case, spacing
+ * and punctuation do not make a different person.
  */
+const nameKey = (s) => String(s ?? '').toLowerCase().replace(/[^a-z]+/g, ' ').trim();
+
+/**
+ * The person a Smartflo agent most likely is, or null. A whole-name match
+ * counts; a first name alone counts only for someone who needs a number, so
+ * a lone "Rahul" who already dials fine is never offered up by accident.
+ * Only a single candidate is ever suggested - two Rahuls is a question for
+ * the admin, not a guess for the screen.
+ */
+function likelyPerson(agentName, candidates, needsNumber) {
+  const key = nameKey(agentName);
+  if (!key) return null;
+  const whole = candidates.filter((u) => nameKey(u.full_name) === key);
+  if (whole.length === 1) return whole[0];
+  if (whole.length > 1) return null;
+  const first = key.split(' ')[0];
+  const byFirst = candidates.filter((u) =>
+    needsNumber.has(u.id) && nameKey(u.full_name).split(' ')[0] === first);
+  return byFirst.length === 1 ? byFirst[0] : null;
+}
+
 /**
  * Tata Tele Smartflo: the floor's dialler and its call sensor. This panel
- * answers "is cloud calling alive, and is anyone's number unmapped", which
- * are the two ways it fails silently — a caller whose number Smartflo does
- * not know can neither click-to-call nor have their dials verified. The
- * alarm on the bell is the loud path; this is the detail.
+ * answers "is cloud calling alive, and who can it not serve", which are the
+ * ways it fails silently - a person whose number Smartflo does not know can
+ * neither click-to-call nor have their dials verified. Every gap is named,
+ * with its fix beside the name: a banner that says "2 callers" and names
+ * nobody sends the admin through the Users tab comparing digits by eye.
+ * The alarm on the bell is the loud path; this is the detail.
  */
-function renderTataTele(body, tt, me, redraw) {
+function renderTataTele(body, tt, me, redraw, { people = [], teams = [] } = {}) {
   const canAct = me.role === 'admin' || me.role === 'ops';
+  const isAdmin = me.role === 'admin';
   const agents = tt.agents ?? [];
   const unmapped = agents.filter((a) => !a.user_id);
   const quarantine = tt.quarantine ?? [];
+  const coverage = tt.coverage ?? [];
+  const noNumber = coverage.filter((c) => c.problem === 'no_number');
+  const notAgent = coverage.filter((c) => c.problem === 'not_an_agent');
+  const failedClicks = tt.failed_clicks ?? [];
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
   const badge =
     tt.state === 'healthy' ? '<span class="badge b-ok">healthy</span>'
@@ -790,6 +843,78 @@ function renderTataTele(body, tt, me, redraw) {
     : tt.state === 'attention' ? '<span class="badge b-bad">needs attention</span>'
     : tt.state === 'auth' ? '<span class="badge b-bad">login expired</span>'
     : `<span class="badge b-bad">${esc(tt.state ?? 'unknown')}</span>`;
+
+  // Who a Smartflo agent can be attached to: the people it cannot serve
+  // first, since one of them is almost always who the agent is.
+  const needsNumber = new Set(coverage.map((c) => c.user_id));
+  const staff = people.filter((u) => u.is_active && u.role !== 'viewer');
+  const byName = (a, b) => a.full_name.localeCompare(b.full_name);
+  const groups = [
+    ['Cannot be dialled yet', staff.filter((u) => needsNumber.has(u.id))],
+    ['Callers and counsellors', staff.filter((u) =>
+      !needsNumber.has(u.id) && (u.role === 'caller' || u.role === 'counsellor'))],
+    ['Other staff', staff.filter((u) =>
+      !needsNumber.has(u.id) && u.role !== 'caller' && u.role !== 'counsellor')],
+  ].map(([label, list]) => [label, [...list].sort(byName)]).filter(([, list]) => list.length);
+
+  const attachOptions = (agent) => {
+    const guess = likelyPerson(agent.agent_name, staff, needsNumber);
+    return `<option value="">— who answers this phone? —</option>${groups.map(([label, list]) => `
+      <optgroup label="${esc(label)}">${list.map((u) => `
+        <option value="${esc(u.id)}"${u.id === guess?.id ? ' selected' : ''}>${esc(u.full_name)} — ${
+          esc(u.role)}${u.dialing_msisdn ? `, now ${esc(u.dialing_msisdn)}` : ', no number'}</option>`).join('')}
+      </optgroup>`).join('')}`;
+  };
+
+  const personLine = (c) => `
+    <li data-testid="tt-person" data-user="${esc(c.user_id)}" style="margin-top:4px">
+      <b>${esc(c.full_name)}</b> <span class="hint">${esc(c.role)}</span>
+      ${c.dialing_msisdn ? `<span class="mono">${esc(c.dialing_msisdn)}</span>` : ''}
+      ${isAdmin ? `<button class="btn small" data-set-number="${esc(c.user_id)}">${
+        c.dialing_msisdn ? 'Change number' : 'Set number'}</button>` : ''}
+    </li>`;
+
+  const agentRow = (a) => `
+    <div class="row wrap" data-testid="tt-agent" data-msisdn="${esc(a.agent_msisdn)}"
+         style="gap:8px;margin-top:6px;align-items:center">
+      <span class="mono">${esc(a.agent_msisdn)}</span>
+      <b>${esc(a.agent_name ?? 'unnamed agent')}</b>
+      ${isAdmin ? `
+        <select data-testid="tt-attach-user" style="max-width:100%" aria-label="Who answers ${esc(a.agent_msisdn)}">${attachOptions(a)}</select>
+        <button class="btn small primary" data-attach="${esc(a.agent_msisdn)}" data-testid="tt-attach">Attach</button>
+        <button class="btn small" data-new-user="${esc(a.agent_msisdn)}">New user…</button>` : ''}
+    </div>`;
+
+  // Three different silences, three different fixes: never reached (the URL,
+  // or a firewall in front of the server), reached and turned away (the
+  // secret), reached and failed (the payload). Each run's result is kept, so
+  // the panel can say which one this is instead of a dash.
+  const hookError = tt.webhook_last_error ?? '';
+  const hookBanner = !tt.webhook_secret_configured ? ''
+    : hookError.startsWith('refused:') ? `
+      <div class="banner warn" data-testid="tt-webhook-refused">
+        <b>The last webhook delivery was turned away</b> (${esc(fmtDT(tt.webhook_last_at))}) —
+        ${esc(hookError.replace(/^refused:\s*/, ''))}. The <span class="mono">?secret=</span> at the
+        end of the webhook URL in the Smartflo portal must be exactly TATA_TELE_WEBHOOK_SECRET from the
+        server's <span class="mono">.env</span>. If that address is not Smartflo's, a stranger knocked
+        and was refused; Smartflo's next good delivery clears this.
+      </div>`
+    : hookError ? `
+      <div class="banner warn" data-testid="tt-webhook-failed">
+        <b>The last webhook delivery reached the CRM and failed</b> (${esc(fmtDT(tt.webhook_last_at))}):
+        ${esc(hookError)}. The scheduled pull still collects those calls.
+      </div>`
+    : !tt.webhook_last_at ? `
+      <div class="banner info" data-testid="tt-webhook-never">
+        <b>No webhook delivery has reached the CRM yet.</b> Nothing is lost — the scheduled pull
+        collects every call record — but with the webhook they land the moment a call ends. In the
+        Smartflo portal, check the webhook is enabled, fires on call hangup for inbound and outbound,
+        and posts to exactly <span class="mono">${esc(location.origin)}${esc(tt.webhook_path ?? '')}?secret=…</span>.
+        Its delivery log there shows what this server answered: <b>401</b> means the secret differs;
+        a <b>timeout or reset</b> means the server admits only the office network — exempt the webhook
+        path in <span class="mono">/etc/caddy/Caddyfile</span> (runbook Phase 4b).
+      </div>`
+    : '';
 
   const panel = h(`
     <div class="panel" data-testid="tata-tele-health">
@@ -803,13 +928,17 @@ function renderTataTele(body, tt, me, redraw) {
           Dialing number matches their Smartflo agent — the floor then dials with one click
           and Smartflo's call records verify dials exactly like the companion app's.</div>` : `
         <div class="hint">
-          Last pull ${esc(fmtDT(tt.sync_last_ok_at))} · last webhook ${esc(fmtDT(tt.webhook_last_ok_at))}
+          Last pull ${esc(fmtDT(tt.sync_last_ok_at))} · last webhook ${
+            esc(tt.webhook_last_ok_at ? fmtDT(tt.webhook_last_ok_at) : 'never')}
           · today ${Number(tt.clicks_today ?? 0)} click${Number(tt.clicks_today) === 1 ? '' : 's'} to call${
             Number(tt.clicks_failed_today ?? 0) > 0 ? ` (<b>${Number(tt.clicks_failed_today)} failed</b>)` : ''}
           · ${Number(tt.calls_today ?? 0)} call record${Number(tt.calls_today) === 1 ? '' : 's'}
           (${Number(tt.matched_today ?? 0)} matched a lead)
           · ${agents.length} Smartflo agent${agents.length === 1 ? '' : 's'}
         </div>
+        ${failedClicks.length === 0 ? '' : `
+        <div class="hint" data-testid="tt-failed-clicks">Why today's clicks failed, in Smartflo's words:
+          ${failedClicks.map((f) => `<b>${esc(f.reason)}</b> ×${Number(f.n)}`).join(' · ')}</div>`}
         ${tt.state === 'auth' ? `
         <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
           <b>Smartflo is refusing the CRM's login</b> — clicks and the CDR sync are failing.
@@ -833,29 +962,36 @@ function renderTataTele(body, tt, me, redraw) {
           using the same Secret as TATA_TELE_WEBHOOK_SECRET.</div>` : `
         <div class="hint">TATA_TELE_WEBHOOK_SECRET is not set — the webhook is off and call records
           arrive only by the scheduled pull.</div>`}
-        ${Number(tt.callers_unregistered ?? 0) === 0 ? '' : `
-        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          ${Number(tt.callers_unregistered)} active caller${Number(tt.callers_unregistered) === 1 ? ' has' : 's have'}
-          no Dialing number at all — click-to-call has no phone to ring for them.
-          Set it on the Users tab.
-        </div>`}
-        ${Number(tt.callers_uncovered ?? 0) === 0 ? '' : `
-        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          ${Number(tt.callers_uncovered)} caller${Number(tt.callers_uncovered) === 1 ? "'s" : "s'"} Dialing
-          number${Number(tt.callers_uncovered) === 1 ? ' is' : 's are'} not a Smartflo agent — their
-          clicks will be refused. Add the agent in the Smartflo portal with the same follow-me number.
-        </div>`}
+        ${hookBanner}
         ${unmapped.length === 0 ? '' : `
-        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          <b>${unmapped.length} Smartflo agent${unmapped.length === 1 ? '' : 's'} match no CRM user</b>
-          — their calls are quarantined, not verified. Set the number as that person's
-          Dialing number on the Users tab; the next sync re-ingests the held calls itself.
-          <div style="margin-top:6px">${unmapped.map((a) =>
-            `<span class="mono">${esc(a.agent_msisdn)}</span>${a.agent_name ? ` (${esc(a.agent_name)})` : ''}`).join(' · ')}</div>
+        <div class="banner warn" data-testid="tt-unmapped">
+          <b>${count(unmapped.length, 'Smartflo agent matches', 'Smartflo agents match')} no CRM user</b>
+          — their calls are held, not verified. ${isAdmin
+            ? 'Attach each to the person who answers that phone: it becomes their Dialing number, and their held calls are released at once.'
+            : 'An admin can attach each to the person who answers that phone, from this panel.'}
+          ${unmapped.map(agentRow).join('')}
+        </div>`}
+        ${noNumber.length === 0 ? '' : `
+        <div class="banner warn" data-testid="tt-no-number">
+          <b>${count(noNumber.length, 'person has', 'people have')} no Dialing number</b> — click-to-call
+          has no phone to ring for them, and their calls cannot be verified.
+          <ul style="margin:4px 0 0;padding-left:18px">${noNumber.map(personLine).join('')}</ul>
+        </div>`}
+        ${notAgent.length === 0 ? '' : `
+        <div class="banner warn" data-testid="tt-not-agent">
+          <b>${count(notAgent.length, 'Dialing number is', 'Dialing numbers are')} not a Smartflo agent</b>
+          — their clicks are refused and their calls never verify. Either the number here is mistyped,
+          or their agent in the Smartflo portal has a different follow-me number.
+          <ul style="margin:4px 0 0;padding-left:18px">${notAgent.map(personLine).join('')}</ul>
         </div>`}
         ${quarantine.length === 0 ? '' : `
         <details style="margin-top:8px">
           <summary>${quarantine.length} held call record${quarantine.length === 1 ? '' : 's'} (kept whole, nothing dropped)</summary>
+          ${canAct ? `
+          <div class="row" style="margin:6px 0;align-items:center;gap:8px">
+            <button class="btn small" id="tt-reconcile">Retry held calls</button>
+            <span class="hint">Saving a Dialing number already does this; the button covers any other fix — a person reactivated, say.</span>
+          </div>` : ''}
           <table class="table"><thead><tr><th>Agent</th><th>Why held</th><th>Last seen</th></tr></thead><tbody>
           ${quarantine.map((r) => `
             <tr>
@@ -882,8 +1018,71 @@ function renderTataTele(body, tt, me, redraw) {
       toast(err.message, 'err');
     }
   });
+
+  panel.querySelector('#tt-reconcile')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try {
+      const r = await post('/integrations/tata-tele/reconcile', {});
+      toast(`${count(Number(r?.released ?? 0), 'held call record', 'held call records')} released; `
+        + `${Number(r?.still_held ?? 0)} still held.`);
+      await redraw();
+    } catch (err) {
+      e.target.disabled = false;
+      toast(err.message, 'err');
+    }
+  });
+
+  panel.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+
+    if (btn.dataset.setNumber) {
+      const c = coverage.find((x) => x.user_id === btn.dataset.setNumber);
+      if (c) {
+        simModal({ id: c.user_id, full_name: c.full_name, dialing_msisdn: c.dialing_msisdn },
+          redraw, unmapped);
+      }
+      return;
+    }
+
+    if (btn.dataset.newUser) {
+      const agent = unmapped.find((a) => a.agent_msisdn === btn.dataset.newUser);
+      newUserModal(teams, redraw, { fullName: agent?.agent_name ?? '', dialingMsisdn: btn.dataset.newUser });
+      return;
+    }
+
+    if (btn.dataset.attach) {
+      const msisdn = btn.dataset.attach;
+      const userId = btn.closest('[data-testid=tt-agent]')?.querySelector('select')?.value;
+      if (!userId) { toast('Choose who answers this phone first.', 'err'); return; }
+      const person = staff.find((u) => u.id === userId);
+      // Moving a number that already works is sometimes right (a SIM that
+      // changed hands) and never something to do by slip.
+      if (person?.dialing_msisdn && !needsNumber.has(userId)
+          && !confirm(`${person.full_name} already dials on ${person.dialing_msisdn}. `
+            + `Replace it with ${msisdn}?`)) return;
+      btn.disabled = true;
+      try {
+        const r = await put(`/admin/users/${userId}/dialing-msisdn`, { dialingMsisdn: msisdn });
+        const released = Number(r?.held_calls_released ?? 0);
+        toast(`${r.full_name} now answers ${r.dialing_msisdn}${
+          released ? ` — ${count(released, 'held call record', 'held call records')} released to them` : ''}.`);
+        await redraw();
+      } catch (err) {
+        btn.disabled = false;
+        toast(err.message, 'err');
+      }
+    }
+  });
 }
 
+/**
+ * Create a source, or edit one that exists.
+ *
+ * Create-only was the wrong shape: a mistyped worksheet tab could not be
+ * corrected, so the only way forward was to make another source. That is how a
+ * single Meta sheet ends up wired in five times.
+ */
 function sourceModal(source, teams, onDone) {
   const editing = Boolean(source);
   const mapText = source?.column_map && Object.keys(source.column_map).length

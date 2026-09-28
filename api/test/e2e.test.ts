@@ -7,6 +7,7 @@
  *   admin      - see the breakeven thermometer with the grossed-up numbers
  *   admin      - transfer Not Answered leads from the floor, across teams
  *   admin      - move a caller to another team from Admin -> Users
+ *   admin      - attach an unmatched Smartflo agent to the person who answers it
  *
  * Run with: npm run test:e2e   (needs Postgres up, like npm test)
  */
@@ -30,6 +31,7 @@ import {
 } from './helpers.ts';
 import { Database } from '../src/db/pool.ts';
 import { buildServer } from '../src/server.ts';
+import { hashPassword } from '../src/auth/credentials.ts';
 
 const SHOTS = process.env.E2E_SHOT_DIR ?? path.join(import.meta.dirname, 'shots');
 
@@ -651,4 +653,178 @@ it('admin: the Data tab parks old leads behind a two-step button', async () => {
   assert.equal(parked, 'nurture previous_month', 'the old lead is parked, not deleted');
 
   await signOut();
+});
+
+it('caller: power dialling rings the due list back to back, one tap between calls', async () => {
+  const DIALLER = '22222222-0000-0000-0000-0000000000e2';
+  const EMAIL = 'e2e-dialler@5circles.test';
+  const TEAM_A = '11111111-0000-0000-0000-000000000001';
+  const SRC = '33333333-0000-0000-0000-000000000001';
+  fixtureSql(`
+    insert into crm.users (id, full_name, email, role, employee_code, dialing_msisdn, tour_completed_at)
+    values ('${DIALLER}', 'E2E Dialler', '${EMAIL}', 'caller', 'CLR-E2D', '+919812388801', now());
+    update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';
+    update crm.settings set value = '0'::jsonb  where key = 'power_dial.start_hour';
+    update crm.settings set value = '24'::jsonb where key = 'power_dial.end_hour';
+    update crm.settings set value = '1'::jsonb  where key = 'power_dial.countdown_seconds';
+    update crm.settings set value = '0'::jsonb  where key = 'tata_tele.click_cooldown_seconds';
+    insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status, priority) values
+      ('${SRC}', 'E2E Dial First',  '+919812388811', '${DIALLER}', '${TEAM_A}', 'new', 'immediate'),
+      ('${SRC}', 'E2E Dial Second', '+919812388812', '${DIALLER}', '${TEAM_A}', 'new', 'normal');
+  `);
+  const hash = await hashPassword(TEST_PASSWORD);
+  await db.withoutUser((q) => q.query('select crm.set_password($1, $2, false)', [DIALLER, hash]));
+
+  // A stand-in for Smartflo: it records who was rung, in order.
+  const rang: string[] = [];
+  app.tataTele = {
+    baseUrl: '',
+    clickToCall: async (p) => {
+      rang.push(p.destinationNumber);
+      return { refId: `E2E-${rang.length}`, message: 'queued' };
+    },
+  };
+
+  try {
+    await signIn(EMAIL);
+    await page.waitForSelector('[data-testid=day-power]');
+    assert.equal(await page.locator('.sidebar a[data-nav="#/dial"]').count(), 1,
+      'Power dial is in the menu once cloud calling is on');
+    await page.click('[data-testid=day-power]');
+
+    // No click between: the countdown runs out and the immediate lead is rung.
+    await page.waitForSelector('[data-testid=dial-calling]');
+    assert.equal((await page.textContent('[data-testid=dial-lead-name]'))?.trim(), 'E2E Dial First');
+    assert.deepEqual(rang, ['919812388811']);
+
+    // Tata Tele's call record lands, as the webhook delivers it, and links itself.
+    fixtureSql(`
+      insert into crm.device_call_logs
+        (user_id, device_row_key, counterparty_msisdn, direction, started_at, duration_seconds, source)
+      values ('${DIALLER}', 'tata:e2e-dial-1', '+919812388811', 'outgoing', now(), 0, 'tata_tele');
+    `);
+    await page.waitForSelector('[data-testid=call-linked]', { timeout: 15_000 });
+    await page.screenshot({ path: path.join(SHOTS, '14-power-dial-calling.png'), fullPage: true });
+
+    // One tap: saved, verified, and the next lead rings without another click.
+    await page.click('[data-testid=dial-quick-not_answered]');
+    await page.waitForFunction(
+      `(document.querySelector('[data-testid=dial-lead-name]')?.textContent || '').includes('E2E Dial Second')
+        && !!document.querySelector('[data-testid=dial-calling]')`,
+    );
+    assert.deepEqual(rang, ['919812388811', '919812388812']);
+    const first = fixtureSql(`
+      select ca.disposition || ' ' || ca.is_verified
+        from crm.call_attempts ca join crm.leads l on l.id = ca.lead_id
+       where l.full_name = 'E2E Dial First';
+    `).trim();
+    assert.equal(first, 'not_answered true', 'the outcome was saved, verified by the call record');
+
+    // No outcome is pre-chosen: a reflexive "Save & call next" is refused, not
+    // logged as an interested client.
+    await page.click('[data-testid=dial-save]');
+    await page.waitForFunction(
+      `[...document.querySelectorAll('.toast')].some((t) => t.textContent.includes('Choose what happened'))`,
+    );
+    assert.equal(rang.length, 2, 'nothing was saved, so nothing else was rung');
+
+    // Nothing left: the dialler says so, and stops when told.
+    await page.click('[data-testid=dial-calling] [data-act=skip]');
+    await page.waitForSelector('[data-testid=dial-clear]');
+    await page.screenshot({ path: path.join(SHOTS, '15-power-dial-clear.png'), fullPage: true });
+    await page.click('[data-testid=dial-clear] [data-act=stop]');
+    await page.waitForSelector('[data-testid=dial-stopped]');
+    assert.match((await page.textContent('[data-testid=dial-stopped]')) ?? '',
+      /2 called, 1 saved,\s+1 skipped/);
+    await signOut();
+  } finally {
+    delete app.tataTele;
+    fixtureSql(`
+      update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';
+      update crm.settings set value = '9'::jsonb  where key = 'power_dial.start_hour';
+      update crm.settings set value = '21'::jsonb where key = 'power_dial.end_hour';
+      update crm.settings set value = '5'::jsonb  where key = 'power_dial.countdown_seconds';
+      update crm.settings set value = '10'::jsonb where key = 'tata_tele.click_cooldown_seconds';
+    `);
+  }
+});
+
+/**
+ * Smartflo knew agents the CRM did not, and the panel could only list their
+ * numbers: fixing it meant opening Users, finding the person, and retyping
+ * ten digits exactly - while their calls sat held. The agent is now attached
+ * from the line that names it, and what it was holding is released at once.
+ */
+it('admin: attaches an unmatched Smartflo agent to the person who answers it', async () => {
+  const PERSON = '22222222-0000-0000-0000-0000000000e3';
+  const AGENT = '+919812377701';
+  fixtureSql(`
+    insert into crm.users (id, full_name, email, role, employee_code, tour_completed_at)
+    values ('${PERSON}', 'Tarun Bhatia', 'e2e-tarun@5circles.test', 'caller', 'CLR-E2T', now());
+    update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';
+    insert into crm.tata_tele_agents (agent_msisdn, agent_id, agent_name)
+    values ('${AGENT}', 'e2e-0601', 'tarun  BHATIA');
+    select crm.ingest_tata_tele_cdrs(jsonb_build_array(jsonb_build_object(
+      'uuid', 'e2e-held-1', 'direction', 'outbound', 'status', 'answered',
+      'agent_number', '919812377701', 'client_number', '919811200001',
+      'date', '2026-09-20', 'time', '10:00:00', 'answered_seconds', 61)));
+  `);
+  assert.equal(
+    fixtureSql(`select count(*) from crm.telephony_quarantine
+                 where external_id = 'e2e-held-1' and resolved_at is null;`).trim(),
+    '1', 'fixture: the unmatched agent\'s call is held',
+  );
+
+  // Configured, and never reached: what the panel showed as a bare dash.
+  const priorSecret = process.env.TATA_TELE_WEBHOOK_SECRET;
+  process.env.TATA_TELE_WEBHOOK_SECRET = 'e2e-webhook-secret';
+
+  try {
+    await signIn(EMAILS.admin);
+    await page.goto(`${base}/ui/#/admin`);
+    await page.click('button[data-tab="ingest"]');
+    const row = page.locator(`[data-testid=tt-agent][data-msisdn="${AGENT}"]`);
+    await row.waitFor();
+
+    assert.match(
+      (await page.textContent('[data-testid=tt-webhook-never]')) ?? '',
+      /Caddyfile/,
+      'a webhook that never arrived says what to check, the firewall included',
+    );
+
+    // Named, not counted.
+    assert.ok(
+      ((await page.textContent('[data-testid=tt-no-number]')) ?? '').includes('Tarun Bhatia'),
+      'the person without a number is on the panel by name',
+    );
+    // Smartflo's spelling is not a different person: the likely match is offered.
+    assert.equal(await row.locator('select').inputValue(), PERSON, 'the name match is preselected');
+    await page.screenshot({ path: path.join(SHOTS, '16-tata-tele-attach.png'), fullPage: true });
+
+    await row.locator('[data-testid=tt-attach]').click();
+    await page.waitForFunction(
+      `[...document.querySelectorAll('.toast')].some((t) => t.textContent.includes('1 held call record released'))`,
+    );
+    await page.waitForFunction(
+      `!document.querySelector('[data-testid=tt-agent][data-msisdn="${AGENT}"]')`,
+    );
+
+    assert.equal(
+      fixtureSql(`select dialing_msisdn from crm.users where id = '${PERSON}';`).trim(),
+      AGENT, 'the agent\'s number is now their Dialing number',
+    );
+    assert.equal(
+      fixtureSql(`select user_id from crm.tata_tele_agents where agent_msisdn = '${AGENT}';`).trim(),
+      PERSON, 'and the agent maps to them without waiting for a pull',
+    );
+    assert.equal(
+      fixtureSql(`select user_id from crm.device_call_logs where device_row_key = 'tata:e2e-held-1';`).trim(),
+      PERSON, 'the held call was released to them',
+    );
+    await signOut();
+  } finally {
+    if (priorSecret === undefined) delete process.env.TATA_TELE_WEBHOOK_SECRET;
+    else process.env.TATA_TELE_WEBHOOK_SECRET = priorSecret;
+    fixtureSql(`update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';`);
+  }
 });

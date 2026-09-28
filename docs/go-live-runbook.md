@@ -192,10 +192,15 @@ row-level security are the locks. If you want the login page itself
 unreachable from outside the office, two options, in order of preference:
 
 - **Office IP allowlist.** Requires a static public IP from your office ISP.
-  Uncomment the two `@outside` lines in `/etc/caddy/Caddyfile`, put your
+  Uncomment the `@outside` block in `/etc/caddy/Caddyfile`, put your
   office IP in, `sudo systemctl reload caddy`. Trade-offs: no phone/home
   access for anyone (including you), and access breaks silently if the ISP
-  changes the IP - keep this in mind before blaming the server.
+  changes the IP - keep this in mind before blaming the server. Keep the
+  block's `not path /integrations/tata-tele/webhook` line: Smartflo posts
+  call records from its own servers, never from your office, and without
+  that line every delivery is cut off before the CRM sees it. (An allowlist
+  added from an older copy of the Caddyfile - two bare `@outside` lines -
+  has exactly that problem; replace it with the block.)
 - **Tailscale private network.** The CRM disappears from the public internet
   entirely; every staff device joins a free private network once. Strongest
   isolation, but with 40-60 people the device enrolment is real ongoing admin
@@ -333,11 +338,11 @@ provisioning flag, not a portal switch).
 5. In **Admin → Settings** set `tata_tele.enabled` to `true`. If clients
    should see a specific DID when called, put it in `tata_tele.caller_id`;
    blank uses the account's Pilot Number.
-6. In **Admin → Users**, make sure every caller's **Dialing number** is
-   exactly their agent's follow-me number — that column IS the mapping, for
-   click-to-call and for verification alike. The **Admin → Ingestion → Tata
-   Tele** panel names any agent it cannot place and any caller Smartflo does
-   not cover; held call records re-ingest themselves once the number is set.
+6. Every caller's **Dialing number** must be exactly their agent's
+   follow-me number — that column IS the mapping, for click-to-call and for
+   verification alike. Open **Admin → Ingestion → Tata Tele** and work down
+   what it names (see *When the panel names a problem* below); fixing a
+   number releases that person's held call records on the spot.
 
 **✓ check:** open your own test lead and press **📞 Call**. Your phone rings,
 then the lead's number is dialled. After hangup, press **Log a call** — the
@@ -350,6 +355,78 @@ The companion app can keep running in parallel — the two sensors share the
 table without double-counting — but with every call placed through Smartflo
 it is redundant on cloud-dialled handsets. If the Smartflo login or webhook
 goes quiet later, the bell alarm names it; verification never fails silently.
+
+### When the panel names a problem
+
+**Admin → Ingestion → Tata Tele** names every gap with its fix beside it:
+
+- **"Smartflo agent matches no CRM user"** — Smartflo has an agent the CRM
+  cannot place, so that person's calls are held, not verified. Each agent
+  has a line: pick the person who answers that phone (a name match is
+  preselected) and press **Attach** — the number becomes their Dialing
+  number and their held calls are released at once, however old. Not in
+  the CRM yet? **New user…** opens the form with the name and number filled
+  in.
+- **"No Dialing number"** / **"not a Smartflo agent"** — named people with a
+  **Set number** / **Change number** button. The quick-pick buttons in that
+  box are the Smartflo agents nobody answers yet. If the CRM number is right
+  and Smartflo's is wrong, fix the follow-me number in the portal instead,
+  then **Sync now**.
+- **"Why today's clicks failed"** — Smartflo's own words for each refused
+  click. A caller whose number is not an agent is the usual cause.
+- **"No webhook delivery has reached the CRM yet"** — nothing is lost (the
+  scheduled pull still collects every call), but calls then arrive minutes
+  late instead of at hangup. On the server:
+
+  ```bash
+  # 1. Is the office-only filter on, and does it exempt the webhook?
+  grep -n -A3 '@outside' /etc/caddy/Caddyfile
+  # 2. Knock on the webhook exactly as Smartflo would (empty = proof of life):
+  SECRET=$(sudo grep '^TATA_TELE_WEBHOOK_SECRET=' /opt/crm/api/.env | cut -d= -f2-)
+  curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' \
+       -d '{}' "https://crm.<your-domain>/integrations/tata-tele/webhook?secret=$SECRET"
+  ```
+
+  If step 1 shows `@outside` lines without a leading `#` and no `not path
+  /integrations/tata-tele/webhook`, that is the cause — copy the block from
+  `/opt/crm/deploy/Caddyfile` and `sudo systemctl reload caddy`. Step 2
+  should print **200**, and the panel's *last webhook* then shows the time.
+  **000** (no answer) means Caddy cut it off — back to step 1. **401** means the secret in the URL differs from `.env` (or `.env` was
+  edited without `sudo systemctl restart crm`). If the server answers 200
+  but Smartflo still never arrives, open the webhook's delivery log in the
+  Smartflo portal: it shows what was sent where, and what came back.
+- **"The last webhook delivery was turned away"** — it reached the CRM and
+  was refused, and the banner says why and from which address. Almost
+  always the URL in the Smartflo portal: it must end in
+  `?secret=<the value of TATA_TELE_WEBHOOK_SECRET>`, on the outbound and the
+  inbound webhook alike.
+
+### Power dialling — how the floor uses it
+
+Once the ✓ check passes, callers and counsellors get **Power dial** in the
+menu and **▶ Power dial my list** on My Pipeline. Tell the floor:
+
+1. Press **▶ Power dial my list**. After a short countdown the CRM calls
+   your first due lead — your phone rings first; answer it and the client is
+   dialled.
+2. After each call, save what happened. No conversation? One tap —
+   **Not answered / Busy / Switched off**. Otherwise choose the outcome
+   (there is no default, on purpose), add the follow-up date if asked, and
+   press **Save & call next**. The next lead rings by itself.
+3. **Skip this lead** during the countdown, **⏸ Pause** any time (or
+   *Pause after this call* while talking), **■ Stop** to finish. Leaving the
+   screen stops it too.
+
+It calls in the same order as My Pipeline — immediate leads, callbacks whose
+time has come, fresh leads and re-enquiries, then overdue follow-ups — and
+never calls anything booked for later. Tunables in **Admin → Settings**:
+`power_dial.countdown_seconds` (5), `power_dial.redial_gap_minutes` (30),
+`power_dial.start_hour`/`end_hour` (9–21 IST), and
+`tata_tele.click_cooldown_seconds` (10).
+
+**✓ check:** on a pilot caller's login with two or three due leads, press
+**▶ Power dial my list**, answer, tap **Not answered** — the next lead
+should ring within seconds, and the saved attempt shows the **device** badge.
 
 ---
 

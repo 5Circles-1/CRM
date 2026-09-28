@@ -160,6 +160,13 @@ label.f > input:focus, label.f > select:focus, label.f > textarea:focus {
 .leadcard .phone { color: var(--muted); font-variant-numeric: tabular-nums; }
 .leadcard .r2 { display: flex; gap: 14px; margin-top: 5px; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
 .leadcard .note { color: var(--ink); }
+
+/* Power dial: the countdown reads across a desk, and the one-tap outcomes are
+   thumb-sized because most calls end with one of them. */
+.dial-count { font-size: 56px; font-weight: 800; line-height: 1; min-width: 1.2em;
+  text-align: center; font-variant-numeric: tabular-nums; color: var(--brand); }
+.dial-quick { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 14px; }
+.dial-quick .btn { padding: 12px 18px; font-size: 15px; }
 .section-h {
   display: flex; align-items: baseline; gap: 8px;
   margin: 22px 0 10px; font-size: 14px; font-weight: 700;

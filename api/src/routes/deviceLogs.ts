@@ -89,6 +89,9 @@ export async function deviceLogRoutes(app: FastifyInstance): Promise<void> {
   app.get('/leads/:id/device-log-suggestion', async (req) => {
     const user = req.requireUser();
     const { id } = z.object({ id: uuid }).parse(req.params);
+    // The power dialler passes the moment it placed the call, so an older
+    // unclaimed call to the same number can never be taken for this one.
+    const { since } = z.object({ since: z.coerce.date().optional() }).parse(req.query);
 
     return req.tx(async (q) => {
       const lead = await q.one<{ phone_e164: string }>(
@@ -104,13 +107,14 @@ export async function deviceLogRoutes(app: FastifyInstance): Promise<void> {
           where d.user_id = $1
             and d.counterparty_msisdn = $2
             and d.started_at > now() - interval '24 hours'
+            and ($3::timestamptz is null or d.started_at >= $3)
             and coalesce(d.call_method, 'PhoneCall') <> 'WhatsAppCall'
             and not exists (
               select 1 from crm.call_attempts ca where ca.device_log_id = d.id
             )
           order by d.started_at desc
           limit 1`,
-        [user.id, lead.phone_e164],
+        [user.id, lead.phone_e164, since ?? null],
       );
 
       if (suggestion && !['counsellor', 'admin'].includes(user.role)) {

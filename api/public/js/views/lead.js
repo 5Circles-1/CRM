@@ -1,24 +1,8 @@
 import { get, post, put } from '../api.js';
-import { badge, esc, fmtDate, fmtDT, fmtINR, fmtTalk, h, localToIso, openModal, parseTalk, toast, tomorrowAt } from '../util.js';
+import { loadDispositions, logCallModal } from '../callform.js';
+import { badge, esc, fmtDate, fmtDT, fmtINR, fmtTalk, h, localToIso, openModal, toast, tomorrowAt } from '../util.js';
 
 const OPEN_STATUSES = new Set(['new', 'working', 'callback', 'qualified', 'negotiation']);
-
-/**
- * Call outcomes come from the API, which reads them from the database enum.
- * Keeping a copy here meant every new outcome had to be added in three places,
- * and the one that got forgotten was always this one.
- */
-let DISPOSITIONS = [];
-let NEEDS_FOLLOWUP = new Set();
-let TERMINAL = new Set();
-
-async function loadDispositions() {
-  if (DISPOSITIONS.length) return;
-  DISPOSITIONS = await get('/meta/dispositions');
-  NEEDS_FOLLOWUP = new Set(DISPOSITIONS.filter((d) => d.followUp).map((d) => d.value));
-  TERMINAL = new Set(DISPOSITIONS.filter((d) => d.terminal).map((d) => d.value));
-}
-
 
 export async function render(outlet, me, params) {
   const id = params[0];
@@ -436,111 +420,6 @@ function eventLabel(e) {
 }
 
 /* ------------------------------------------------------------------ */
-
-function logCallModal(lead, onDone) {
-  const body = h(`
-    <div>
-      <div id="suggestion-slot"></div>
-      <label class="f">What happened?
-        <select name="disposition" data-testid="disposition">
-          ${DISPOSITIONS.map((d) => `<option value="${esc(d.value)}">${esc(d.label)}</option>`).join('')}
-        </select>
-      </label>
-      <div class="frow">
-        <label class="f">Talk time <span class="hint">mm:ss — e.g. 3:07</span>
-          <input name="duration" inputmode="numeric" placeholder="0:00" value="0:00" data-testid="duration">
-        </label>
-      </div>
-      <div id="followup" style="display:none">
-        <div class="frow">
-          <label class="f"><span id="followup-label">Callback time</span>
-            <input name="callbackAt" type="datetime-local" value="${tomorrowAt(11)}" data-testid="callback-at">
-          </label>
-        </div>
-        <label class="f">Callback note
-          <input name="callbackNote" maxlength="500" placeholder="e.g. Call after 4pm, discuss annual plan">
-        </label>
-      </div>
-      <label class="f">Notes
-        <textarea name="notes" rows="2" maxlength="2000"></textarea>
-      </label>
-      <input type="hidden" name="deviceLogId" value="">
-      <div class="hint">A call cannot be closed without a next step: pick a terminal outcome,
-        set a callback, or the system schedules the retry itself.</div>
-    </div>`);
-
-  const footer = h(`<div><button class="btn primary" data-testid="save-call">Save call</button></div>`);
-  const { close } = openModal('Log a call', body, footer);
-
-  const sel = body.querySelector('[name=disposition]');
-  const followup = body.querySelector('#followup');
-  const followupLabel = body.querySelector('#followup-label');
-  // The date is asked of the caller, never invented by the system, whenever
-  // the outcome is positive OR the lead is green (0068): a promised visit or
-  // an interested client who did not pick up today still gets a HUMAN-chosen
-  // next date, so the lead keeps a live green light instead of a silent retry.
-  const needsDate = (value) =>
-    NEEDS_FOLLOWUP.has(value) || (!!lead.green_reason && !TERMINAL.has(value));
-  const syncFollowup = () => {
-    followup.style.display = needsDate(sel.value) ? '' : 'none';
-    followupLabel.textContent =
-      sel.value === 'callback_requested' ? 'Callback time (client asked)'
-      : sel.value === 'will_visit' ? 'When will they visit? (the date the client gave)'
-      : NEEDS_FOLLOWUP.has(sel.value) ? 'Next follow-up (required for an interested client)'
-      : lead.green_reason === 'will_visit'
-        ? 'They promised a visit — choose the next follow-up yourself'
-        : 'This lead is green (showed interest) — choose the next follow-up yourself';
-  };
-  sel.addEventListener('change', syncFollowup);
-  syncFollowup();
-
-  // If the device log already saw this call, offer it: one click makes the
-  // attempt verified and the duration honest.
-  get(`/leads/${lead.id}/device-log-suggestion`).then(({ suggestion }) => {
-    if (!suggestion) return;
-    const slot = body.querySelector('#suggestion-slot');
-    slot.appendChild(h(`
-      <div class="banner" style="background:var(--info-bg);color:var(--info);border-color:#c7d7f8">
-        Phone shows a ${esc(suggestion.direction)} call of ${esc(fmtTalk(suggestion.duration_seconds))} at
-        ${esc(fmtDT(suggestion.started_at))}.
-        <button class="btn small" style="margin-left:8px" data-testid="use-suggestion">Use it</button>
-      </div>`));
-    slot.querySelector('[data-testid=use-suggestion]').addEventListener('click', () => {
-      body.querySelector('[name=duration]').value = fmtTalk(suggestion.duration_seconds);
-      body.querySelector('[name=deviceLogId]').value = suggestion.id;
-      slot.firstElementChild.textContent = 'Linked to the device call — this dial counts as verified.';
-    });
-  }).catch(() => {});
-
-  footer.querySelector('[data-testid=save-call]').addEventListener('click', async () => {
-    const disposition = sel.value;
-    const seconds = parseTalk(body.querySelector('[name=duration]').value);
-    if (seconds === null) {
-      toast('Talk time should look like 3:07, or just a number of seconds.', 'err');
-      return;
-    }
-    const payload = {
-      disposition,
-      durationSeconds: seconds,
-      notes: body.querySelector('[name=notes]').value.trim() || undefined,
-      deviceLogId: body.querySelector('[name=deviceLogId]').value || undefined,
-    };
-    if (needsDate(disposition)) {
-      const at = body.querySelector('[name=callbackAt]').value;
-      if (!at) { toast('Set the follow-up time first.', 'err'); return; }
-      payload.callbackAt = localToIso(at);
-      payload.callbackNote = body.querySelector('[name=callbackNote]').value.trim() || undefined;
-    }
-    try {
-      await post(`/leads/${lead.id}/calls`, payload);
-      toast('Call saved.');
-      close();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
 
 function callbackModal(lead, onDone) {
   const body = h(`
