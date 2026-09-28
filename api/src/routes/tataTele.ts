@@ -187,25 +187,47 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
         ? req.headers.authorization.slice(7)
         : undefined);
 
+    const serviceUserId = process.env.SERVICE_USER_ID;
+
     // An unconfigured secret reads the same as a wrong one: this endpoint
     // admits nobody until TATA_TELE_WEBHOOK_SECRET is deliberately set.
     if (!expected || !secretMatches(supplied, expected)) {
-      req.log.warn({ configured: Boolean(expected) }, 'tata tele webhook rejected');
+      const why = !expected
+        ? 'TATA_TELE_WEBHOOK_SECRET is not set on the server'
+        : supplied
+          ? 'the secret in the webhook URL does not match TATA_TELE_WEBHOOK_SECRET'
+          : 'the webhook URL has no ?secret=';
+      req.log.warn({ configured: Boolean(expected), why }, 'tata tele webhook rejected');
+      // Written down, so the panel can tell "Smartflo never reached us" from
+      // "it reached us and was turned away" - the two need different fixes.
+      // The address says whether it was Smartflo or a stranger knocking; it
+      // comes through the proxy's X-Forwarded-For, which anyone can write,
+      // so only something shaped like an address is repeated to the admin.
+      if (serviceUserId) {
+        const from = /^[0-9a-fA-F:.]{2,45}$/.test(req.ip) ? req.ip : 'an unrecognised address';
+        await app.db
+          .withUser(serviceUserId, (q) =>
+            q.query('select crm.record_job_run($1, $2, $3)', [
+              'tata_tele_webhook', 0, `refused: ${why} (from ${from})`,
+            ]),
+          )
+          .catch(() => {});
+      }
       throw unauthorized('bad webhook secret');
     }
 
-    const serviceUserId = process.env.SERVICE_USER_ID;
     if (!serviceUserId) {
       throw conflict('SERVICE_USER_ID is not set on this server, so webhook rows have no ingest identity');
     }
 
-    const parsed = z.union([z.array(rawRow).max(2000), rawRow]).parse(req.body ?? {});
-    const rows = (Array.isArray(parsed) ? parsed : [parsed]).filter(
-      (r) => Object.keys(r).length > 0,
-    );
-
     const started = Date.now();
     try {
+      // Inside the try: a delivery Smartflo shaped wrongly is recorded as
+      // a failed webhook, not silently bounced.
+      const parsed = z.union([z.array(rawRow).max(2000), rawRow]).parse(req.body ?? {});
+      const rows = (Array.isArray(parsed) ? parsed : [parsed]).filter(
+        (r) => Object.keys(r).length > 0,
+      );
       const counts = rows.length
         ? await app.db.withUser(serviceUserId, (q) =>
             q.one('select * from crm.ingest_tata_tele_cdrs($1::jsonb)', [JSON.stringify(rows)]),
@@ -224,7 +246,7 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
           q.query('select crm.record_job_run($1, $2, $3)', [
             'tata_tele_webhook',
             Date.now() - started,
-            err instanceof Error ? err.message : String(err),
+            (err instanceof Error ? err.message : String(err)).slice(0, 300),
           ]),
         )
         .catch(() => {});
@@ -257,10 +279,30 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
           order by last_seen_at desc
           limit 50`,
       );
+      // By name: "2 callers have no Dialing number" is a hunt through the
+      // Users tab; "Asha has no Dialing number" is a thing to fix.
+      const coverage = await q.many(
+        `select user_id, full_name, role, dialing_msisdn, problem
+           from crm.v_tata_tele_coverage
+          order by problem, full_name`,
+      );
+      // Why today's refused clicks failed, in Smartflo's own words.
+      const failedClicks = await q.many(
+        `select coalesce(nullif(failure_reason, ''), 'no reason given') as reason,
+                count(*)::int as n
+           from crm.telephony_calls
+          where status = 'failed'
+            and crm.ist_date(requested_at) = crm.ist_date(now())
+          group by 1
+          order by 2 desc
+          limit 5`,
+      );
       return {
         ...(health ?? {}),
         agents,
         quarantine,
+        coverage,
+        failed_clicks: failedClicks,
         // So the panel can say "set the credentials on the server" instead of
         // showing a sync that mysteriously never runs.
         credentials_configured: Boolean(app.tataTele),
@@ -268,6 +310,16 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
         webhook_path: '/integrations/tata-tele/webhook',
       };
     });
+  });
+
+  /**
+   * Put every held call record back through the ingester, and re-map the
+   * agent roster from the Dialing numbers. Setting a number already does
+   * this; the button covers a fix made any other way.
+   */
+  app.post('/integrations/tata-tele/reconcile', async (req) => {
+    req.requireRole('admin', 'ops');
+    return req.tx((q) => q.one('select * from crm.tata_tele_reconcile()'));
   });
 
   /** Pull from Smartflo right now; optionally deeper than the usual window. */

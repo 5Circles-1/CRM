@@ -4358,6 +4358,81 @@ reset role;
 update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';
 
 -- =============================================================================
+-- TATA TELE, naming the gaps (0076): the panel names who cannot be dialled,
+-- and fixing a Dialing number releases that person's held calls at once -
+-- however old - instead of waiting for a pull that only reaches back 26 hours.
+-- =============================================================================
+
+reset role;
+
+insert into crm.users (id, full_name, email, role, employee_code, dialing_msisdn) values
+  ('22222222-0000-0000-0000-0000000000c1', 'No Number Caller', 'nonum@5circles.test', 'caller', 'CLR-NN', null);
+
+select crm_test.check(
+  'TT', 'coverage names the caller with no Dialing number, and why',
+  exists (select 1 from crm.v_tata_tele_coverage
+           where user_id = '22222222-0000-0000-0000-0000000000c1' and problem = 'no_number'),
+  null);
+
+select crm_test.check(
+  'TT', 'coverage names the caller whose number is no Smartflo agent',
+  exists (select 1 from crm.v_tata_tele_coverage
+           where full_name = 'Caller A3' and problem = 'not_an_agent'
+             and dialing_msisdn = '+919822200999'),
+  null);
+
+select crm_test.check(
+  'TT', 'the health counts are the named lists, not a second definition',
+  (select callers_unregistered from crm.v_tata_tele_health)
+    = (select count(*) from crm.v_tata_tele_coverage where problem = 'no_number')
+  and (select callers_uncovered from crm.v_tata_tele_health)
+    = (select count(*) from crm.v_tata_tele_coverage where problem = 'not_an_agent'),
+  null);
+
+-- A Smartflo agent nobody in the CRM owns yet, and a call of theirs from
+-- weeks ago - far outside the pull's 26-hour reach - held in quarantine.
+insert into crm.tata_tele_agents (agent_msisdn, agent_id, agent_name)
+values ('+919811199990', '0599', 'Recon Agent');
+select crm.ingest_tata_tele_cdrs(jsonb_build_array(jsonb_build_object(
+  'uuid', 'tt-recon-1', 'direction', 'outbound', 'status', 'answered',
+  'agent_number', '919811199990', 'client_number', '919811100001',
+  'date', '2026-08-01', 'time', '10:00:00', 'answered_seconds', 44))) \gset _tt_recon_q_
+
+select crm_test.check(
+  'TT', 'the unowned agent''s old call is held, not dropped',
+  exists (select 1 from crm.telephony_quarantine
+           where external_id = 'tt-recon-1' and resolved_at is null),
+  null);
+
+-- The admin gives that number to its person; the reconcile runs.
+update crm.users set dialing_msisdn = '+919811199990'
+ where id = '22222222-0000-0000-0000-0000000000c1';
+select (r).released as _rel, (r).still_held as _held from crm.tata_tele_reconcile() r \gset
+
+select crm_test.check(
+  'TT', 'setting the number releases the held call at once, however old',
+  :_rel >= 1
+  and exists (select 1 from crm.device_call_logs
+               where device_row_key = 'tata:tt-recon-1'
+                 and user_id = '22222222-0000-0000-0000-0000000000c1')
+  and not exists (select 1 from crm.telephony_quarantine
+                   where external_id = 'tt-recon-1' and resolved_at is null),
+  'released ' || :_rel);
+
+select crm_test.check(
+  'TT', 'and the agent roster follows the number without waiting for a pull',
+  (select user_id from crm.tata_tele_agents where agent_msisdn = '+919811199990')
+    = '22222222-0000-0000-0000-0000000000c1'
+  and not exists (select 1 from crm.v_tata_tele_coverage
+                   where user_id = '22222222-0000-0000-0000-0000000000c1'),
+  null);
+
+select (r).released as _rel2 from crm.tata_tele_reconcile() r \gset
+select crm_test.check(
+  'TT', 'the reconcile is idempotent: nothing left to fix changes nothing',
+  :_rel2 = 0, 'released ' || :_rel2);
+
+-- =============================================================================
 -- POWER DIALLING (PD, 0075): the CRM works a caller's due list back to back.
 -- What is due, and in what order, is crm.v_dial_queue - one rule shared with
 -- nothing else to drift from. Fixtures belong to a dedicated caller so the

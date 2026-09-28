@@ -133,11 +133,19 @@ first, then bridges the client; the click lands in `crm.telephony_calls` with
 Smartflo's `ref_id`, success or refusal. `POST /integrations/tata-tele/webhook`
 takes Smartflo's call-event push, authenticated by the shared secret
 (`?secret=` on the URL or an `x-tata-tele-secret` header), compared in
-constant time. `GET /integrations/tata-tele/health` is the counsellor/admin
+constant time; a refused delivery is recorded with the reason and the
+sender's address, so the panel can tell "never reached us" from "turned
+away". `GET /integrations/tata-tele/health` is the counsellor/admin
 readout: sync and webhook liveness, today's clicks and call records, the agent
-roster with unmapped numbers, open quarantine.
-`POST /integrations/tata-tele/sync` (admin/ops) reconciles on demand,
-optionally deeper (`{"hours": n}`). Both the webhook and the scheduled pull
+roster with unmapped numbers, open quarantine, `coverage` (each active caller
+or counsellor Smartflo cannot serve, by name, with `no_number` or
+`not_an_agent`) and `failed_clicks` (today's refusals grouped by Smartflo's
+own reason). `POST /integrations/tata-tele/sync` (admin/ops) pulls on demand,
+optionally deeper (`{"hours": n}`); `POST /integrations/tata-tele/reconcile`
+(admin/ops) re-maps the roster and replays every held record — which
+`PUT /admin/users/:id/dialing-msisdn` already does in the same transaction,
+returning `held_calls_released`, and which refuses a number another active
+person holds by naming them. Both the webhook and the scheduled pull
 feed one `SECURITY DEFINER` door, `crm.ingest_tata_tele_cdrs()`: agent number
 → `users.dialing_msisdn` (the one mapping fact, editable via
 `PUT /admin/users/:id/dialing-msisdn`), `ref_id` → the click that placed the

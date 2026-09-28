@@ -305,7 +305,19 @@ Do not undo these without understanding why they exist.
   rows that cannot be placed are quarantined whole and re-ingest themselves
   once the cause is fixed, except the inbound call no agent ever answered,
   which names nobody, has no fix that ever places it, and is counted rather
-  than parked in quarantine forever. Stamps arrive zoneless and are read in
+  than parked in quarantine forever. They re-ingest **the moment the cause
+  is fixed** (0076): saving a Dialing number runs
+  `crm.tata_tele_reconcile()`, which re-maps the agent roster and replays
+  every held record however old — the pull reaches back only 26 hours, so a
+  number fixed on Monday for calls held since Friday used to release
+  nothing. The panel **names** who Smartflo cannot serve
+  (`crm.v_tata_tele_coverage`, which the health counts are read from, so the
+  number on a banner and the names under it are one definition) and puts the
+  fix beside each name: an unmatched agent is attached to its person in one
+  click, a name match preselected. A refused webhook delivery is written
+  down with why and from where, because "never reached us" and "reached us
+  and was turned away" need different fixes and both used to read as a
+  dash. Stamps arrive zoneless and are read in
   `tata_tele.timezone`, because a wrong zone moves calls across
   `crm.ist_date()` boundaries. `tata_tele.enabled` ships off; the watchdog
   (`crm.check_tata_tele_health`) raises a named bell alarm — Smartflo's
@@ -424,7 +436,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(387 database assertions, 347 API tests, 18 browser E2E flows), the
+(389 database assertions, 350 API tests, 19 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Tata Tele
 Smartflo integration** (migration 0074, `api/src/integrations/tata_tele/`) —

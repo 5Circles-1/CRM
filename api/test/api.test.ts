@@ -5256,6 +5256,98 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
     }
   });
 
+  it('a refused delivery is written down with why, and the next good one clears it', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const refused = await h.app.inject({
+      method: 'POST', url: '/integrations/tata-tele/webhook?secret=not-the-secret', payload: {},
+    });
+    assert.equal(refused.statusCode, 401);
+
+    const seen = (await h.app.inject({
+      method: 'GET', url: '/integrations/tata-tele/health', headers: auth(admin),
+    })).json();
+    assert.match(seen.webhook_last_error ?? '', /does not match TATA_TELE_WEBHOOK_SECRET \(from /,
+      'the panel can say "it reached us and was turned away", not just "never"');
+
+    const good = await h.app.inject({
+      method: 'POST', url: `/integrations/tata-tele/webhook?secret=${TT_SECRET}`, payload: {},
+    });
+    assert.equal(good.statusCode, 200);
+    const cleared = (await h.app.inject({
+      method: 'GET', url: '/integrations/tata-tele/health', headers: auth(admin),
+    })).json();
+    assert.equal(cleared.webhook_last_error, null);
+    assert.ok(cleared.webhook_last_ok_at, 'a good delivery is proof of life');
+  });
+
+  it('health names who cannot be dialled, and why today\'s clicks failed', async () => {
+    const NO_NUMBER = '22222222-0000-0000-0000-0000000000f7';
+    fixtureSql(`
+      insert into crm.users (id, full_name, email, role)
+      values ('${NO_NUMBER}', 'Unnumbered Caller', 'unnumbered@5circles.test', 'caller')
+      on conflict do nothing;
+    `);
+    try {
+      const admin = await login(h.app, EMAILS.admin);
+      const body = (await h.app.inject({
+        method: 'GET', url: '/integrations/tata-tele/health', headers: auth(admin),
+      })).json();
+      assert.ok(
+        body.coverage.some((c: { user_id: string; problem: string }) =>
+          c.user_id === NO_NUMBER && c.problem === 'no_number'),
+        'the banner has a name to put to "no Dialing number"',
+      );
+      assert.equal(
+        body.coverage.filter((c: { problem: string }) => c.problem === 'no_number').length,
+        body.callers_unregistered,
+        'the count and the names are one definition',
+      );
+      assert.ok(
+        body.failed_clicks.some((f: { reason: string; n: number }) =>
+          f.reason === 'Token has expired' && f.n >= 1),
+        'a failed click says why, in Smartflo\'s words',
+      );
+    } finally {
+      fixtureSql(`update crm.users set is_active = false, deactivated_at = now() where id = '${NO_NUMBER}';`);
+    }
+  });
+
+  it('setting a Dialing number releases that agent\'s held calls at once', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    assert.equal(
+      fixtureSql(`select count(*) from crm.telephony_quarantine
+                   where external_id = 'wh-stranger' and resolved_at is null`).trim(),
+      '1', 'fixture: the stranger\'s call is held',
+    );
+
+    const set = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.mentor}/dialing-msisdn`, headers: auth(admin),
+      payload: { dialingMsisdn: '9333300000' },
+    });
+    assert.equal(set.statusCode, 200, set.body);
+    assert.ok(set.json().held_calls_released >= 1, 'released in the same click, not at the next pull');
+    assert.equal(
+      fixtureSql(`select user_id from crm.device_call_logs where device_row_key = 'tata:wh-stranger'`).trim(),
+      USERS.mentor,
+    );
+
+    const counsellor = await login(h.app, EMAILS.counsellorA);
+    const denied = await h.app.inject({
+      method: 'POST', url: '/integrations/tata-tele/reconcile', headers: auth(counsellor), payload: {},
+    });
+    assert.equal(denied.statusCode, 403);
+    const again = await h.app.inject({
+      method: 'POST', url: '/integrations/tata-tele/reconcile', headers: auth(admin), payload: {},
+    });
+    assert.equal(again.statusCode, 200);
+    assert.equal(again.json().released, 0, 'nothing left to release');
+
+    await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.mentor}/dialing-msisdn`, headers: auth(admin),
+      payload: { dialingMsisdn: null },
+    });
+  });
+
   it('an admin can fix the one mapping fact: the Dialing number', async () => {
     const admin = await login(h.app, EMAILS.admin);
 
@@ -5271,7 +5363,14 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
       payload: { dialingMsisdn: '9811122233' },
     });
     assert.equal(dupe.statusCode, 409);
-    assert.match(dupe.json().message, /already assigned/);
+    assert.match(dupe.json().message, /already Mentor One's Dialing number/,
+      'the refusal names who holds the number, so a mix-up can be undone');
+
+    const resave = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.mentor}/dialing-msisdn`, headers: auth(admin),
+      payload: { dialingMsisdn: '+919811122233' },
+    });
+    assert.equal(resave.statusCode, 200, 'saving your own number again is not a clash with yourself');
 
     const junk = await h.app.inject({
       method: 'PUT', url: `/admin/users/${USERS.mentor}/dialing-msisdn`, headers: auth(admin),

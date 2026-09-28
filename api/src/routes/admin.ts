@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { hashPassword } from '../auth/credentials.ts';
 import { normaliseSpreadsheetId, rowsFromCsv } from '../ingest/source.ts';
 import { mapRow } from '../ingest/worker.ts';
-import { badRequest, notFound } from '../http/errors.ts';
+import { badRequest, conflict, notFound } from '../http/errors.ts';
 
 const uuid = z.string().uuid();
 
@@ -162,6 +162,11 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
            )))`,
           [user!.id, body.teamId, body.rotationOrder ?? null],
         );
+      }
+      if (body.dialingMsisdn) {
+        // A newcomer whose number Smartflo already knows: their held calls
+        // are released as they are created.
+        await q.query('select crm.tata_tele_reconcile()');
       }
       return user;
     });
@@ -329,24 +334,42 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
     if (body.dialingMsisdn !== null) {
       const norm = await req.tx((q) =>
-        q.one<{ normalise_phone: string | null }>('select crm.normalise_phone($1) as normalise_phone', [
-          body.dialingMsisdn,
-        ]),
+        q.one<{ normalise_phone: string | null; holder: string | null }>(
+          `select crm.normalise_phone($1) as normalise_phone,
+                  (select full_name from crm.users
+                    where dialing_msisdn = crm.normalise_phone($1)
+                      and is_active and id <> $2) as holder`,
+          [body.dialingMsisdn, id],
+        ),
       );
       if (!norm?.normalise_phone) {
         throw badRequest(`"${body.dialingMsisdn}" is not a dialable number`);
       }
+      // The unique index would refuse this too, but could only say "another
+      // user" - and the admin fixing a mix-up needs to know which one.
+      if (norm.holder) {
+        throw conflict(
+          `${norm.normalise_phone} is already ${norm.holder}'s Dialing number - one number can only `
+            + `verify one person's calls. Clear or change it on ${norm.holder}'s row first.`,
+        );
+      }
     }
 
-    const row = await req.tx((q) =>
-      q.one(
+    const row = await req.tx(async (q) => {
+      const updated = await q.one(
         `update crm.users set dialing_msisdn = crm.normalise_phone($2)
           where id = $1
           returning id, full_name, dialing_msisdn`,
         [id, body.dialingMsisdn],
-      ),
-    );
-    if (!row) throw notFound('no user with that id');
+      );
+      if (!updated) throw notFound('no user with that id');
+      // The number is the Smartflo mapping: apply it now, so the agent maps
+      // and this person's held calls are released at once, however old.
+      const reconciled = await q.one<{ released: number }>(
+        'select released from crm.tata_tele_reconcile()',
+      );
+      return { ...updated, held_calls_released: reconciled?.released ?? 0 };
+    });
     return row;
   });
 
