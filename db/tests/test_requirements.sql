@@ -629,6 +629,77 @@ exception when check_violation then
                         where id = '22222222-0000-0000-0000-000000000003') || '%', v_msg);
 end $$;
 
+-- A PAYING client who enquired again with nobody on it (0080). Fresh shows it
+-- as "no caller"; it goes to a counsellor - by default the one who closed the
+-- deal - and the sale, and the caller's credit for it, stay exactly as they are.
+do $$
+declare v_lead uuid;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                         closed_at, escalation_stage)
+  values ('33333333-0000-0000-0000-000000000001', 'Paying Enquired Again', '+919555000080',
+          '22222222-0000-0000-0000-000000000001', '11111111-0000-0000-0000-000000000001',
+          'won', now() - interval '400 days', 'counsellor')
+  returning id into v_lead;
+  insert into crm.deals (lead_id, product_id, counsellor_id, team_id, booked_amount, booked_at)
+  values (v_lead, '44444444-0000-0000-0000-000000000002', '22222222-0000-0000-0000-000000000005',
+          '11111111-0000-0000-0000-000000000001', 30000, now() - interval '400 days');
+  -- Nobody on it now: exactly the row the Fresh tab showed with "no caller".
+  update crm.leads set counsellor_id = null, status = 'won',
+                       closed_at = now() - interval '400 days'
+   where id = v_lead;
+  insert into crm.lead_events (lead_id, event_type, payload)
+  values (v_lead, 're_enquiry', '{}'::jsonb);
+end $$;
+
+select crm_test.check(
+  'R8', 'a paying client who enquired again shows on Fresh with no owner, suggesting their deal''s counsellor',
+  (select r.user_id is null
+          and crm.last_deal_counsellor(r.lead_id) = :CNS_A
+     from crm.v_reenquired_leads r where r.full_name = 'Paying Enquired Again'), null);
+
+do $$
+begin
+  perform crm.assign_unowned_lead((select id from crm.leads where full_name = 'Paying Enquired Again'),
+                                  '22222222-0000-0000-0000-000000000002',
+                                  '22222222-0000-0000-0000-00000000000a');
+  perform crm_test.check('R8', 'a paying client is never handed to a caller - it would move the win''s credit',
+                         false, 'assigning a won lead to a caller unexpectedly succeeded');
+exception when check_violation then
+  perform crm_test.check('R8', 'a paying client is never handed to a caller - it would move the win''s credit',
+                         true, null);
+end $$;
+
+select crm.assign_unowned_lead((select id from crm.leads where full_name = 'Paying Enquired Again'),
+                               :CNS_A, :ADMIN);
+
+select crm_test.check(
+  'R8', 'the admin gives a paying client''s re-enquiry to a counsellor, and the sale is untouched',
+  (select counsellor_id = :CNS_A and escalation_stage = 'counsellor'
+          and status = 'won' and closed_at < now() - interval '399 days'
+          and caller_id = :A1 and next_action_at > now()
+     from crm.leads where full_name = 'Paying Enquired Again'), null);
+
+select crm_test.check(
+  'R8', 'and it now shows on Fresh as that counsellor''s',
+  (select user_id = :CNS_A from crm.v_reenquired_leads
+    where full_name = 'Paying Enquired Again'), null);
+
+-- A lead a person closed as lost is not reopened by Assign.
+do $$
+declare v_lead uuid;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, team_id, status, closed_at)
+  values ('33333333-0000-0000-0000-000000000001', 'Closed Lost No Owner', '+919555000081',
+          '11111111-0000-0000-0000-000000000001', 'lost', now())
+  returning id into v_lead;
+  perform crm.assign_unowned_lead(v_lead, '22222222-0000-0000-0000-000000000001',
+                                  '22222222-0000-0000-0000-00000000000a');
+  perform crm_test.check('R8', 'a lost lead is refused - reopen it first', false, 'it was assigned');
+exception when check_violation then
+  perform crm_test.check('R8', 'a lost lead is refused - reopen it first', true, null);
+end $$;
+
 -- The automatic sweep SHIPS DISABLED (0049): the floor's rule is that a lead
 -- stays with its caller until a counsellor moves it by hand. First prove the
 -- default, then switch the engine on for these tests so its logic stays

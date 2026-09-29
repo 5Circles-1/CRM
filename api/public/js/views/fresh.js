@@ -47,20 +47,42 @@ export async function render(outlet, me) {
   // Managers own no leads of their own, so "Mine" would open on an empty page
   // and read as "nothing is waiting" when the floor has hundreds.
   let scope = canSeeAll ? 'all' : 'mine';
-  // Admin only (0079): a lead nobody owns can be handed to a caller the admin
-  // picks - when the admin chooses to, never on its own. Same "Give to" list
-  // as Floor's Transfer, since both accept every active caller.
+  // Admin only (0079, 0080): a lead nobody owns can be handed to a person the
+  // admin picks - when the admin chooses to, never on its own. The lead's
+  // stage decides who may take it, exactly as crm.assign_unowned_lead does:
+  // callers for fresh work (the same list as Floor's Transfer), counsellors
+  // for a lead past the caller or a paying client who enquired again - whose
+  // sale, and its credit, stay untouched.
   const canAssign = me.role === 'admin';
-  const targets = canAssign ? await get('/transfers/targets').catch(() => []) : [];
+  const [callers, counsellors] = canAssign
+    ? await Promise.all([
+      get('/transfers/targets').catch(() => []),
+      get('/assign/counsellors').catch(() => []),
+    ])
+    : [[], []];
+  const COUNSELLOR_STAGE = ['qualified', 'negotiation', 'won', 'handed_off'];
+  const PAYING = ['won', 'handed_off'];
+
+  const counsellorOptions = (l) => counsellors.map((c) => `
+    <option value="${esc(c.id)}" ${c.id === l.suggested_counsellor_id ? 'selected' : ''}>${esc(
+      `${c.full_name} — ${c.on_shift ? 'on floor' : 'off floor'}${c.team_name ? ` · ${c.team_name}` : ''}`
+      + (c.id === l.suggested_counsellor_id ? ' · closed their deal' : ''))}</option>`).join('');
 
   const assignPicker = (l) => {
-    const options = targetOptions(targets, l);
-    if (options === '') return '<div class="hint">No active caller to give it to — add one in Admin → Users.</div>';
+    if (!['new', 'working', 'callback', ...COUNSELLOR_STAGE].includes(l.status)) {
+      return `<div class="hint">This lead is ${esc(l.status)} — reopen it from the lead page first.</div>`;
+    }
+    const toCounsellor = COUNSELLOR_STAGE.includes(l.status);
+    const options = toCounsellor ? counsellorOptions(l) : targetOptions(callers, l);
+    if (options === '') {
+      return `<div class="hint">No active ${toCounsellor ? 'counsellor' : 'caller'} to give it to — add one in Admin → Users.</div>`;
+    }
     return `
+      ${PAYING.includes(l.status) ? '<div class="hint" style="margin-top:4px">Paying client — goes to a counsellor; the sale is untouched.</div>' : ''}
       <div class="row" style="gap:6px;margin-top:6px" data-assign-row="${esc(l.lead_id)}">
         <select class="a-target" data-testid="fresh-assign-target"
                 style="padding:4px;border:1px solid var(--line);border-radius:7px;max-width:190px">
-          <option value="">Assign to…</option>${options}
+          ${l.suggested_counsellor_id && toCounsellor ? '' : `<option value="">Assign to${toCounsellor ? ' counsellor' : ''}…</option>`}${options}
         </select>
         <button class="btn small a-go" data-lead-assign="${esc(l.lead_id)}"
                 data-testid="fresh-assign-go">Assign</button>
@@ -182,12 +204,12 @@ export async function render(outlet, me) {
       btn.addEventListener('click', async () => {
         const row = btn.closest('[data-assign-row]');
         const select = row.querySelector('.a-target');
-        if (!select.value) { toast('Pick a caller first.', 'err'); return; }
+        if (!select.value) { toast('Pick who should take it first.', 'err'); return; }
         const name = select.options[select.selectedIndex].textContent.split(' — ')[0];
         if (!confirm(`Give this lead to ${name}?`)) return;
         btn.disabled = true;
         try {
-          await post(`/leads/${btn.dataset.leadAssign}/assign`, { toCallerId: select.value });
+          await post(`/leads/${btn.dataset.leadAssign}/assign`, { toUserId: select.value });
           toast(`Assigned to ${name}.`);
         } catch (err) {
           // Usually the engine or another admin got there first - the reload

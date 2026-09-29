@@ -306,7 +306,13 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
         [scope, user.id, flag ?? null],
       );
       const reenquired = await q.many<{ lead_id: string }>(
-        `select * from crm.v_reenquired_leads
+        // A paying client who enquired again with nobody on it: the counsellor
+        // who closed their latest deal, for the admin's Assign picker (0080).
+        `select r.*,
+                case when r.user_id is null
+                          and r.status in ('qualified', 'negotiation', 'won', 'handed_off')
+                     then crm.last_deal_counsellor(r.lead_id) end as suggested_counsellor_id
+           from crm.v_reenquired_leads r
           where ($1::text = 'all' or user_id = $2)
             and ($3::text is null or flag = $3)
           order by case flag when 'breached' then 0 when 'flagged' then 1 else 2 end,
