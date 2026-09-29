@@ -282,6 +282,31 @@ it('admin: transfers Not Answered leads from the floor, across teams and in bulk
   await signOut();
 });
 
+/**
+ * A fresh lead parked with "no caller" (0079). The admin may give it to a
+ * caller of their choosing, from the Fresh tab where they see it waiting.
+ */
+it('admin: gives a no-caller fresh lead to a caller they choose', async () => {
+  const leadId = fixtureSql(`
+    insert into crm.leads (source_id, full_name, phone_e164, team_id, status, next_action_at)
+    values ('33333333-0000-0000-0000-000000000001', 'Parked For Admin', '+919955500791',
+            crm.team_of('${USERS.callerA1}', current_date), 'new', now())
+    returning id;
+  `).trim().split('\n')[0]!.trim();
+
+  await signIn(EMAILS.admin);
+  await page.goto(`${base}/ui/#/fresh`);
+  const row = page.locator(`tr[data-lead="${leadId}"]`);
+  await row.locator('[data-testid=fresh-assign-target]').selectOption(USERS.callerB1);
+  page.once('dialog', (d) => d.accept());
+  await row.locator('[data-testid=fresh-assign-go]').click();
+  await page.waitForSelector(`tr[data-lead="${leadId}"] [data-testid=fresh-assign-go]`, { state: 'detached' });
+
+  const owner = fixtureSql(`select caller_id from crm.leads where id = '${leadId}';`).trim();
+  assert.equal(owner, USERS.callerB1, 'the lead went to the caller the admin picked');
+  await signOut();
+});
+
 it('admin: the breakeven thermometer shows the grossed-up numbers', async () => {
   await signIn(EMAILS.admin);
   await page.click('a[data-nav="#/dash"]');

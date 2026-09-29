@@ -75,7 +75,7 @@ const bulkTargetLabel = (t) => esc(`${targetLabel(t)}${t.team_name ? ` · ${t.te
  * own team is grouped first; the rest are grouped under a label that says what
  * choosing them does, since a transfer re-stamps the lead's team.
  */
-function targetOptions(targets, lead) {
+export function targetOptions(targets, lead) {
   const pool = targets.filter((t) => t.id !== lead.caller_id);
   if (pool.length === 0) return '';
 

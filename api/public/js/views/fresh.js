@@ -1,6 +1,7 @@
-import { get } from '../api.js';
-import { agoLabel, esc, h } from '../util.js';
+import { get, post } from '../api.js';
+import { agoLabel, esc, h, toast } from '../util.js';
 import { addLeadModal } from '../addlead.js';
+import { targetOptions } from './floor.js';
 
 /**
  * Fresh: every enquiry waiting on a call.
@@ -46,6 +47,25 @@ export async function render(outlet, me) {
   // Managers own no leads of their own, so "Mine" would open on an empty page
   // and read as "nothing is waiting" when the floor has hundreds.
   let scope = canSeeAll ? 'all' : 'mine';
+  // Admin only (0079): a lead nobody owns can be handed to a caller the admin
+  // picks - when the admin chooses to, never on its own. Same "Give to" list
+  // as Floor's Transfer, since both accept every active caller.
+  const canAssign = me.role === 'admin';
+  const targets = canAssign ? await get('/transfers/targets').catch(() => []) : [];
+
+  const assignPicker = (l) => {
+    const options = targetOptions(targets, l);
+    if (options === '') return '<div class="hint">No active caller to give it to — add one in Admin → Users.</div>';
+    return `
+      <div class="row" style="gap:6px;margin-top:6px" data-assign-row="${esc(l.lead_id)}">
+        <select class="a-target" data-testid="fresh-assign-target"
+                style="padding:4px;border:1px solid var(--line);border-radius:7px;max-width:190px">
+          <option value="">Assign to…</option>${options}
+        </select>
+        <button class="btn small a-go" data-lead-assign="${esc(l.lead_id)}"
+                data-testid="fresh-assign-go">Assign</button>
+      </div>`;
+  };
 
   const draw = async () => {
     outlet.innerHTML = '<div class="spin"></div>';
@@ -82,7 +102,7 @@ export async function render(outlet, me) {
           <div class="v">${badly}</div><div class="s">well past the window</div></div>
         <div class="stat ${noOwner ? 'tone-bad' : ''}"><div class="k">With no caller</div>
           <div class="v">${noOwner}</div>
-          <div class="s">${noOwner ? 'held at team level — see Floor → Lead flow' : 'everything is owned'}</div></div>
+          <div class="s">${noOwner ? (canAssign ? 'use Assign in the Owner column to give one to a caller' : 'held at team level — see Floor → Lead flow') : 'everything is owned'}</div></div>
       </div>
 
       <div class="panel">
@@ -137,7 +157,7 @@ export async function render(outlet, me) {
             <td>${flagBadge(l)}</td>
             ${scope === 'all' ? `<td>${l.owner_name
               ? esc(l.owner_name)
-              : '<span class="badge b-warn">no caller</span>'}</td>` : ''}
+              : `<span class="badge b-warn">no caller</span>${canAssign ? assignPicker(l) : ''}`}</td>` : ''}
             <td class="num"><button class="btn small" data-open="${esc(l.lead_id)}">Call</button></td>
           </tr>`).join('')}
         </tbody></table></div>
@@ -155,6 +175,27 @@ export async function render(outlet, me) {
       b.addEventListener('click', () => { flag = b.dataset.flag; draw(); }));
     outlet.querySelectorAll('[data-scope]').forEach((b) =>
       b.addEventListener('click', () => { scope = b.dataset.scope; draw(); }));
+    // The picker sits inside a clickable row: keep its clicks from opening the lead.
+    outlet.querySelectorAll('[data-assign-row]').forEach((el) =>
+      el.addEventListener('click', (ev) => ev.stopPropagation()));
+    outlet.querySelectorAll('[data-lead-assign]').forEach((btn) =>
+      btn.addEventListener('click', async () => {
+        const row = btn.closest('[data-assign-row]');
+        const select = row.querySelector('.a-target');
+        if (!select.value) { toast('Pick a caller first.', 'err'); return; }
+        const name = select.options[select.selectedIndex].textContent.split(' — ')[0];
+        if (!confirm(`Give this lead to ${name}?`)) return;
+        btn.disabled = true;
+        try {
+          await post(`/leads/${btn.dataset.leadAssign}/assign`, { toCallerId: select.value });
+          toast(`Assigned to ${name}.`);
+        } catch (err) {
+          // Usually the engine or another admin got there first - the reload
+          // below shows who has it now.
+          toast(err.message, 'err');
+        }
+        draw();
+      }));
     outlet.querySelectorAll('[data-lead], [data-open]').forEach((el) =>
       el.addEventListener('click', (ev) => {
         ev.stopPropagation();

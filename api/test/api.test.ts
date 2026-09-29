@@ -786,6 +786,54 @@ describe('transfer targets', () => {
 });
 
 /**
+ * A fresh lead with no caller (0079): the admin may hand it to a caller of
+ * their choosing - and only the admin, and only when they choose to.
+ */
+describe('admin assigns a lead that has no caller', () => {
+  let leadId: string;
+
+  before(() => {
+    leadId = fixtureSql(`
+      insert into crm.leads (source_id, full_name, phone_e164, team_id, status, next_action_at)
+      values ('${SOURCES.meta}', 'No Caller Yet', '+919955500079',
+              crm.team_of('${USERS.callerA1}', current_date), 'new', now())
+      returning id;
+    `).trim().split('\n')[0]!.trim();
+  });
+
+  it('refuses a counsellor - it is an admin decision', async () => {
+    const ca = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/assign`, headers: auth(ca),
+      payload: { toCallerId: USERS.callerA2 },
+    });
+    assert.equal(res.statusCode, 403);
+    assert.match(res.json().message, /only an admin/);
+  });
+
+  it('lets the admin give it to the caller they picked, without spending a transfer', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/assign`, headers: auth(admin),
+      payload: { toCallerId: USERS.callerB1 },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().caller_id, USERS.callerB1);
+    assert.equal(res.json().transfer_count, 0);
+  });
+
+  it('refuses a lead that already has a caller, by name, as a conflict', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${leadId}/assign`, headers: auth(admin),
+      payload: { toCallerId: USERS.callerA2 },
+    });
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message, /already with Caller B1/);
+  });
+});
+
+/**
  * Changing a person's team.
  *
  * Admin -> Users badged a caller with no team ("no team - gets no leads") and

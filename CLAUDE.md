@@ -80,6 +80,20 @@ Do not undo these without understanding why they exist.
   and a RESTRICTED caller stays on the list: that tier stops the *engine*
   handing them fresh leads, never a human handing them one by name.
 
+- **A fresh lead with no caller can be assigned by an admin — by choice,
+  never on its own** (0079, owner request 29 Sep). A lead parked "no caller"
+  (nobody from its team on the floor, no counsellor to cover) waits for the
+  engine's next sweep, which can be a long time. On the Fresh tab the admin
+  gets an **Assign** picker on those rows — the same every-active-caller list
+  as Transfer — backed by `crm.assign_unowned_lead` (admin only, 42501; an
+  owned lead is refused by name, 23514, and moves by Transfer instead). It is
+  an assignment, not a transfer: the lead never had an owner, so it spends
+  none of `lead.max_transfers` and writes no `lead_transfers` row. The
+  original first-touch deadline is kept, so the Fresh tab stays honest about
+  how late the client's first call is; the choice is recorded as an
+  `assigned_by_admin` distribution event, never mistaken for the engine's.
+  Nothing automatic changed — absence is still covered forward.
+
 - **Every refusal carries a SQLSTATE, or it reaches the floor as a crash**
   (0073). `crm.transfer_lead` makes six checks. Three raised bare, and a bare
   `raise exception` is `P0001`, which is in no map in `src/http/errors.ts` — so
@@ -465,7 +479,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(412 database assertions, 354 API tests, 21 browser E2E flows), the
+(418 database assertions, 357 API tests, 22 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Tata Tele
 Smartflo integration** (migration 0074, `api/src/integrations/tata_tele/`) —
