@@ -93,6 +93,17 @@ Do not undo these without understanding why they exist.
   how late the client's first call is; the choice is recorded as an
   `assigned_by_admin` distribution event, never mistaken for the engine's.
   Nothing automatic changed — absence is still covered forward.
+  **The lead's stage decides who may take it** (0080, owner decision 29 Sep):
+  Fresh also lists re-enquiries whatever their status, and a repeat enquiry
+  leaves a *won* lead won — so a paying client who enquired again showed "no
+  caller" with a button that could only be refused. new/working/callback go
+  to a caller; qualified/negotiation and paying clients (won/handed_off) go
+  to a **counsellor**, preselected as the one who closed their latest deal
+  (`crm.last_deal_counsellor`). A won lead is never handed to a caller:
+  `leads.caller_id` is who gets credit for the win, so that would quietly
+  move a past sale. Status, `closed_at` and `caller_id` stay as they are;
+  the counsellor just owns the call-back. lost/invalid/nurture are refused —
+  reopen them first.
 
 - **Every refusal carries a SQLSTATE, or it reaches the floor as a crash**
   (0073). `crm.transfer_lead` makes six checks. Three raised bare, and a bare
@@ -479,7 +490,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(418 database assertions, 357 API tests, 22 browser E2E flows), the
+(423 database assertions, 358 API tests, 22 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Tata Tele
 Smartflo integration** (migration 0074, `api/src/integrations/tata_tele/`) —

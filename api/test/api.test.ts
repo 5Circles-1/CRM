@@ -805,7 +805,7 @@ describe('admin assigns a lead that has no caller', () => {
     const ca = await login(h.app, EMAILS.counsellorA);
     const res = await h.app.inject({
       method: 'POST', url: `/leads/${leadId}/assign`, headers: auth(ca),
-      payload: { toCallerId: USERS.callerA2 },
+      payload: { toUserId: USERS.callerA2 },
     });
     assert.equal(res.statusCode, 403);
     assert.match(res.json().message, /only an admin/);
@@ -815,7 +815,7 @@ describe('admin assigns a lead that has no caller', () => {
     const admin = await login(h.app, EMAILS.admin);
     const res = await h.app.inject({
       method: 'POST', url: `/leads/${leadId}/assign`, headers: auth(admin),
-      payload: { toCallerId: USERS.callerB1 },
+      payload: { toUserId: USERS.callerB1 },
     });
     assert.equal(res.statusCode, 200);
     assert.equal(res.json().caller_id, USERS.callerB1);
@@ -826,10 +826,53 @@ describe('admin assigns a lead that has no caller', () => {
     const admin = await login(h.app, EMAILS.admin);
     const res = await h.app.inject({
       method: 'POST', url: `/leads/${leadId}/assign`, headers: auth(admin),
-      payload: { toCallerId: USERS.callerA2 },
+      payload: { toUserId: USERS.callerA2 },
     });
     assert.equal(res.statusCode, 409);
     assert.match(res.json().message, /already with Caller B1/);
+  });
+
+  // 0080: a paying client who enquired again showed "no caller" with an Assign
+  // button that could only answer "this lead is won and is no longer waiting".
+  it('gives a paying client who enquired again to the counsellor who closed their deal', async () => {
+    const won = fixtureSql(`
+      with l as (
+        insert into crm.leads (source_id, full_name, phone_e164, team_id, status, closed_at, escalation_stage)
+        values ('${SOURCES.meta}', 'Won Enquired Again', '+919955500080',
+                crm.team_of('${USERS.callerA1}', current_date), 'won', now() - interval '400 days', 'counsellor')
+        returning id, team_id
+      ), d as (
+        insert into crm.deals (lead_id, product_id, counsellor_id, team_id, booked_amount, booked_at)
+        select id, '44444444-0000-0000-0000-000000000002', '${USERS.counsellorA}', team_id, 30000,
+               now() - interval '400 days' from l
+        returning lead_id
+      )
+      select lead_id from d;
+    `).trim().split('\n')[0]!.trim();
+    fixtureSql(`
+      update crm.leads set counsellor_id = null, status = 'won' where id = '${won}';
+      insert into crm.lead_events (lead_id, event_type, payload) values ('${won}', 're_enquiry', '{}');
+    `);
+    const admin = await login(h.app, EMAILS.admin);
+
+    const fresh = await h.app.inject({ method: 'GET', url: '/me/fresh?scope=all', headers: auth(admin) });
+    const row = fresh.json().reenquired.find((r: { lead_id: string }) => r.lead_id === won);
+    assert.equal(row?.suggested_counsellor_id, USERS.counsellorA, 'the deal’s counsellor is suggested');
+
+    const toCaller = await h.app.inject({
+      method: 'POST', url: `/leads/${won}/assign`, headers: auth(admin),
+      payload: { toUserId: USERS.callerA2 },
+    });
+    assert.equal(toCaller.statusCode, 409);
+    assert.match(toCaller.json().message, /paying client/);
+
+    const res = await h.app.inject({
+      method: 'POST', url: `/leads/${won}/assign`, headers: auth(admin),
+      payload: { toUserId: USERS.counsellorA },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().counsellor_id, USERS.counsellorA);
+    assert.equal(res.json().status, 'won', 'the sale is untouched');
   });
 });
 

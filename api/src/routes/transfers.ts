@@ -66,32 +66,50 @@ export async function transferRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * An admin hands a waiting lead that has NO caller to a caller they pick
-   * (0079). Only when the admin chooses to - nothing here runs on its own.
-   * Not a transfer: the lead never had an owner, so it spends none of the
-   * two-transfer cap. The admin-only rule and the "no owner yet" rule live in
-   * crm.assign_unowned_lead(), same as transfer_lead's rules live there.
+   * An admin hands a lead with NO owner to a person they pick (0079, 0080).
+   * Only when the admin chooses to - nothing here runs on its own. The stage
+   * decides who may take it: a caller for new/working/callback, a counsellor
+   * for qualified/negotiation and for a paying client who enquired again. All
+   * of that lives in crm.assign_unowned_lead(), same as transfer_lead's rules.
    */
   app.post('/leads/:id/assign', async (req) => {
     const user = req.requireUser();
     const { id } = z.object({ id: uuid }).parse(req.params);
     const body = z
-      .object({ toCallerId: uuid, note: z.string().max(500).optional() })
+      .object({ toUserId: uuid, note: z.string().max(500).optional() })
       .parse(req.body);
 
     return req.tx(async (q) => {
       await q.query('select crm.assign_unowned_lead($1, $2, $3, $4)', [
         id,
-        body.toCallerId,
+        body.toUserId,
         user.id,
         body.note ?? null,
       ]);
       return q.one(
-        `select id, caller_id, team_id, transfer_count, next_action_at, next_action_note
+        `select id, status, caller_id, counsellor_id, escalation_stage, team_id,
+                transfer_count, next_action_at, next_action_note
            from crm.leads where id = $1`,
         [id],
       );
     });
+  });
+
+  /** Counsellors the admin's Assign may name, for leads at counsellor stage. */
+  app.get('/assign/counsellors', async (req) => {
+    req.requireRole('admin');
+    return req.tx((q) =>
+      q.many(
+        `select u.id, u.full_name, tm.team_id, t.name as team_name,
+                crm.is_on_shift(u.id) as on_shift
+           from crm.users u
+           left join crm.team_memberships tm
+             on tm.user_id = u.id and tm.period @> current_date
+           left join crm.teams t on t.id = tm.team_id
+          where u.role = 'counsellor' and u.is_active
+          order by on_shift desc, u.full_name`,
+      ),
+    );
   });
 
   /**
