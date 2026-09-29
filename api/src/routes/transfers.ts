@@ -66,6 +66,35 @@ export async function transferRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * An admin hands a waiting lead that has NO caller to a caller they pick
+   * (0079). Only when the admin chooses to - nothing here runs on its own.
+   * Not a transfer: the lead never had an owner, so it spends none of the
+   * two-transfer cap. The admin-only rule and the "no owner yet" rule live in
+   * crm.assign_unowned_lead(), same as transfer_lead's rules live there.
+   */
+  app.post('/leads/:id/assign', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({ toCallerId: uuid, note: z.string().max(500).optional() })
+      .parse(req.body);
+
+    return req.tx(async (q) => {
+      await q.query('select crm.assign_unowned_lead($1, $2, $3, $4)', [
+        id,
+        body.toCallerId,
+        user.id,
+        body.note ?? null,
+      ]);
+      return q.one(
+        `select id, caller_id, team_id, transfer_count, next_action_at, next_action_note
+           from crm.leads where id = $1`,
+        [id],
+      );
+    });
+  });
+
+  /**
    * Who a lead may be handed to, with current load so the choice is informed.
    *
    * This list must offer exactly the set crm.transfer_lead() will accept —

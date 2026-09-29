@@ -565,6 +565,70 @@ begin
     coalesce(v_msg, 'no refusal was raised at all'));
 end $$;
 
+-- A fresh lead with NO caller can be handed to a named caller - by an admin,
+-- by choice, and by nobody else (0079). It is an assignment, not a transfer:
+-- the lead never had an owner, so it spends none of lead.max_transfers.
+insert into crm.leads (source_id, full_name, phone_e164, team_id, status,
+                       next_action_at, first_touch_due_at)
+values (:SRC, 'Parked No Caller', '+919555000079', :TEAM_A, 'new',
+        now() - interval '2 days', now() - interval '2 days');
+
+do $$
+declare v_lead uuid := (select id from crm.leads where full_name = 'Parked No Caller');
+begin
+  perform crm.assign_unowned_lead(v_lead, '22222222-0000-0000-0000-000000000003',
+                                  '22222222-0000-0000-0000-000000000005');
+  perform crm_test.check('R8', 'a counsellor cannot assign a lead that has no caller - admin only',
+                         false, 'the counsellor assignment unexpectedly succeeded');
+exception when insufficient_privilege then
+  perform crm_test.check('R8', 'a counsellor cannot assign a lead that has no caller - admin only', true, null);
+end $$;
+
+select crm_test.check(
+  'R8', 'nothing assigns a parked lead on its own when the admin does not',
+  (select caller_id is null from crm.leads where full_name = 'Parked No Caller'), null);
+
+select crm.assign_unowned_lead((select id from crm.leads where full_name = 'Parked No Caller'),
+                               :B1, :ADMIN, 'waited two days');
+
+select crm_test.check(
+  'R8', 'the admin assigns a no-caller lead to the caller they chose, across teams',
+  (select caller_id = :B1 and team_id = crm.team_of(:B1, current_date)
+          and escalation_stage = 'caller' and status = 'working'
+     from crm.leads where full_name = 'Parked No Caller'), null);
+
+select crm_test.check(
+  'R8', 'an admin assignment spends no transfer and keeps the original first-touch deadline',
+  (select transfer_count = 0 and first_touch_due_at < now() - interval '1 day'
+          and next_action_at > now()
+          and not exists (select 1 from crm.lead_transfers t where t.lead_id = l.id)
+     from crm.leads l where full_name = 'Parked No Caller'), null);
+
+select crm_test.check(
+  'R8', 'an admin assignment is on the record, never mistaken for the engine',
+  (select exists (select 1 from crm.distribution_events de
+                   where de.lead_id = l.id and de.strategy = 'assigned_by_admin'
+                     and de.caller_id = :B1)
+      and exists (select 1 from crm.lead_events e
+                   where e.lead_id = l.id and e.event_type = 'assigned'
+                     and e.actor_id = :ADMIN and (e.payload->>'by_admin')::boolean)
+     from crm.leads l where full_name = 'Parked No Caller'), null);
+
+do $$
+declare v_msg text;
+begin
+  perform crm.assign_unowned_lead((select id from crm.leads where full_name = 'Parked No Caller'),
+                                  '22222222-0000-0000-0000-000000000004',
+                                  '22222222-0000-0000-0000-00000000000a');
+  perform crm_test.check('R8', 'an owned lead is refused by name - it moves by transfer',
+                         false, 'assigning an owned lead unexpectedly succeeded');
+exception when check_violation then
+  get stacked diagnostics v_msg = message_text;
+  perform crm_test.check('R8', 'an owned lead is refused by name - it moves by transfer',
+    v_msg like '%' || (select full_name from crm.users
+                        where id = '22222222-0000-0000-0000-000000000003') || '%', v_msg);
+end $$;
+
 -- The automatic sweep SHIPS DISABLED (0049): the floor's rule is that a lead
 -- stays with its caller until a counsellor moves it by hand. First prove the
 -- default, then switch the engine on for these tests so its logic stays
