@@ -123,6 +123,11 @@ export async function render(outlet, me) {
             </div>
           </div>
           <div class="row" style="gap:8px">
+            ${me.cloud_calling && scope === 'mine' && rows.length > 0 ? `
+              <a class="btn primary small" data-testid="retap-power"
+                 href="#/dial?list=not_answered&min=${Number(data.threshold) + 1}${
+                   band === 'week' ? '&hours=168' : band === 'fortnight' ? '&hours=336' : ''}"
+                 title="Ring these one after another on the Power dial screen">▶ Power dial these</a>` : ''}
             ${canSeeTeam ? `
               <div class="chips" style="margin:0">
                 <button class="chip ${scope === 'mine' ? 'on' : ''}" data-scope="mine">Mine</button>

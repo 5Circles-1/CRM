@@ -1,6 +1,7 @@
 import { get } from '../api.js';
 import { badge, esc, fmtDT, h } from '../util.js';
 import { addLeadModal } from '../addlead.js';
+import { inboundToLogBanner } from '../inboundlog.js';
 import { reminderModal } from './lead.js';
 
 /**
@@ -49,9 +50,13 @@ export async function render(outlet, me) {
 
   const draw = async () => {
     outlet.innerHTML = '<div class="spin"></div>';
-    const data = await get('/leads/inbound');
+    const [data, toLog] = await Promise.all([
+      get('/leads/inbound'),
+      canLog ? inboundToLogBanner(me, () => draw()) : null,
+    ]);
     const calls = data.calls ?? [];
     outlet.innerHTML = '';
+    if (toLog) outlet.appendChild(toLog);
 
     const nowMonth = istMonth.format(new Date());
     const thisMonth = calls.filter((c) => istMonth.format(new Date(c.punched_at)) === nowMonth).length;

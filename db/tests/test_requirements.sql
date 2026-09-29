@@ -4433,6 +4433,139 @@ select crm_test.check(
   :_rel2 = 0, 'released ' || :_rel2);
 
 -- =============================================================================
+-- INBOUND CALLS ARE NEVER LOST (0078): a client who rang the office and
+-- reached nobody becomes a lead, or their lead comes back to the top; a new
+-- number somebody answered stays in front of them until it is logged.
+-- =============================================================================
+
+reset role;
+
+\set IST_NOW '(to_char(now() at time zone ''Asia/Kolkata'' - interval ''5 minutes'', ''YYYY-MM-DD HH24:MI:SS''))'
+
+-- Nobody picked up, no agent was rung, and the number is new.
+select crm.ingest_tata_tele_cdrs(jsonb_build_array(jsonb_build_object(
+  'uuid', 'tt-missed-new', 'direction', 'inbound', 'status', 'missed',
+  'caller_id_number', '919811177701', 'start_stamp', :IST_NOW))) \gset _mn_
+
+select crm_test.check(
+  'R9', 'a client who rang and reached nobody becomes an immediate lead, never a dropped row',
+  exists (select 1 from crm.leads l
+           where l.phone_e164 = '+919811177701'
+             and l.source_id = '33333333-0000-0000-0000-000000000004'
+             and l.priority = 'immediate'
+             and l.first_touched_at is null)
+  and exists (select 1 from crm.lead_events e join crm.leads l on l.id = e.lead_id
+               where l.phone_e164 = '+919811177701' and e.event_type = 'missed_call')
+  -- handed to the fairness engine like any lead nobody personally answered
+  and exists (select 1 from crm.lead_events e join crm.leads l on l.id = e.lead_id
+               where l.phone_e164 = '+919811177701'
+                 and e.event_type in ('assigned', 'assignment_deferred')),
+  null);
+
+-- The pull delivers the same call again.
+select crm.ingest_tata_tele_cdrs(jsonb_build_array(jsonb_build_object(
+  'uuid', 'tt-missed-new', 'direction', 'inbound', 'status', 'missed',
+  'caller_id_number', '919811177701', 'start_stamp', :IST_NOW))) \gset _mn2_
+
+select crm_test.check(
+  'TT', 'the same missed call delivered twice acts once',
+  (select count(*) from crm.leads where phone_e164 = '+919811177701') = 1
+  and (select count(*) from crm.telephony_missed_calls where external_id = 'tt-missed-new') = 1
+  and not exists (select 1 from crm.lead_events e join crm.leads l on l.id = e.lead_id
+                   where l.phone_e164 = '+919811177701' and e.event_type = 're_enquiry'),
+  null);
+
+-- A client A1 already has, followed up in two days' time, rings; A1's phone
+-- rings and nobody answers.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status, priority)
+values (:SRC, 'Rang Back Client', '+919811177702', :A1, :TEAM_A, 'working', 'normal');
+update crm.leads set next_action_at = now() + interval '2 days' where phone_e164 = '+919811177702';
+
+select crm.ingest_tata_tele_cdrs(jsonb_build_array(jsonb_build_object(
+  'uuid', 'tt-missed-known', 'direction', 'inbound', 'status', 'missed',
+  'agent_number', '919000000001', 'client_number', '919811177702',
+  'start_stamp', :IST_NOW))) \gset _mk_
+
+select crm_test.check(
+  'R9', 'a known client who rang and reached nobody is back at the top of their owner''s list',
+  exists (select 1 from crm.leads
+           where phone_e164 = '+919811177702' and priority = 'immediate'
+             and next_action_at <= now() + interval '15 minutes')
+  and exists (select 1 from crm.lead_events e join crm.leads l on l.id = e.lead_id
+               where l.phone_e164 = '+919811177702' and e.event_type = 're_enquiry'
+                 and e.payload->>'kind' = 'missed_call')
+  and (select count(*) from crm.leads where phone_e164 = '+919811177702') = 1,
+  null);
+
+select crm_test.check(
+  'TT', 'the owner is told the client rang and reached nobody, and the missed ring is kept',
+  exists (select 1 from crm.notifications n join crm.leads l on l.id = n.lead_id
+           where l.phone_e164 = '+919811177702' and n.user_id = :A1
+             and n.title like '%rang the office - nobody answered')
+  and exists (select 1 from crm.device_call_logs
+               where device_row_key = 'tata:tt-missed-known'
+                 and user_id = :A1 and direction = 'missed'),
+  null);
+
+-- A colleague ringing the office line, and an old held record released late.
+select crm.ingest_tata_tele_cdrs(jsonb_build_array(
+  jsonb_build_object('uuid', 'tt-missed-staff', 'direction', 'inbound', 'status', 'missed',
+    'caller_id_number', '919000000002', 'start_stamp', :IST_NOW),
+  jsonb_build_object('uuid', 'tt-missed-old', 'direction', 'inbound', 'status', 'missed',
+    'caller_id_number', '919811177703',
+    'start_stamp', to_char(now() at time zone 'Asia/Kolkata' - interval '10 days', 'YYYY-MM-DD HH24:MI:SS')))) \gset _ms_
+
+select crm_test.check(
+  'TT', 'a colleague''s number, or a missed call from ten days ago, makes no lead',
+  (select outcome from crm.telephony_missed_calls where external_id = 'tt-missed-staff') = 'staff'
+  and (select outcome from crm.telephony_missed_calls where external_id = 'tt-missed-old') = 'too_old'
+  and not exists (select 1 from crm.leads where phone_e164 = '+919811177703'),
+  null);
+
+select crm_test.check(
+  'TT', 'the health row counts today''s missed calls that became work',
+  (select missed_calls_today from crm.v_tata_tele_health) >= 2,
+  (select missed_calls_today::text from crm.v_tata_tele_health));
+
+-- A1 answers two inbound calls: a new number, and one that is already B1's
+-- lead (which A1 cannot see - it is still not new).
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status, priority)
+values (:SRC, 'B1 Owns This', '+919811177705', :B1, :TEAM_B, 'working', 'normal');
+select crm.ingest_tata_tele_cdrs(jsonb_build_array(
+  jsonb_build_object('uuid', 'tt-in-new', 'direction', 'inbound', 'status', 'answered',
+    'agent_number', '919000000001', 'client_number', '919811177704',
+    'start_stamp', :IST_NOW, 'answered_seconds', 50),
+  jsonb_build_object('uuid', 'tt-in-known', 'direction', 'inbound', 'status', 'answered',
+    'agent_number', '919000000001', 'client_number', '919811177705',
+    'start_stamp', :IST_NOW, 'answered_seconds', 40))) \gset _in_
+
+set role crm_app;
+select set_config('app.user_id', :A1, false) as _a1 \gset
+
+select crm_test.check(
+  'R9', 'a new number somebody answered is put in front of them until it is logged',
+  (select array_agg(phone) from crm.inbound_calls_to_log()) = array['+919811177704'],
+  (select string_agg(phone, ', ') from crm.inbound_calls_to_log()));
+
+select set_config('app.user_id', :A2, false) as _a2 \gset
+select crm_test.check(
+  'TT', 'nobody else is shown another person''s unlogged call',
+  not exists (select 1 from crm.inbound_calls_to_log()),
+  null);
+
+-- "Not a client" - a supplier ringing the office.
+select set_config('app.user_id', :A1, false) as _a1 \gset
+insert into crm.inbound_call_dismissals (device_log_id, dismissed_by)
+select id, :A1 from crm.device_call_logs where device_row_key = 'tata:tt-in-new';
+
+select crm_test.check(
+  'TT', 'once dismissed as not a client, it stops asking',
+  not exists (select 1 from crm.inbound_calls_to_log()),
+  null);
+
+reset role;
+
+-- =============================================================================
 -- POWER DIALLING (PD, 0075): the CRM works a caller's due list back to back.
 -- What is due, and in what order, is crm.v_dial_queue - one rule shared with
 -- nothing else to drift from. Fixtures belong to a dedicated caller so the
@@ -4574,6 +4707,123 @@ select crm_test.check(
                   'power_dial.start_hour', 'power_dial.end_hour',
                   'tata_tele.click_cooldown_seconds')),
   null);
+
+-- -----------------------------------------------------------------------------
+-- Power dialling, the caller's choice of list (0077): the due list or a slice
+-- of it, or the Not answered list, narrowed by source, streak and how long
+-- since the last try. Same PD caller, so the fixtures above are in play.
+-- -----------------------------------------------------------------------------
+
+reset role;
+
+insert into crm.leads (id, source_id, full_name, phone_e164, caller_id, team_id, status, priority, campaign_name) values
+  ('dd000000-0000-0000-0000-000000000008', :SRC, 'PD NA Later',    '+919812300108', :PD, :TEAM_A, 'working', 'normal', 'PD Camp'),
+  ('dd000000-0000-0000-0000-000000000009', :SRC, 'PD NA Callback', '+919812300109', :PD, :TEAM_A, 'working', 'normal', null),
+  ('dd000000-0000-0000-0000-000000000010', :SRC, 'PD NA Thrice',   '+919812300110', :PD, :TEAM_A, 'working', 'normal', null);
+
+-- One unanswered call each; the streaks are set directly so the escalation
+-- ladder (two no-connects hand a lead up) cannot move them off this caller.
+insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition) values
+  ('dd000000-0000-0000-0000-000000000008', :PD, now() - interval '3 hours',  0, 'not_answered'),
+  ('dd000000-0000-0000-0000-000000000009', :PD, now() - interval '3 hours',  0, 'busy'),
+  ('dd000000-0000-0000-0000-000000000010', :PD, now() - interval '24 hours', 0, 'switched_off');
+update crm.leads set na_streak = 2, escalation_stage = 'caller', next_action_at = now() + interval '1 day'
+ where id = 'dd000000-0000-0000-0000-000000000008';
+update crm.leads set na_streak = 1, escalation_stage = 'caller', next_action_at = now() + interval '1 day'
+ where id = 'dd000000-0000-0000-0000-000000000009';
+update crm.leads set na_streak = 3, escalation_stage = 'caller', next_action_at = now() - interval '1 hour'
+ where id = 'dd000000-0000-0000-0000-000000000010';
+-- The client said "after lunch": that time is theirs, not a retry.
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+values ('dd000000-0000-0000-0000-000000000009', :PD, :PD, now() + interval '2 hours', 'after lunch');
+
+set role crm_app;
+select set_config('app.user_id', :PD, false) as _pd \gset
+
+select crm_test.check(
+  'PD', 'the due list the picker starts on is v_dial_queue itself',
+  (select array_agg(lead_id order by list_position) from crm.dial_list(:PD, 'due'))
+    = (select array_agg(lead_id order by dial_position) from crm.v_dial_queue where queue_owner_id = :PD),
+  null);
+
+select crm_test.check(
+  'PD', 'fresh, callbacks and follow-ups split the due list - nothing lost, nothing twice',
+  (select count(*) from crm.dial_list(:PD, 'due'))
+    = (select count(*) from crm.dial_list(:PD, 'fresh'))
+      + (select count(*) from crm.dial_list(:PD, 'callbacks'))
+      + (select count(*) from crm.dial_list(:PD, 'followups'))
+  and (select count(distinct lead_id) from (
+         select lead_id from crm.dial_list(:PD, 'fresh')
+         union all select lead_id from crm.dial_list(:PD, 'callbacks')
+         union all select lead_id from crm.dial_list(:PD, 'followups')) x)
+    = (select count(*) from crm.dial_list(:PD, 'due'))
+  and exists (select 1 from crm.dial_list(:PD, 'fresh')
+               where lead_id = 'dd000000-0000-0000-0000-000000000001')
+  and exists (select 1 from crm.dial_list(:PD, 'callbacks')
+               where lead_id = 'dd000000-0000-0000-0000-000000000003'),
+  null);
+
+select crm_test.check(
+  'PD', 'the Not answered list re-taps a no-answer whose retry is still hours away',
+  exists (select 1 from crm.dial_list(:PD, 'not_answered')
+           where lead_id = 'dd000000-0000-0000-0000-000000000008' and dialable)
+  and not exists (select 1 from crm.v_dial_queue
+                   where lead_id = 'dd000000-0000-0000-0000-000000000008'),
+  null);
+
+select crm_test.check(
+  'PD', 'a callback the client booked for later is never in the Not answered list',
+  not exists (select 1 from crm.dial_list(:PD, 'not_answered')
+               where lead_id = 'dd000000-0000-0000-0000-000000000009'),
+  null);
+
+select crm_test.check(
+  'PD', 'Not answered runs due retries first, then the longest since a call',
+  (select array_agg(lead_id order by list_position) from crm.dial_list(:PD, 'not_answered') where dialable)
+    -- 10: its retry is due; 08: tried 3 hours ago; 07: tried 10 minutes ago,
+    -- but it enquired again since, which no re-dial gap holds back.
+    = array['dd000000-0000-0000-0000-000000000010',
+            'dd000000-0000-0000-0000-000000000008',
+            'dd000000-0000-0000-0000-000000000007']::uuid[],
+  (select string_agg(lead_id::text || ':' || dialable, ', ' order by list_position)
+     from crm.dial_list(:PD, 'not_answered')));
+
+select crm_test.check(
+  'PD', 'a number rung minutes ago is held in the Not answered list too',
+  exists (select 1 from crm.dial_list(:PD, 'not_answered')
+           where lead_id = 'dd000000-0000-0000-0000-000000000002' and not dialable
+             and redial_held_until > now()),
+  null);
+
+select crm_test.check(
+  'PD', 'filters narrow a list: N+ unanswered in a row, last tried long enough ago, one source',
+  (select array_agg(lead_id) from crm.dial_list(:PD, 'not_answered', null, 3))
+    = array['dd000000-0000-0000-0000-000000000010']::uuid[]
+  and not exists (select 1 from crm.dial_list(:PD, 'not_answered', null, 1, 12)
+                   where lead_id = 'dd000000-0000-0000-0000-000000000008')
+  and exists (select 1 from crm.dial_list(:PD, 'not_answered', null, 1, 12)
+               where lead_id = 'dd000000-0000-0000-0000-000000000010')
+  and (select array_agg(lead_id) from crm.dial_list(:PD, 'not_answered', 'PD Camp'))
+    = array['dd000000-0000-0000-0000-000000000008']::uuid[],
+  null);
+
+select crm_test.check(
+  'PD', 'the counts on the list picker are the lists',
+  not exists (
+    select 1 from crm.dial_list_counts(:PD) c
+     where c.ready <> (select count(*) from crm.dial_list(:PD, c.list) d where d.dialable)
+        or c.held  <> (select count(*) from crm.dial_list(:PD, c.list) d where not d.dialable))
+  and (select count(*) from crm.dial_list_counts(:PD)) = 5,
+  (select string_agg(list || '=' || ready || '/' || held, ', ') from crm.dial_list_counts(:PD)));
+
+-- Someone else's list reads empty: the function runs on the reader's RLS.
+select set_config('app.user_id', :A2, false) as _a2 \gset
+select crm_test.check(
+  'PD', 'a colleague asking for my Not answered list gets nothing',
+  not exists (select 1 from crm.dial_list(:PD, 'not_answered')),
+  null);
+
+reset role;
 
 -- =============================================================================
 -- OFFICE VISITS (WLK): a walk-in is a row, from booked to counselled to

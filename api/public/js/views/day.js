@@ -1,5 +1,6 @@
 import { get, post } from '../api.js';
 import { addLeadModal } from '../addlead.js';
+import { inboundToLogBanner } from '../inboundlog.js';
 import { agoLabel, esc, fmtDT, h, toast } from '../util.js';
 
 /**
@@ -44,9 +45,16 @@ export async function render(outlet, me) {
   try { view = localStorage.getItem('crm_day_view') || 'board'; } catch { /* private mode */ }
 
   const draw = async () => {
-    const data = await get(`/me/pipeline${active ? `?bucket=${active}` : ''}`);
+    const [data, toLog] = await Promise.all([
+      get(`/me/pipeline${active ? `?bucket=${active}` : ''}`),
+      // A new client who rang and was answered, but exists nowhere yet.
+      inboundToLogBanner(me, (lead) => {
+        if (lead?.id) location.hash = `#/lead/${lead.id}`; else draw();
+      }),
+    ]);
     const counts = data.counts ?? {};
     outlet.innerHTML = '';
+    if (toLog) outlet.appendChild(toLog);
 
     // The inbound-call door, on the screen the floor actually sits on all day.
     //
@@ -71,7 +79,9 @@ export async function render(outlet, me) {
             📞 Log inbound call
           </button>
           ${me?.cloud_calling ? `<a class="btn primary" href="#/dial/start" data-testid="day-power"
-            title="Call your due leads one after another — no clicking between calls">▶ Power dial my list</a>` : ''}
+            title="Call your due leads one after another — no clicking between calls">▶ Power dial my list</a>
+            <a class="btn" href="#/dial" data-testid="day-power-choose"
+            title="Power dial one list instead: fresh leads, not answered, callbacks, follow-ups — or one source">Choose a list…</a>` : ''}
         </div>
       </div>`));
     outlet.querySelector('#day-inbound').addEventListener('click', () =>
@@ -201,6 +211,10 @@ async function drawBoard(outlet, me, leads) {
         <div style="font-weight:700;margin-bottom:2px">${esc(c.label)}
           <span class="count">· ${total}</span></div>
         <div class="hint" style="margin-bottom:8px">${esc(c.blurb ?? '')}</div>
+        ${c.key === 'not_answered' && me?.cloud_calling && c.items.length > 0
+          ? `<a class="btn small primary" href="#/dial/start?list=not_answered" data-testid="board-power-na"
+               style="margin-bottom:8px" title="Ring every lead whose last call did not reach them, one after another">
+               ▶ Power dial these</a>` : ''}
       </div>`);
     if (total === 0) {
       col.appendChild(h('<div class="empty">Nothing here — clear.</div>'));

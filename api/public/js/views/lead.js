@@ -407,7 +407,10 @@ function eventLabel(e) {
     case 'transferred': return `Transferred to another caller (${String(p.reason ?? '').replace(/_/g, ' ')})`;
     case 'qualified': return 'Qualified — handed to the counsellor';
     case 'deal_booked': return `Deal booked · ${fmtINR(p.amount)}`;
-    case 're_enquiry': return 'Re-enquired through a lead form — priority raised';
+    case 're_enquiry': return p.kind === 'missed_call'
+      ? `Rang the office${p.called_at ? ` at ${fmtDT(p.called_at)}` : ''} and nobody answered — priority raised, call them back`
+      : 'Re-enquired through a lead form — priority raised';
+    case 'missed_call': return `Rang the office${p.called_at ? ` at ${fmtDT(p.called_at)}` : ''} and nobody answered — this lead was made from the missed call`;
     case 'parked_nurture': return 'Parked in nurture after exhausting attempts';
     case 'escalated_to_counsellor': return 'Escalated — caller could not reach; moved to the counsellor';
     case 'moved_to_retap': return 'Moved to the re-tap pool — tap again later';

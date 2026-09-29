@@ -5312,6 +5312,77 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
     }
   });
 
+  it('a client who rang and reached nobody becomes a lead - once, however often Smartflo reports it', async () => {
+    const missed = () =>
+      h.app.inject({
+        method: 'POST',
+        url: `/integrations/tata-tele/webhook?secret=${TT_SECRET}`,
+        // No agent was ever rung: the IVR or the queue gave up.
+        payload: {
+          uuid: 'wh-missed-1', direction: 'inbound', call_status: 'missed',
+          caller_id_number: '919811166601', start_stamp: istStamp(),
+        },
+      });
+    assert.equal((await missed()).statusCode, 200);
+    assert.equal((await missed()).statusCode, 200, 'the pull delivers the same call again');
+    assert.deepEqual(
+      fixtureSql(`select priority || ' ' || source_id from crm.leads where phone_e164 = '+919811166601';`)
+        .trim().split('\n').filter(Boolean),
+      ['immediate 33333333-0000-0000-0000-000000000004'],
+      'one immediate lead from the Inbound call source - never none, never two',
+    );
+
+    const admin = await login(h.app, EMAILS.admin);
+    const health = (await h.app.inject({
+      method: 'GET', url: '/integrations/tata-tele/health', headers: auth(admin),
+    })).json();
+    assert.ok(health.missed_calls_today >= 1, 'the panel counts missed calls that became work');
+  });
+
+  it('a new number somebody answered waits in front of them until logged; "not a client" clears it', async () => {
+    for (const [uuid, from] of [['wh-in-new-1', '919811166611'], ['wh-in-new-2', '919811166612']]) {
+      const r = await h.app.inject({
+        method: 'POST',
+        url: `/integrations/tata-tele/webhook?secret=${TT_SECRET}`,
+        payload: hangupEvent({ uuid, direction: 'inbound', caller_id_number: from, billsec: '45' }),
+      });
+      assert.equal(r.statusCode, 200, r.body);
+    }
+    const a1 = await login(h.app, EMAILS.callerA1);
+    // Caller A2's password is changed earlier in the suite; B1 is any colleague.
+    const b1 = await login(h.app, EMAILS.callerB1);
+    const waiting = async (token: string) =>
+      (await h.app.inject({ method: 'GET', url: '/me/inbound-to-log', headers: auth(token) }))
+        .json().calls as Array<{ device_log_id: string; phone: string }>;
+
+    const mine = await waiting(a1);
+    assert.deepEqual(mine.map((c) => c.phone).sort(), ['+919811166611', '+919811166612'],
+      'the person who answered is shown both new numbers');
+    assert.deepEqual(await waiting(b1), [], 'nobody else is asked about them');
+
+    // Logging the inbound call makes the lead, and that clears the first.
+    const logged = await h.app.inject({
+      method: 'POST', url: '/leads/manual', headers: auth(a1),
+      payload: {
+        fullName: 'New Inbound Client', phone: '9811166611', kind: 'inbound',
+        followupAt: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+    });
+    assert.ok(logged.statusCode < 300, logged.body);
+
+    // "Not a client" clears the second - and only the person who took it may say so.
+    const second = mine.find((c) => c.phone === '+919811166612')!;
+    const notTheirs = await h.app.inject({
+      method: 'POST', url: `/me/inbound-to-log/${second.device_log_id}/dismiss`, headers: auth(b1), payload: {},
+    });
+    assert.equal(notTheirs.statusCode, 404);
+    const dismissed = await h.app.inject({
+      method: 'POST', url: `/me/inbound-to-log/${second.device_log_id}/dismiss`, headers: auth(a1), payload: {},
+    });
+    assert.equal(dismissed.statusCode, 200, dismissed.body);
+    assert.deepEqual(await waiting(a1), [], 'nothing left to log');
+  });
+
   it('setting a Dialing number releases that agent\'s held calls at once', async () => {
     const admin = await login(h.app, EMAILS.admin);
     assert.equal(
@@ -5579,6 +5650,58 @@ describe('power dialling: the due list, back to back', () => {
     `);
     const arrived = (await h.app.inject({ method: 'GET', url: url(since), headers: auth(token) })).json();
     assert.equal(arrived.suggestion?.duration_seconds, 75, 'the call placed after the click is offered');
+  });
+
+  const choose = (query: string) =>
+    h.app.inject({ method: 'GET', url: `/me/dial-next?${query}`, headers: auth(token) });
+
+  it('works the list the caller chooses: Not answered re-taps what the due list leaves for later', async () => {
+    // Switched off yesterday; the trigger's retry is tomorrow.
+    const naId = leadFor('Dial Unreached', '+919812399914', 'working', 'normal');
+    fixtureSql(`
+      insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition)
+      values ('${naId}', '${DIALLER}', now() - interval '26 hours', 0, 'switched_off');
+      update crm.leads set na_streak = 1, escalation_stage = 'caller', campaign_name = 'Sep-Equity',
+                           next_action_at = now() + interval '1 day'
+       where id = '${naId}';
+    `);
+    assert.notEqual((await next()).json().lead?.lead_id, naId, 'the due list keeps to the retry time');
+
+    const res = await choose('list=not_answered');
+    assert.equal(res.statusCode, 200, res.body);
+    const na = res.json();
+    assert.equal(na.list, 'not_answered');
+    assert.equal(na.lead?.lead_id, naId, 'chosen, the Not answered list rings it now');
+    assert.equal(na.lead.dial_reason, 'not_answered');
+    assert.equal(na.remaining, 1, 'the lead not answered minutes ago waits out the re-dial gap');
+
+    assert.equal((await choose('list=not_answered&campaign=Sep-Equity')).json().lead?.lead_id, naId,
+      'narrowed to its source, it is still there');
+    assert.equal((await choose('list=not_answered&campaign=Some-Other')).json().lead, null,
+      'narrowed to another source, it is not');
+    assert.equal((await choose('list=not_answered&hours=48')).json().lead, null,
+      'tried 26 hours ago is not "last tried 48+ hours ago"');
+    assert.equal((await choose('list=not_answered&min=2')).json().lead, null,
+      'one miss is not "2+ in a row"');
+
+    const lists = await h.app.inject({ method: 'GET', url: '/me/dial-lists', headers: auth(token) });
+    assert.equal(lists.statusCode, 200, lists.body);
+    const byList = Object.fromEntries(
+      lists.json().lists.map((l: { list: string; ready: number; held: number }) => [l.list, l]),
+    );
+    assert.deepEqual(Object.keys(byList).sort(), ['callbacks', 'due', 'followups', 'fresh', 'not_answered']);
+    assert.deepEqual([byList.not_answered.ready, byList.not_answered.held], [1, 1],
+      'the picker counts the list the dialler will ring');
+    assert.equal(byList.fresh.ready, 1, 'the fresh lead is fresh work');
+    assert.ok(
+      lists.json().campaigns.some((c: { campaign: string }) => c.campaign === 'Sep-Equity'),
+      'the source filter offers the sources of my own leads',
+    );
+  });
+
+  it('refuses a list it does not know rather than dialling the wrong one', async () => {
+    assert.equal((await choose('list=everyone')).statusCode, 400);
+    assert.equal((await choose('list=not_answered&min=0')).statusCode, 400);
   });
 });
 

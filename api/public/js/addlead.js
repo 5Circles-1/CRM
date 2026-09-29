@@ -19,8 +19,11 @@ import { esc, h, openModal, toast } from './util.js';
  *   a pending callback, which is the loudest machinery the CRM has.
  *   Counsellors default to keeping what they answered; an admin routes it
  *   to a caller, a team lead, or fair distribution.
+ *
+ * `prefill.phone` comes from a Tata Tele call record (0078): the office line
+ * already knows the number, so nobody retypes it from the phone's screen.
  */
-export async function addLeadModal(me, onDone, initialKind) {
+export async function addLeadModal(me, onDone, initialKind, prefill = {}) {
   const isCaller = me?.role === 'caller';
 
   // The caller list comes from lead flow; the team-lead list from the entry
@@ -53,7 +56,8 @@ export async function addLeadModal(me, onDone, initialKind) {
       <div class="hint" style="margin-bottom:10px" data-kind-hint></div>
       <label class="f">Full name <input name="name" maxlength="120" required></label>
       <div class="frow">
-        <label class="f">Phone <input name="phone" placeholder="98xxxxxxxx" required></label>
+        <label class="f">Phone <input name="phone" placeholder="98xxxxxxxx" required
+          value="${esc(prefill.phone ?? '')}"></label>
         <label class="f">City <input name="city" maxlength="60"></label>
       </div>
       <div class="frow">

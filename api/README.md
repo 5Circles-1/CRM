@@ -145,7 +145,20 @@ optionally deeper (`{"hours": n}`); `POST /integrations/tata-tele/reconcile`
 (admin/ops) re-maps the roster and replays every held record — which
 `PUT /admin/users/:id/dialing-msisdn` already does in the same transaction,
 returning `held_calls_released`, and which refuses a number another active
-person holds by naming them. Both the webhook and the scheduled pull
+person holds by naming them. A missed inbound call arriving by either path
+becomes a lead or a re-enquiry on one (`crm.intake_missed_call`, 0078); the
+health row counts them as `missed_calls_today`. `GET /me/inbound-to-log`
+lists the reader's own answered inbound calls from numbers no lead has, and
+`POST /me/inbound-to-log/:id/dismiss` marks one "not a client".
+
+**Power dialling** (0075, 0077) — `GET /me/dial-next` returns the next lead
+to ring from the chosen list: `?list=due|fresh|not_answered|callbacks|followups`
+(default `due`), optional `campaign`, and for `not_answered` `min` (unanswered
+N+ times in a row) and `hours` (last tried N+ hours ago), plus the session's
+own `exclude` skips. Membership and order are `crm.dial_list()`; when the
+list is empty it says why (`held`, `held_until`, `next_due_at`).
+`GET /me/dial-lists` counts every list (ready and held) for the picker and
+lists the sources of the reader's open leads. Both the webhook and the scheduled pull
 feed one `SECURITY DEFINER` door, `crm.ingest_tata_tele_cdrs()`: agent number
 → `users.dialing_msisdn` (the one mapping fact, editable via
 `PUT /admin/users/:id/dialing-msisdn`), `ref_id` → the click that placed the
