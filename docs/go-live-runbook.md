@@ -419,7 +419,24 @@ menu and **▶ Power dial my list** on My Pipeline. Tell the floor:
 
 It calls in the same order as My Pipeline — immediate leads, callbacks whose
 time has come, fresh leads and re-enquiries, then overdue follow-ups — and
-never calls anything booked for later. Tunables in **Admin → Settings**:
+never calls anything booked for later.
+
+**Choosing the list.** **Choose a list…** on My Pipeline (or Power dial in
+the menu) opens the picker, with how many leads each list holds: *Everything
+due now*, *Fresh leads*, *📵 Not answered*, *Callbacks due*, *Follow-ups &
+overdue*, and a *Source* filter. *Not answered* rings every lead whose last
+call did not reach them, even if its retry time is later, and can be
+narrowed to "not answered 2+/3+/5+ times in a row" and "last tried 2+ hours /
+1+ day / 3+ days / 7+ days ago". A callback the client booked for later is
+never in it. The **▶ Power dial these** buttons on the board's Not answered
+column and on the Re-tap tab open the same list.
+
+**Inbound calls.** Nothing to set up beyond the inbound webhook above. A
+client who rings the office and reaches nobody becomes a lead by itself (a
+known client's lead jumps to the top of its owner's list, and the owner is
+told), and a call somebody answers from a new number waits at the top of
+their My Pipeline — *Log inbound call*, number already filled in — until
+they log it or press *Not a client*. Tunables in **Admin → Settings**:
 `power_dial.countdown_seconds` (5), `power_dial.redial_gap_minutes` (30),
 `power_dial.start_hour`/`end_hour` (9–21 IST), and
 `tata_tele.click_cooldown_seconds` (10).

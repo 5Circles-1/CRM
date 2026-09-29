@@ -933,7 +933,9 @@ function renderTataTele(body, tt, me, redraw, { people = [], teams = [] } = {}) 
           · today ${Number(tt.clicks_today ?? 0)} click${Number(tt.clicks_today) === 1 ? '' : 's'} to call${
             Number(tt.clicks_failed_today ?? 0) > 0 ? ` (<b>${Number(tt.clicks_failed_today)} failed</b>)` : ''}
           · ${Number(tt.calls_today ?? 0)} call record${Number(tt.calls_today) === 1 ? '' : 's'}
-          (${Number(tt.matched_today ?? 0)} matched a lead)
+          (${Number(tt.matched_today ?? 0)} matched a lead)${Number(tt.missed_calls_today ?? 0) > 0
+            ? ` · <span data-testid="tt-missed-today" title="Clients who rang the office and reached nobody - each is now a lead, or back at the top of its owner's list">${
+              Number(tt.missed_calls_today)} missed call${Number(tt.missed_calls_today) === 1 ? '' : 's'} → call-back leads</span>` : ''}
           · ${agents.length} Smartflo agent${agents.length === 1 ? '' : 's'}
         </div>
         ${failedClicks.length === 0 ? '' : `

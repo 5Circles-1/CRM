@@ -8,6 +8,8 @@
  *   admin      - transfer Not Answered leads from the floor, across teams
  *   admin      - move a caller to another team from Admin -> Users
  *   admin      - attach an unmatched Smartflo agent to the person who answers it
+ *   caller     - power dial the due list, or a list they choose (Not answered)
+ *   caller     - log an inbound call Tata Tele saw from a new number
  *
  * Run with: npm run test:e2e   (needs Postgres up, like npm test)
  */
@@ -827,4 +829,130 @@ it('admin: attaches an unmatched Smartflo agent to the person who answers it', a
     else process.env.TATA_TELE_WEBHOOK_SECRET = priorSecret;
     fixtureSql(`update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';`);
   }
+});
+
+/**
+ * The owner: "they can choose the list from which they can dial ... call back
+ * to back from the not answered list". The due list keeps a no-answer's
+ * retry time; chosen by name, the Not answered list rings it now - and only
+ * it, not the fresh lead the due list would have rung first.
+ */
+it('caller: chooses the Not answered list and power dials only that', async () => {
+  const RETAPPER = '22222222-0000-0000-0000-0000000000e4';
+  const EMAIL = 'e2e-retapper@5circles.test';
+  const TEAM_A = '11111111-0000-0000-0000-000000000001';
+  const SRC = '33333333-0000-0000-0000-000000000001';
+  fixtureSql(`
+    insert into crm.users (id, full_name, email, role, employee_code, dialing_msisdn, tour_completed_at)
+    values ('${RETAPPER}', 'E2E Retapper', '${EMAIL}', 'caller', 'CLR-E2R', '+919812388901', now());
+    update crm.settings set value = 'true'::jsonb where key = 'tata_tele.enabled';
+    update crm.settings set value = '0'::jsonb  where key = 'power_dial.start_hour';
+    update crm.settings set value = '24'::jsonb where key = 'power_dial.end_hour';
+    update crm.settings set value = '1'::jsonb  where key = 'power_dial.countdown_seconds';
+    update crm.settings set value = '0'::jsonb  where key = 'tata_tele.click_cooldown_seconds';
+    insert into crm.leads (id, source_id, full_name, phone_e164, caller_id, team_id, status, priority) values
+      ('ee000000-0000-0000-0000-000000000001', '${SRC}', 'E2E Fresh One', '+919812388911', '${RETAPPER}', '${TEAM_A}', 'new', 'normal'),
+      ('ee000000-0000-0000-0000-000000000002', '${SRC}', 'E2E Unreached', '+919812388912', '${RETAPPER}', '${TEAM_A}', 'working', 'normal');
+    insert into crm.call_attempts (lead_id, user_id, started_at, duration_seconds, disposition)
+    values ('ee000000-0000-0000-0000-000000000002', '${RETAPPER}', now() - interval '5 hours', 0, 'not_answered');
+    update crm.leads set na_streak = 1, escalation_stage = 'caller', next_action_at = now() + interval '1 day'
+     where id = 'ee000000-0000-0000-0000-000000000002';
+  `);
+  const hash = await hashPassword(TEST_PASSWORD);
+  await db.withoutUser((q) => q.query('select crm.set_password($1, $2, false)', [RETAPPER, hash]));
+
+  const rang: string[] = [];
+  app.tataTele = {
+    baseUrl: '',
+    clickToCall: async (p) => {
+      rang.push(p.destinationNumber);
+      return { refId: `E2E-NA-${rang.length}`, message: 'queued' };
+    },
+  };
+
+  try {
+    await signIn(EMAIL);
+    await page.waitForSelector('[data-testid=day-power-choose]');
+    await page.click('[data-testid=day-power-choose]');
+
+    // The picker, with what each list holds right now.
+    await page.waitForSelector('[data-testid=dial-list-not_answered]');
+    assert.match((await page.textContent('[data-testid=dial-list-not_answered]')) ?? '', /Not answered\s*1/);
+    assert.match((await page.textContent('[data-testid=dial-list-due]')) ?? '', /Everything due now\s*1/);
+    await page.click('[data-testid=dial-list-not_answered]');
+    await page.waitForFunction(
+      `(document.querySelector('[data-testid=dial-ready-line]')?.textContent || '').includes('E2E Unreached')`,
+    );
+    assert.ok(page.url().includes('list=not_answered'), 'the choice is in the address, so a refresh keeps it');
+    await page.screenshot({ path: path.join(SHOTS, '17-power-dial-lists.png'), fullPage: true });
+
+    await page.click('[data-testid=dial-start]');
+    await page.waitForSelector('[data-testid=dial-calling]');
+    assert.equal((await page.textContent('[data-testid=dial-lead-name]'))?.trim(), 'E2E Unreached');
+    assert.deepEqual(rang, ['919812388912'], 'the no-answer rang - not the fresh lead the due list starts with');
+    assert.match((await page.textContent('[data-testid=dial-list-name]')) ?? '', /Not answered/);
+
+    // One tap; the list is now empty - the fresh lead is not in it.
+    await page.click('[data-testid=dial-quick-not_answered]');
+    await page.waitForSelector('[data-testid=dial-clear]', { timeout: 30_000 });
+    assert.deepEqual(rang, ['919812388912'], 'nothing outside the chosen list was rung');
+    assert.match((await page.textContent('[data-testid=dial-clear]')) ?? '', /Nothing left to call in/);
+    await page.click('[data-testid=dial-clear] [data-act=stop]');
+    await page.waitForSelector('[data-testid=dial-stopped]');
+    await signOut();
+  } finally {
+    delete app.tataTele;
+    fixtureSql(`
+      update crm.settings set value = 'false'::jsonb where key = 'tata_tele.enabled';
+      update crm.settings set value = '9'::jsonb  where key = 'power_dial.start_hour';
+      update crm.settings set value = '21'::jsonb where key = 'power_dial.end_hour';
+      update crm.settings set value = '5'::jsonb  where key = 'power_dial.countdown_seconds';
+      update crm.settings set value = '10'::jsonb where key = 'tata_tele.click_cooldown_seconds';
+    `);
+  }
+});
+
+/**
+ * Cross-checking inbound calls (0078): Tata Tele reports a call on the office
+ * line from a number the CRM has never seen, answered by this caller. The
+ * client existed nowhere until somebody typed them in - now the call is put
+ * in front of the person who took it, with the number already filled in.
+ */
+it('caller: logs an inbound call Tata Tele saw from a new number, number already filled in', async () => {
+  const TAKER = '22222222-0000-0000-0000-0000000000e5';
+  const EMAIL = 'e2e-taker@5circles.test';
+  const FROM = '+919812388951';
+  fixtureSql(`
+    insert into crm.users (id, full_name, email, role, employee_code, dialing_msisdn, tour_completed_at)
+    values ('${TAKER}', 'E2E Call Taker', '${EMAIL}', 'caller', 'CLR-E2T2', '+919812388950', now());
+    insert into crm.team_memberships (user_id, team_id, rotation_order)
+    values ('${TAKER}', '11111111-0000-0000-0000-000000000001', 99);
+    insert into crm.device_call_logs
+      (user_id, device_row_key, counterparty_msisdn, direction, started_at, duration_seconds, source)
+    values ('${TAKER}', 'tata:e2e-in-new', '${FROM}', 'incoming', now() - interval '3 minutes', 75, 'tata_tele');
+  `);
+  const hash = await hashPassword(TEST_PASSWORD);
+  await db.withoutUser((q) => q.query('select crm.set_password($1, $2, false)', [TAKER, hash]));
+
+  await signIn(EMAIL);
+  await page.waitForSelector('[data-testid=inbound-to-log]');
+  assert.match((await page.textContent('[data-testid=inbound-to-log]')) ?? '', /\+919812388951/);
+  await page.screenshot({ path: path.join(SHOTS, '18-inbound-to-log.png'), fullPage: true });
+
+  await page.click('[data-testid=inbound-to-log-log]');
+  await page.waitForSelector('.modal [data-testid=lead-kind]');
+  assert.equal(await page.inputValue('.modal [name=phone]'), FROM, 'the number is already filled in');
+  await page.fill('.modal [name=name]', 'Rang The Office');
+  await page.click('.modal footer button');
+
+  // It becomes a real lead, the caller's own, and the prompt is done.
+  await page.waitForFunction(`location.hash.startsWith('#/lead/')`);
+  assert.equal(
+    fixtureSql(`select caller_id || ' ' || source_id from crm.leads where phone_e164 = '${FROM}';`).trim(),
+    `${TAKER} 33333333-0000-0000-0000-000000000004`,
+  );
+  await page.goto(`${base}/ui/#/day`);
+  await page.waitForSelector('[data-testid=day-chips]');
+  assert.equal(await page.locator('[data-testid=inbound-to-log]').count(), 0, 'nothing left to log');
+  await signOut();
 });

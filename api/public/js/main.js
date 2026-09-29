@@ -502,7 +502,9 @@ async function route(soft = false) {
   const outlet = document.getElementById('outlet');
   if (!outlet) return;
 
-  const parts = (location.hash || '#/').slice(2).split('/');
+  // A query after the path (#/dial?list=not_answered) is the view's own
+  // business; the route is the path alone.
+  const parts = (location.hash || '#/').slice(2).split('?')[0].split('/');
   const name = parts[0] || (DEFAULT_ROUTE[me.role] ?? '#/attendance').slice(2);
   const view = VIEWS[name];
 
@@ -588,7 +590,7 @@ const LIVE_VIEWS = new Set(['day', 'floor', 'collections', 'people', 'dash', 'te
 let liveTimer = null;
 
 function currentViewName() {
-  return (location.hash || '#/').slice(2).split('/')[0];
+  return (location.hash || '#/').slice(2).split('?')[0].split('/')[0];
 }
 
 async function startLiveRefresh() {

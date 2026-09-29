@@ -354,6 +354,35 @@ Do not undo these without understanding why they exist.
   `tata_tele.click_cooldown_seconds` is refused (409); leaving the screen
   stops the loop. The dialler is its own route because My Pipeline redraws
   itself every 30 s, which would throw away an outcome form mid-call.
+  **The caller chooses the list** (0077, owner request 28 Sep): everything
+  due (the default), or one slice of it — fresh, callbacks due, follow-ups
+  and overdue — or **Not answered**, narrowed to one source, and for Not
+  answered to "N+ in a row" and "last tried N+ hours ago". Membership and
+  order are `crm.dial_list()` (the due list IS `v_dial_queue`; the slices
+  are cut by `crm.dial_list_of()`, so a slice and its count on the picker
+  cannot disagree). Not answered is the one deliberate exception to "never
+  early": a no-answer's next action is the trigger's retry, not an
+  agreement, so a caller who chose to re-tap gets them now — but a
+  callback the client booked for later is never in that list, the re-dial
+  gap still holds, and a session never rings the same lead twice.
+
+- **A client who rang the office is never lost** (0078, found cross-checking
+  inbound calls, 28 Sep). A missed inbound call used to vanish: one no agent
+  answered "named nobody" and was only counted, and one that rang an agent
+  who did not pick up became that agent's missed ring and nothing more.
+  `crm.intake_missed_call` now runs the repeat-enquiry rule on it, exactly
+  as for a form: a number with a live lead (or any lead inside
+  `lead.dedupe_window_days`) is a `re_enquiry` on it — immediate, next action
+  within 15 minutes, the owner told the client "rang the office - nobody
+  answered", top of Fresh and first in the dialler — and a new number is an
+  immediate lead from the Inbound call source, handed out by the fairness
+  engine. Never for a colleague's number or a call older than
+  `tata_tele.missed_call_lead_days` (a replayed held record); once per call
+  id however often Smartflo delivers it (`crm.telephony_missed_calls`). An
+  inbound call somebody **answered** from a number no lead has is shown to
+  that person (`crm.inbound_calls_to_log()`, My Pipeline and Inbound calls)
+  with the number filled in, until they log the lead or mark it "not a
+  client" — the call was in the CRM all along, the client was not.
 
 - **Row-level security is the access control, not the API.** The app connects as
   `crm_app` (no BYPASSRLS, not the table owner) and sets `app.user_id` per
@@ -436,7 +465,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(389 database assertions, 350 API tests, 19 browser E2E flows), the
+(412 database assertions, 354 API tests, 21 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Tata Tele
 Smartflo integration** (migration 0074, `api/src/integrations/tata_tele/`) —

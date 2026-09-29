@@ -135,17 +135,29 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
+   * The choice a power-dial session was started with: which list, and the
+   * filters. Membership and order are crm.dial_list's - these only pick it.
+   */
+  const dialChoice = z.object({
+    list: z.enum(['due', 'fresh', 'not_answered', 'callbacks', 'followups']).default('due'),
+    campaign: z.string().trim().max(200).optional().transform((s) => s || null),
+    min: z.coerce.number().int().min(1).max(50).default(1),
+    hours: z.coerce.number().int().min(0).max(24 * 60).default(0),
+  });
+
+  /**
    * Power dialling: the next lead to ring, and how much is left.
    *
-   * What is due and in what order is crm.v_dial_queue - this route adds only
-   * the session's own skips (`exclude`), which are the browser's to know. When
-   * nothing is dialable it says why the queue is quiet and when it next
-   * won't be, so the screen can say "next at 16:00" instead of just "empty".
+   * What is in each list and in what order is crm.dial_list (0077) - the due
+   * list is crm.v_dial_queue itself. This route adds only the session's own
+   * skips (`exclude`), which are the browser's to know. When nothing is
+   * dialable it says why the list is quiet and when it next won't be, so
+   * the screen can say "next at 16:00" instead of just "empty".
    */
   app.get('/me/dial-next', async (req) => {
     const user = req.requireUser();
-    const { exclude } = z
-      .object({
+    const { exclude, ...choice } = dialChoice
+      .extend({
         exclude: z
           .string()
           .optional()
@@ -153,6 +165,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
           .pipe(z.array(uuid).max(500)),
       })
       .parse(req.query);
+    const listArgs = [user.id, choice.list, choice.campaign, choice.min, choice.hours];
 
     return req.tx(async (q) => {
       const cfg = await q.one<{
@@ -164,17 +177,22 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
                 crm.setting_int('power_dial.countdown_seconds', 5)     as countdown_seconds`,
       );
       const next = await q.one<{ lead_id: string; remaining: number }>(
-        `select q.*, count(*) over ()::int as remaining
-           from crm.v_dial_queue q
-          where q.queue_owner_id = $1
-            and q.dialable
-            and not (q.lead_id = any($2::uuid[]))
-          order by q.dial_position
+        `select p.*, d.list_reason as dial_reason, d.dialable, d.redial_held_until,
+                count(*) over ()::int as remaining
+           from crm.dial_list($1, $2, $3, $4, $5) d
+           -- The owner filter is redundant for the rows, not for the work:
+           -- without it a counsellor's request builds the whole team's
+           -- pipeline to join a handful of leads.
+           join crm.v_my_pipeline p on p.lead_id = d.lead_id and p.queue_owner_id = $1
+          where d.dialable
+            and not (d.lead_id = any($6::uuid[]))
+          order by d.list_position
           limit 1`,
-        [user.id, exclude],
+        [...listArgs, exclude],
       );
 
       const base = {
+        list: choice.list,
         open: cfg!.open,
         window: { start_hour: cfg!.start_hour, end_hour: cfg!.end_hour },
         countdown_seconds: cfg!.countdown_seconds,
@@ -186,25 +204,55 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
         return { ...base, lead: next };
       }
 
+      // Later-today work that will fall due into this list. Fresh and Not
+      // answered leads are never "later" - they are in the list already.
+      const laterBuckets =
+        choice.list === 'due' ? ['callback', 'followup_today', 'will_visit']
+        : choice.list === 'callbacks' ? ['callback']
+        : choice.list === 'followups' ? ['followup_today', 'will_visit']
+        : [];
       const outlook = await q.one<{ held: number; held_until: string | null; next_due_at: string | null }>(
-        `select (select count(*)::int from crm.v_dial_queue q
-                  where q.queue_owner_id = $1 and not q.dialable
-                    and not (q.lead_id = any($2::uuid[])))              as held,
-                (select min(q.redial_held_until) from crm.v_dial_queue q
-                  where q.queue_owner_id = $1 and not q.dialable
-                    and not (q.lead_id = any($2::uuid[])))              as held_until,
+        `select (select count(*)::int from crm.dial_list($1, $2, $3, $4, $5) d
+                  where not d.dialable and not (d.lead_id = any($6::uuid[])))  as held,
+                (select min(d.redial_held_until) from crm.dial_list($1, $2, $3, $4, $5) d
+                  where not d.dialable and not (d.lead_id = any($6::uuid[])))  as held_until,
                 (select min(p.next_action_at) from crm.v_my_pipeline p
                   where p.queue_owner_id = $1
-                    -- Only work that is genuinely later: fresh work is due
-                    -- already, and a lead skipped this session is not "next".
-                    and p.bucket in ('callback', 'followup_today', 'will_visit')
-                    and not (p.lead_id = any($2::uuid[]))
+                    and p.bucket = any($7::text[])
+                    and ($3::text is null or p.campaign_name = $3)
+                    and not (p.lead_id = any($6::uuid[]))
                     and p.next_action_at > now()
                     and p.next_action_at < (crm.ist_date(now()) + 1)::timestamp
-                                             at time zone 'Asia/Kolkata') as next_due_at`,
-        [user.id, exclude],
+                                             at time zone 'Asia/Kolkata')      as next_due_at`,
+        [...listArgs, exclude, laterBuckets],
       );
       return { ...base, lead: null, ...outlook };
+    });
+  });
+
+  /**
+   * The list picker on the Power dial screen: how many leads each list holds
+   * for me right now (ready to ring, and held by the re-dial gap), and the
+   * sources my open leads came from, for the source filter.
+   */
+  app.get('/me/dial-lists', async (req) => {
+    const user = req.requireUser();
+    const choice = dialChoice.parse(req.query);
+    return req.tx(async (q) => {
+      const lists = await q.many<{ list: string; ready: number; held: number }>(
+        'select * from crm.dial_list_counts($1, $2, $3, $4)',
+        [user.id, choice.campaign, choice.min, choice.hours],
+      );
+      const campaigns = await q.many<{ campaign: string; n: number }>(
+        `select campaign_name as campaign, count(*)::int as n
+           from crm.v_my_pipeline
+          where queue_owner_id = $1 and campaign_name is not null
+          group by campaign_name
+          order by count(*) desc, campaign_name
+          limit 50`,
+        [user.id],
+      );
+      return { lists, campaigns };
     });
   });
 
@@ -304,6 +352,38 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
         `select crm.setting_int('alert.na_quiet_after_attempts', 3) as n`,
       );
       return { count: rows.length, threshold: threshold?.n ?? 3, leads: rows };
+    });
+  });
+
+  /**
+   * Answered on the office line, from a number no lead has, and not logged
+   * yet (0078). The call is in the CRM - Tata Tele reported it - but the
+   * client exists nowhere else until somebody types them in, so the person
+   * who took it is shown it until they log the lead or say it was not one.
+   */
+  app.get('/me/inbound-to-log', async (req) => {
+    req.requireUser();
+    return req.tx(async (q) => ({
+      calls: await q.many('select * from crm.inbound_calls_to_log()'),
+    }));
+  });
+
+  /** "Not a client" - a supplier, a wrong number: no lead needed. */
+  app.post('/me/inbound-to-log/:id/dismiss', async (req) => {
+    const user = req.requireUser();
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    return req.tx(async (q) => {
+      const waiting = await q.one(
+        'select 1 from crm.inbound_calls_to_log(30) where device_log_id = $1',
+        [id],
+      );
+      if (!waiting) throw notFound('no call of yours is waiting to be logged with that id');
+      await q.query(
+        `insert into crm.inbound_call_dismissals (device_log_id, dismissed_by)
+         values ($1, $2) on conflict do nothing`,
+        [id, user.id],
+      );
+      return { dismissed: true };
     });
   });
 
