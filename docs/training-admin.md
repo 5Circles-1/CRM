@@ -64,6 +64,17 @@ has nothing recorded, which is why the order above matters.
 Nothing is ever deleted. Someone who leaves is **deactivated** — their sessions
 end immediately and their history stays attached to them.
 
+**Their leads stay in their name when you deactivate them.** Deactivating
+only stops new leads reaching them. On their row a **Hand over N leads**
+button then appears: pick one active caller (a new joinee, say) and every lead
+moves to them in one go. The new caller opens any lead and sees every call the
+old caller logged — outcome, talk time and notes — marked with the old
+caller's name, so they know what the client already said. Follow-up dates stay
+as agreed with the client, and callbacks the client booked ring the new caller
+instead. Paying clients stay credited to the person who won them, and no
+transfer is used up. The button works only on a deactivated caller: to move an
+active caller's leads, use Transfer on each lead.
+
 When they come back, press **Reactivate** and set a new password. Do **not**
 create a second account: their leads, calls, attendance and scores stay on the
 first one, and you end up with one person split across two rows and two sets of

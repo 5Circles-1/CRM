@@ -105,6 +105,24 @@ Do not undo these without understanding why they exist.
   the counsellor just owns the call-back. lost/invalid/nurture are refused —
   reopen them first.
 
+- **A caller who has left hands over whole; one still on the floor never
+  does** (0081, owner request 30 Sep). Deactivating someone stops fresh leads
+  and nothing else, so their book stayed in their name, unworked, and their
+  clients' booked callbacks rang nobody. Transfer, one lead at a time, was
+  refused outright on any lead already moved twice. `crm.hand_over_leads`
+  (admin only, 42501; the leaver must already be deactivated, 23514) moves
+  every lead in their name to one active caller — lost and nurture included,
+  because a re-enquiry reopens those with their owner — **except paying
+  clients** (won/handed_off), whose `caller_id` is the win's credit. Nothing is
+  copied: call attempts, notes and the timeline hang off the lead, so the new
+  caller reads every response the client gave, marked with the leaver's name.
+  Follow-up dates stay as the leaver agreed them, pending callbacks are
+  re-pointed (`callbacks.assigned_to` is what rings), and no transfer is spent:
+  a departure is not a judgement about any lead. Each lead still gets a
+  `lead_transfers` row (`caller_unavailable`), so its page says where it came
+  from. The **Hand over N leads** button shows only on a deactivated caller's
+  row in Admin → Users.
+
 - **Every refusal carries a SQLSTATE, or it reaches the floor as a crash**
   (0073). `crm.transfer_lead` makes six checks. Three raised bare, and a bare
   `raise exception` is `P0001`, which is in no map in `src/http/errors.ts` — so
@@ -490,7 +508,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(423 database assertions, 358 API tests, 22 browser E2E flows), the
+(435 database assertions, 363 API tests, 23 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Tata Tele
 Smartflo integration** (migration 0074, `api/src/integrations/tata_tele/`) —

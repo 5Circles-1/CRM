@@ -210,7 +210,11 @@ async function users(body, me) {
                <button class="btn small u-avatar" data-id="${esc(u.id)}">${u.avatar_url ? 'Change icon' : 'Set icon'}</button>
                <button class="btn small u-pwd" data-id="${esc(u.id)}">Reset password</button>
                <button class="btn small danger u-deact" data-id="${esc(u.id)}">Deactivate</button>`
-            : `<button class="btn small u-react" data-id="${esc(u.id)}">Reactivate</button>`}</td>
+            : `${Number(u.leads_held) > 0 ? `
+                 <button class="btn small primary u-handover" data-id="${esc(u.id)}" data-testid="user-handover"
+                         title="Their leads are still in their name and nobody is working them">Hand over ${
+                   Number(u.leads_held)} lead${Number(u.leads_held) === 1 ? '' : 's'}</button>` : ''}
+               <button class="btn small u-react" data-id="${esc(u.id)}">Reactivate</button>`}</td>
         </tr>`).join('')}
       </tbody></table>
       <div class="hint" style="margin-top:8px">
@@ -237,8 +241,15 @@ async function users(body, me) {
       return;
     }
 
+    if (e.target.classList.contains('u-handover')) {
+      handOverModal(list.find((u) => u.id === id), () => users(body, me));
+      return;
+    }
+
     if (e.target.classList.contains('u-deact')) {
-      if (!confirm('Deactivate this user? Their sessions end immediately.')) return;
+      const u = list.find((x) => x.id === id);
+      if (!confirm(`Deactivate this user? Their sessions end immediately.${u?.role === 'caller'
+        ? '\n\nTheir leads stay in their name until you hand them over — the button appears on their row.' : ''}`)) return;
       try {
         await post(`/admin/users/${id}/deactivate`);
         toast('Deactivated — live sessions revoked.');
@@ -311,6 +322,73 @@ function teamModal(user, teams, onDone) {
       onDone();
     } catch (err) {
       toast(err.message, 'err');
+    }
+  });
+}
+
+/**
+ * Hand a departed caller's leads to one active caller (0081).
+ *
+ * Deactivation stops new leads reaching someone and nothing more: every lead
+ * in their name stays there, unworked, until it is handed over. What moves and
+ * what stays is crm.hand_over_leads()'s decision, not this screen's: paying
+ * clients stay with the caller who won them, booked callbacks follow the
+ * lead, and each lead keeps its whole call history, so the new caller reads
+ * every response the client already gave.
+ */
+async function handOverModal(user, onDone) {
+  if (!user) return;
+  let targets;
+  try {
+    targets = await get('/transfers/targets');
+  } catch (err) {
+    toast(err.message, 'err');
+    return;
+  }
+  const held = Number(user.leads_held);
+  const bodyEl = h(`
+    <div>
+      <p class="hint mt0">
+        <b>${held}</b> lead${held === 1 ? ' is' : 's are'} still in ${esc(user.full_name)}'s name.
+        ${held === 1 ? 'It goes' : 'All of them go'} to the caller you pick, with every call ${esc(user.full_name)} logged —
+        outcome, talk time and notes — still on each lead, so the new caller can read what the
+        client already said.
+      </p>
+      ${targets.length === 0
+        ? '<div class="banner" data-testid="handover-no-targets">No active caller to receive them. Add or reactivate a caller first.</div>'
+        : `<label class="f">Give them to
+        <select name="to" data-testid="handover-target">
+          ${targets.map((t) => `<option value="${esc(t.id)}">${esc(t.full_name)}${
+            t.team_name ? ` — ${esc(t.team_name)}` : ''} · ${Number(t.open_leads)} open</option>`).join('')}
+        </select>
+      </label>
+      <label class="f">Note <span class="hint">(optional, shown on each lead)</span>
+        <input name="note" maxlength="300" placeholder="e.g. left 30 Sep">
+      </label>`}
+      <ul class="hint">
+        <li>Follow-up dates stay as ${esc(user.full_name)} agreed them with the client.</li>
+        <li>Callbacks clients booked will ring the new caller instead.</li>
+        <li>Paying clients stay credited to ${esc(user.full_name)} — a past sale never moves.</li>
+        <li>No transfer is used up: the new caller can still transfer any of these later.</li>
+      </ul>
+    </div>`);
+  const footer = h(`<div>${targets.length === 0 ? ''
+    : `<button class="btn primary" data-testid="handover-save">Hand over ${held} lead${held === 1 ? '' : 's'}</button>`}</div>`);
+  const { close } = openModal(`Hand over ${user.full_name}'s leads`, bodyEl, footer);
+
+  footer.querySelector('button')?.addEventListener('click', async (e) => {
+    const toCallerId = bodyEl.querySelector('[name=to]').value;
+    const note = bodyEl.querySelector('[name=note]').value.trim();
+    e.target.disabled = true;
+    try {
+      const r = await post(`/admin/users/${user.id}/hand-over`, { toCallerId, ...(note ? { note } : {}) });
+      toast(`${r.leadsMoved} lead${r.leadsMoved === 1 ? '' : 's'} handed to ${r.toName}${
+        r.callbacksMoved ? `, with ${r.callbacksMoved} booked callback${r.callbacksMoved === 1 ? '' : 's'}` : ''}.`);
+      close();
+      onDone();
+    } catch (err) {
+      toast(err.message, 'err');
+      e.target.disabled = false;
     }
   });
 }

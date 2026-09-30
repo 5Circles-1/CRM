@@ -57,7 +57,13 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
                 (pt.pinned_by is not null
                  and (pt.pin_expires_at is null or pt.pin_expires_at > now())) as tier_pinned,
                 pt.pin_reason as tier_pin_reason,
-                pt.pin_expires_at as tier_pin_expires_at
+                pt.pin_expires_at as tier_pin_expires_at,
+                -- Leads still in a departed caller's name, less the sales
+                -- that stay theirs: the number the Hand over button moves.
+                case when not u.is_active and u.role = 'caller' then
+                  (select count(*) from crm.leads l
+                    where l.caller_id = u.id and l.status not in ('won', 'handed_off'))
+                end as leads_held
            from crm.users u
            left join crm.team_memberships tm
              on tm.user_id = u.id and tm.period @> current_date
@@ -223,6 +229,38 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     );
     if (!row) throw notFound('no deactivated user with that id');
     return row;
+  });
+
+  /**
+   * Hand a departed caller's whole lead book to one active caller (0081).
+   *
+   * Deactivating someone stops new leads reaching them and nothing else: every
+   * lead they owned stayed in their name, and moving them one Transfer at a
+   * time was slow and refused outright on any lead already moved twice. The
+   * rules - admin only, the leaver must be deactivated, a paying client stays
+   * theirs, pending callbacks follow the lead, no transfer is spent - live in
+   * crm.hand_over_leads(). Call history needs no copying: it hangs off the
+   * lead, so the new caller reads every response the client already gave.
+   */
+  app.post('/admin/users/:id/hand-over', async (req) => {
+    req.requireRole('admin');
+    const { id } = z.object({ id: uuid }).parse(req.params);
+    const body = z
+      .object({ toCallerId: uuid, note: z.string().trim().max(300).optional() })
+      .parse(req.body);
+
+    const row = await req.tx((q) =>
+      q.one<{ leads_moved: number; callbacks_moved: number; sales_kept: number; to_name: string }>(
+        `select * from crm.hand_over_leads($1, $2, crm.current_user_id(), $3)`,
+        [id, body.toCallerId, body.note ?? null],
+      ),
+    );
+    return {
+      leadsMoved: row!.leads_moved,
+      callbacksMoved: row!.callbacks_moved,
+      salesKept: row!.sales_kept,
+      toName: row!.to_name,
+    };
   });
 
   /**

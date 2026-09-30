@@ -29,6 +29,7 @@ import {
   rebuildTestDatabase,
   seedPasswords,
   TEST_PASSWORD,
+  SOURCES,
   USERS,
 } from './helpers.ts';
 import { Database } from '../src/db/pool.ts';
@@ -646,7 +647,7 @@ it('admin: the Data tab parks old leads behind a two-step button', async () => {
   fixtureSql(`
     insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
                            status, next_action_at, created_at)
-    values ('33333333-0000-0000-0000-000000000001', 'E2E Ancient', '+919811299001',
+    values ('33333333-0000-0000-0000-000000000001', 'E2E Ancient', '+919833377001',
             '${USERS.callerA1}', crm.team_of('${USERS.callerA1}', current_date),
             'working', now(), '2026-08-01 10:00:00+05:30');
   `);
@@ -979,5 +980,55 @@ it('caller: logs an inbound call Tata Tele saw from a new number, number already
   await page.goto(`${base}/ui/#/day`);
   await page.waitForSelector('[data-testid=day-chips]');
   assert.equal(await page.locator('[data-testid=inbound-to-log]').count(), 0, 'nothing left to log');
+  await signOut();
+});
+
+/**
+ * The owner (30 Sep): a caller was let go - "transfer her entire CRM leads to
+ * one of the new joinees, with the responses she already fed, so they have a
+ * track of what the client said." Deactivation leaves the leads in her name;
+ * the Hand over button on her row is how they reach somebody who is still here.
+ */
+it('admin: hands a departed caller\'s leads to a new joinee, history and all', async () => {
+  const LEAVER = '22222222-0000-0000-0000-0000000000e7';
+  fixtureSql(`
+    insert into crm.users (id, full_name, email, role, employee_code, is_active, deactivated_at, tour_completed_at)
+    values ('${LEAVER}', 'Kajal Departed', 'e2e-kajal@5circles.test', 'caller', 'CLR-E7', false, now(), now());
+  `);
+  const lead = fixtureSql(`
+    insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status)
+    values ('${SOURCES.meta}', 'Kajal Client Ravi', '+919844455501', '${LEAVER}',
+            '11111111-0000-0000-0000-000000000001', 'working')
+    returning id;
+  `).trim().split('\n')[0]!.trim();
+  fixtureSql(`
+    insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, is_verified, notes)
+    values ('${lead}', '${LEAVER}', 'connected_interested', 140, true, 'Wants the weekend batch');
+  `);
+
+  await signIn(EMAILS.admin);
+  await page.goto(`${base}/ui/#/admin`);
+  await page.click('button[data-tab="users"]');
+  const button = page.locator(`[data-testid=user-handover][data-id="${LEAVER}"]`);
+  await button.waitFor();
+  assert.match((await button.textContent()) ?? '', /Hand over 1 lead\b/);
+
+  await button.click();
+  await page.selectOption('[data-testid=handover-target]', USERS.callerB1);
+  await page.fill('input[name=note]', 'left 30 Sep');
+  await page.screenshot({ path: path.join(SHOTS, '19-hand-over-leads.png'), fullPage: true });
+  await page.click('[data-testid=handover-save]');
+  await page.waitForFunction(
+    `[...document.querySelectorAll('.toast')].some((t) => t.textContent.includes('1 lead handed to Caller B1'))`,
+  );
+  await page.waitForFunction(`!document.querySelector('[data-testid=user-handover][data-id="${LEAVER}"]')`);
+  await signOut();
+
+  // The joinee opens the lead and reads what the client told Kajal.
+  await signIn(EMAILS.callerB1);
+  await page.goto(`${base}/ui/#/lead/${lead}`);
+  await page.waitForFunction(
+    `document.body.textContent.includes('Wants the weekend batch') && document.body.textContent.includes('Kajal Departed')`,
+  );
   await signOut();
 });

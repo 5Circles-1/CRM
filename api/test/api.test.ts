@@ -1623,6 +1623,94 @@ describe('a deactivated account is reactivated, not recreated', () => {
   });
 });
 
+describe('a departed caller\'s leads are handed over whole', () => {
+  let leaverId = '';
+  let workingLead = '';
+  let wonLead = '';
+
+  before(async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const created = await h.app.inject({
+      method: 'POST', url: '/admin/users', headers: auth(admin),
+      payload: {
+        fullName: 'Leaver Kajal', email: 'leaver.kajal@5circles.test', role: 'caller',
+        temporaryPassword: 'long-enough-password',
+        teamId: '11111111-0000-0000-0000-000000000001',
+      },
+    });
+    assert.equal(created.statusCode, 201);
+    leaverId = created.json().id;
+    workingLead = makeLeadFor(leaverId, 'Kajal Client');
+    makeLeadFor(leaverId, 'Kajal Other Client');
+    wonLead = makeLeadFor(leaverId, 'Kajal Paying Client');
+    fixtureSql(`
+      insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, is_verified, notes)
+      values ('${workingLead}', '${leaverId}', 'connected_interested', 120, true,
+              'Interested in the options batch, call after the 5th');
+      update crm.leads set status = 'won', closed_at = now() where id = '${wonLead}';
+    `);
+  });
+
+  it('refuses while the caller is still active - an active book moves by Transfer', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST', url: `/admin/users/${leaverId}/hand-over`, headers: auth(admin),
+      payload: { toCallerId: USERS.callerB1 },
+    });
+    assert.equal(res.statusCode, 409);
+    assert.match(res.json().message, /Leaver Kajal is still active/);
+  });
+
+  it('shows how many leads a deactivated caller still holds, less the sale', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    await h.app.inject({
+      method: 'POST', url: `/admin/users/${leaverId}/deactivate`, headers: auth(admin),
+    });
+    const listed = await h.app.inject({ method: 'GET', url: '/admin/users', headers: auth(admin) });
+    const row = listed.json().find((u: { id: string }) => u.id === leaverId);
+    assert.equal(row.leads_held, 2);
+  });
+
+  it('is an admin action - a counsellor cannot hand a book over', async () => {
+    const counsellor = await login(h.app, EMAILS.counsellorA);
+    const res = await h.app.inject({
+      method: 'POST', url: `/admin/users/${leaverId}/hand-over`, headers: auth(counsellor),
+      payload: { toCallerId: USERS.callerB1 },
+    });
+    assert.equal(res.statusCode, 403);
+  });
+
+  it('moves every lead but the sale to the chosen caller', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({
+      method: 'POST', url: `/admin/users/${leaverId}/hand-over`, headers: auth(admin),
+      payload: { toCallerId: USERS.callerB1, note: 'terminated' },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.json(), { leadsMoved: 2, callbacksMoved: 0, salesKept: 1, toName: 'Caller B1' });
+
+    const listed = await h.app.inject({ method: 'GET', url: '/admin/users', headers: auth(admin) });
+    assert.equal(listed.json().find((u: { id: string }) => u.id === leaverId).leads_held, 0);
+  });
+
+  it('lets the new caller read what the client told the leaver', async () => {
+    const b1 = await login(h.app, EMAILS.callerB1);
+    const res = await h.app.inject({ method: 'GET', url: `/leads/${workingLead}`, headers: auth(b1) });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.equal(body.lead.caller_id, USERS.callerB1);
+    const past = body.attempts.find((a: { by_name: string }) => a.by_name === 'Leaver Kajal');
+    assert.ok(past, 'the leaver\'s call must still be on the lead');
+    assert.equal(past.notes, 'Interested in the options batch, call after the 5th');
+    assert.equal(past.disposition, 'connected_interested');
+    assert.equal(body.transfers[0].from_name, 'Leaver Kajal');
+    assert.match(body.transfers[0].note, /Handed over from Leaver Kajal \(left\) - terminated/);
+
+    const sale = await h.app.inject({ method: 'GET', url: `/leads/${wonLead}`, headers: auth(b1) });
+    assert.equal(sale.statusCode, 404, 'a past sale stays with the caller who won it');
+  });
+});
+
 describe('a lead source can be corrected after it is created', () => {
   it('fixes a mistyped worksheet tab without creating a second source', async () => {
     // Create-only was the whole reason one sheet got wired in five times: a
