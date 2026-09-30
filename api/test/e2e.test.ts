@@ -718,6 +718,20 @@ it('caller: power dialling rings the due list back to back, one tap between call
     await page.waitForSelector('[data-testid=day-power]');
     assert.equal(await page.locator('.sidebar a[data-nav="#/dial"]').count(), 1,
       'Power dial is in the menu once cloud calling is on');
+
+    // Every card carries its Call button INSIDE the card. On the Columns board
+    // the cards are narrow, and a top row that could not wrap pushed the date
+    // and the button past the card's edge - on the floor it read as "there is
+    // no Call button".
+    await page.waitForSelector('[data-testid=card-dial]');
+    const outside = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid=card-dial]')].filter((b) => {
+        const card = b.closest('.leadcard')!.getBoundingClientRect();
+        const r = b.getBoundingClientRect();
+        return r.width === 0 || r.right > card.right + 0.5 || r.left < card.left - 0.5;
+      }).length);
+    assert.equal(outside, 0, 'a Call button spills out of its card');
+    await page.screenshot({ path: path.join(SHOTS, '13b-card-call-buttons.png'), fullPage: true });
     await page.click('[data-testid=day-power]');
 
     // No click between: the countdown runs out and the immediate lead is rung.

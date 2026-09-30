@@ -155,7 +155,10 @@ label.f > input:focus, label.f > select:focus, label.f > textarea:focus {
   color: inherit; box-shadow: var(--shadow);
 }
 .leadcard:hover { text-decoration: none; border-color: #c8d4ea; }
-.leadcard .r1 { display: flex; align-items: baseline; gap: 10px; }
+/* Wraps: on the Columns board a card is ~280px wide, and a row that could not
+   wrap pushed the date and the 📞 Call button past the card's edge. */
+.leadcard .r1 { display: flex; align-items: baseline; gap: 6px 10px; flex-wrap: wrap; min-width: 0; }
+.leadcard .name { overflow-wrap: anywhere; }
 .leadcard .name { font-weight: 700; font-size: 15.5px; }
 .leadcard .phone { color: var(--muted); font-variant-numeric: tabular-nums; }
 .leadcard .r2 { display: flex; gap: 14px; margin-top: 5px; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
