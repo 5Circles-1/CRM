@@ -5276,6 +5276,147 @@ select crm_test.check(
      from crm.user_target_progress() where user_id = :B1), null);
 
 -- =============================================================================
+-- R8 - a departed caller's leads are handed over whole (0081)
+-- A caller who left: every lead in her name goes to one active caller, with
+-- every response the client gave still on it. A paying client stays hers (the
+-- win's credit), no transfer is spent, and a booked callback follows the lead.
+-- =============================================================================
+
+\set LEAVER '''22222222-0000-0000-0000-0000000000e1'''
+\set JOINEE '''22222222-0000-0000-0000-0000000000e2'''
+
+insert into crm.users (id, full_name, email, role, employee_code) values
+  (:LEAVER, 'Kajal Leaving', 'leaver@5circles.test', 'caller', 'CLR-E1'),
+  (:JOINEE, 'Neha Joinee',   'joinee@5circles.test', 'caller', 'CLR-E2');
+insert into crm.team_memberships (user_id, team_id, rotation_order) values
+  (:LEAVER, :TEAM_A, 21), (:JOINEE, :TEAM_B, 22);
+
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                       next_action_at, next_action_note, transfer_count, closed_at)
+values
+  (:SRC, 'HO Working',   '+919555008101', :LEAVER, :TEAM_A, 'working',
+   now() + interval '3 days', 'Call after salary on the 5th', 0, null),
+  (:SRC, 'HO Twice Moved', '+919555008102', :LEAVER, :TEAM_A, 'working',
+   now() + interval '1 day', null, 2, null),
+  (:SRC, 'HO Lost',      '+919555008103', :LEAVER, :TEAM_A, 'lost', null, null, 0, now() - interval '5 days'),
+  (:SRC, 'HO Won',       '+919555008104', :LEAVER, :TEAM_A, 'won',  null, null, 0, now() - interval '5 days');
+
+insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds, is_verified, notes)
+select id, :LEAVER, 'callback_requested', 95, true, 'Wants the options course, asked for Friday'
+  from crm.leads where full_name = 'HO Working';
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+select id, :LEAVER, :LEAVER, now() + interval '2 days', 'Client booked Friday 4pm'
+  from crm.leads where full_name = 'HO Working';
+
+-- The follow-up the leaver agreed, as it stands after her call and the
+-- client's booked callback were logged.
+select next_action_at as ho_next_action, next_action_note as ho_next_note
+  from crm.leads where full_name = 'HO Working' \gset
+
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-00000000000a', false) as _ \gset
+
+do $$
+begin
+  perform crm.hand_over_leads('22222222-0000-0000-0000-0000000000e1',
+                              '22222222-0000-0000-0000-0000000000e2');
+  perform crm_test.check('R8', 'an active caller''s book cannot be bulk-moved - deactivate first',
+                         false, 'hand-over of an active caller unexpectedly succeeded');
+exception when check_violation then
+  perform crm_test.check('R8', 'an active caller''s book cannot be bulk-moved - deactivate first',
+                         true, null);
+end $$;
+
+update crm.users set is_active = false, deactivated_at = now() where id = :LEAVER;
+
+do $$
+begin
+  perform crm.hand_over_leads('22222222-0000-0000-0000-0000000000e1',
+                              '22222222-0000-0000-0000-000000000005');
+  perform crm_test.check('R8', 'a hand-over goes to an active caller, never a counsellor',
+                         false, 'hand-over to a counsellor unexpectedly succeeded');
+exception when check_violation then
+  perform crm_test.check('R8', 'a hand-over goes to an active caller, never a counsellor', true, null);
+end $$;
+
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false) as _ \gset
+do $$
+begin
+  perform crm.hand_over_leads('22222222-0000-0000-0000-0000000000e1',
+                              '22222222-0000-0000-0000-0000000000e2');
+  perform crm_test.check('R8', 'only an admin may hand over a departed caller''s leads',
+                         false, 'a counsellor handed the book over');
+exception when insufficient_privilege then
+  perform crm_test.check('R8', 'only an admin may hand over a departed caller''s leads', true, null);
+end $$;
+
+select set_config('app.user_id', '22222222-0000-0000-0000-00000000000a', false) as _ \gset
+select * from crm.hand_over_leads(:LEAVER, :JOINEE, :ADMIN, 'terminated 30 Sep') \gset ho_
+
+reset role;
+
+select crm_test.check(
+  'R8', 'the hand-over reports what moved: three leads, one booked callback, one sale kept',
+  :ho_leads_moved = 3 and :ho_callbacks_moved = 1 and :ho_sales_kept = 1
+    and :'ho_to_name' = 'Neha Joinee',
+  format('moved %s, callbacks %s, kept %s', :ho_leads_moved, :ho_callbacks_moved, :ho_sales_kept));
+
+select crm_test.check(
+  'R8', 'every non-sale lead is the joinee''s now, on the joinee''s team - lost ones too',
+  (select bool_and(caller_id = :JOINEE and team_id = :TEAM_B)
+     from crm.leads where full_name in ('HO Working', 'HO Twice Moved', 'HO Lost')), null);
+
+select crm_test.check(
+  'R8', 'a paying client stays with the caller who won it - the win''s credit never moves',
+  (select caller_id = :LEAVER and team_id = :TEAM_A from crm.leads where full_name = 'HO Won'), null);
+
+select crm_test.check(
+  'R8', 'a hand-over spends no transfer and moves a lead already transferred twice',
+  (select array_agg(transfer_count order by full_name) = array[2, 0]
+     from crm.leads where full_name in ('HO Working', 'HO Twice Moved')), null);
+
+select crm_test.check(
+  'R8', 'the follow-up the leaver agreed with the client is kept, date and note',
+  (select next_action_at = :'ho_next_action'::timestamptz
+          and next_action_note = :'ho_next_note'
+          and next_action_at > now() + interval '1 day'
+     from crm.leads where full_name = 'HO Working'), null);
+
+select crm_test.check(
+  'R8', 'the client''s booked callback now rings the joinee',
+  (select c.assigned_to = :JOINEE and c.status = 'pending'
+     from crm.callbacks c join crm.leads l on l.id = c.lead_id
+    where l.full_name = 'HO Working'), null);
+
+select crm_test.check(
+  'R8', 'each moved lead records who it came from, who moved it, and why',
+  (select count(*) = 3 from crm.lead_transfers t join crm.leads l on l.id = t.lead_id
+    where l.full_name like 'HO %' and t.from_caller_id = :LEAVER and t.to_caller_id = :JOINEE
+      and t.transferred_by = :ADMIN and t.reason = 'caller_unavailable'
+      and not t.is_automatic and t.note like 'Handed over from Kajal Leaving (left) - terminated 30 Sep')
+    and (select count(*) = 3 from crm.lead_events e join crm.leads l on l.id = e.lead_id
+          where l.full_name like 'HO %' and e.event_type = 'transferred'
+            and (e.payload->>'hand_over')::boolean), null);
+
+-- The point of it: the joinee, under RLS, reads what the client told Kajal.
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-0000000000e2', false) as _ \gset
+
+select crm_test.check(
+  'R8', 'the joinee sees the leaver''s past calls and notes on the lead',
+  (select count(*) = 1 from crm.call_attempts ca join crm.leads l on l.id = ca.lead_id
+                           join crm.users u on u.id = ca.user_id
+    where l.full_name = 'HO Working' and u.full_name = 'Kajal Leaving'
+      and ca.disposition = 'callback_requested'
+      and ca.notes = 'Wants the options course, asked for Friday'), null);
+
+select crm_test.check(
+  'R8', 'and does not see the leaver''s sale',
+  (select count(*) = 0 from crm.leads where full_name = 'HO Won'), null);
+
+reset role;
+
+-- =============================================================================
 -- Results
 -- =============================================================================
 
