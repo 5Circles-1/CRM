@@ -50,7 +50,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return req.tx((q) =>
       q.many(
         `select u.id, u.full_name, u.email, u.role, u.employee_code, u.is_active,
-                u.dialing_msisdn, u.avatar_url,
+                u.dialing_msisdn, u.ring_softphone, u.avatar_url,
                 crm.team_of(u.id, current_date) as team_id,
                 t.name as team_name, tm.rotation_order,
                 crm.tier_of(u.id) as tier,
@@ -368,7 +368,15 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   app.put('/admin/users/:id/dialing-msisdn', async (req) => {
     req.requireRole('admin');
     const { id } = z.object({ id: uuid }).parse(req.params);
-    const body = z.object({ dialingMsisdn: z.string().max(20).nullable() }).parse(req.body);
+    const body = z
+      .object({
+        dialingMsisdn: z.string().max(20).nullable(),
+        // Ring the Smartflo softphone (browser headset) instead of the
+        // phone (0082). Optional so the coverage panel's number-only saves
+        // leave the choice untouched.
+        ringSoftphone: z.boolean().optional(),
+      })
+      .parse(req.body);
 
     if (body.dialingMsisdn !== null) {
       const norm = await req.tx((q) =>
@@ -395,10 +403,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
     const row = await req.tx(async (q) => {
       const updated = await q.one(
-        `update crm.users set dialing_msisdn = crm.normalise_phone($2)
+        `update crm.users
+            set dialing_msisdn = crm.normalise_phone($2),
+                ring_softphone = coalesce($3, ring_softphone)
           where id = $1
-          returning id, full_name, dialing_msisdn`,
-        [id, body.dialingMsisdn],
+          returning id, full_name, dialing_msisdn, ring_softphone`,
+        [id, body.dialingMsisdn, body.ringSoftphone ?? null],
       );
       if (!updated) throw notFound('no user with that id');
       // The number is the Smartflo mapping: apply it now, so the agent maps

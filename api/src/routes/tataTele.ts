@@ -53,8 +53,22 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
         [id],
       );
       if (!lead) throw notFound('lead not found');
-      const me = await q.one<{ dialing_msisdn: string | null }>(
-        'select dialing_msisdn from crm.users where id = $1',
+      const me = await q.one<{
+        dialing_msisdn: string | null;
+        ring_softphone: boolean;
+        softphone_agent: string | null;
+      }>(
+        // The roster's agent identifier, readable as oneself (0082): the
+        // documented way to make Smartflo apply the agent's own routing -
+        // their browser softphone included - is to pass the agent's
+        // identity, not a phone number, which rings that number literally.
+        `select u.dialing_msisdn, u.ring_softphone,
+                (select coalesce(nullif(ta.agent_id, ''), nullif(ta.extension, ''),
+                                 nullif(ta.login_id, ''))
+                   from crm.tata_tele_agents ta
+                  where ta.user_id = u.id
+                  limit 1) as softphone_agent
+           from crm.users u where u.id = $1`,
         [user.id],
       );
       const cfg = await q.one<{
@@ -137,13 +151,46 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
           return null;
         });
 
+    // The agent leg (0082): the roster's agent identity when this person has
+    // chosen their softphone, so Smartflo applies their own routing and the
+    // browser headset rings; their Dialing number otherwise, and as the
+    // fallback when the softphone leg is refused - switching the softphone
+    // on must never make a person unreachable.
+    const wantsSoftphone = ctx.me.ring_softphone && Boolean(ctx.me.softphone_agent);
+    const legs: { agent: string; softphone: boolean }[] = wantsSoftphone
+      ? [
+          { agent: ctx.me.softphone_agent as string, softphone: true },
+          { agent: digitsOnly(ctx.me.dialing_msisdn), softphone: false },
+        ]
+      : [{ agent: digitsOnly(ctx.me.dialing_msisdn), softphone: false }];
+
     try {
-      const placed = await app.tataTele.clickToCall({
-        agentNumber: digitsOnly(ctx.me.dialing_msisdn),
-        destinationNumber: digitsOnly(ctx.lead.phone_e164),
-        ...(ctx.cfg.caller_id ? { callerId: ctx.cfg.caller_id } : {}),
-      });
+      let placed: { refId: string | null; message: string } | null = null;
+      let rang: { agent: string; softphone: boolean } = legs[0];
+      let softphoneRefusal: string | null = null;
+      for (const leg of legs) {
+        try {
+          placed = await app.tataTele.clickToCall({
+            agentNumber: leg.agent,
+            destinationNumber: digitsOnly(ctx.lead.phone_e164),
+            ...(ctx.cfg.caller_id ? { callerId: ctx.cfg.caller_id } : {}),
+          });
+          rang = leg;
+          break;
+        } catch (err) {
+          // Only a softphone leg Smartflo itself refused falls through to
+          // the phone; an expired login or an unreachable Smartflo fails
+          // the phone leg identically, so retrying it would double-report.
+          if (leg.softphone && err instanceof TataTeleApiError && !err.authFailed) {
+            softphoneRefusal = err.message;
+            continue;
+          }
+          throw err;
+        }
+      }
+      if (!placed) throw new Error('no agent leg could be placed');
       const row = await record({ refId: placed.refId, status: 'requested' });
+      const who = ctx.lead.full_name ?? 'the client';
       return {
         ok: true,
         refId: placed.refId,
@@ -151,9 +198,11 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
         // sends back is matched against this moment.
         callId: row?.id ?? null,
         requestedAt: row?.requested_at ?? new Date().toISOString(),
-        message: `Smartflo is ringing your phone first - ${
-          ctx.lead.full_name ?? 'the client'
-        } is dialled the moment you answer.`,
+        message: rang.softphone
+          ? `Smartflo is ringing your softphone - answer in the browser, and ${who} is dialled the moment you do.`
+          : softphoneRefusal
+            ? `Your softphone could not be rung (${softphoneRefusal}) - Smartflo is ringing your phone instead; ${who} is dialled the moment you answer.`
+            : `Smartflo is ringing your phone first - ${who} is dialled the moment you answer.`,
       };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
