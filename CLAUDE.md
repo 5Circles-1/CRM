@@ -344,7 +344,19 @@ Do not undo these without understanding why they exist.
   dialler campaigns are deliberately not connected: a second system
   distributing leads would fight the fairness engine, RLS and the
   `next_action_at` guarantee. The agent mapping IS `users.dialing_msisdn`
-  (one fact, one place — the number Smartflo rings first and reports back);
+  (one fact, one place — the number Smartflo rings first and reports back).
+  **The softphone rings in the browser by choice, per person** (0082, owner
+  request 1 Oct): with `users.ring_softphone` on (the 🎧 checkbox in the SIM
+  modal), click-to-call sends the roster's *agent identity* instead of the
+  number — a phone number passed as the agent leg rings that number
+  literally, whatever the agent's own "Route Agent Through" says — so
+  Smartflo applies their routing and the headset rings; the phone is the
+  automatic fallback when the softphone leg is refused, named in the toast,
+  so switching it on can never make a person unreachable. A CDR answered on
+  a softphone reports the *extension*, no one's Dialing number, so the
+  ingester resolves agent identifiers through the roster cache before
+  quarantining, and stores the person's own msisdn — the mapping stays one
+  fact in one place;
   rows that cannot be placed are quarantined whole and re-ingest themselves
   once the cause is fixed, except the inbound call no agent ever answered,
   which names nobody, has no fix that ever places it, and is counted rather
@@ -508,7 +520,7 @@ anything real.
 ## Build status
 
 Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(435 database assertions, 363 API tests, 23 browser E2E flows), the
+(431 database assertions, 365 API tests, 23 browser E2E flows), the
 **Android call-log companion app** (`android/` — plain Java, zero
 third-party dependencies, compiles to a verified APK), and the **Tata Tele
 Smartflo integration** (migration 0074, `api/src/integrations/tata_tele/`) —

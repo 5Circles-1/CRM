@@ -4397,6 +4397,22 @@ select crm_test.check(
   and (select user_id from crm.tata_tele_agents where agent_msisdn = '+919877700111') is null,
   null);
 
+-- A call answered on the softphone reports the extension, not the follow-me
+-- number (0082). The roster just mapped A1's extension 05001, so the record
+-- lands on A1 - keyed on their own msisdn, never quarantined.
+select crm.ingest_tata_tele_cdrs(jsonb_build_array(
+  jsonb_build_object('uuid', 'tt-11', 'direction', 'outbound', 'status', 'answered',
+    'agent_number', '05001', 'client_number', '919811100001',
+    'date', '2026-08-20', 'time', '16:30:00', 'answered_seconds', 25))) \gset _tt11_
+
+select crm_test.check(
+  'TT', 'a CDR identified by a roster agent''s extension lands on the person (0082)',
+  exists (select 1 from crm.device_call_logs
+           where device_row_key = 'tata:tt-11' and user_id = :A1)
+  and not exists (select 1 from crm.telephony_quarantine
+                   where external_id = 'tt-11' and resolved_at is null),
+  null);
+
 -- The next full refresh no longer lists the stranger: the ghost row prunes
 -- itself instead of alarming forever.
 select crm.refresh_tata_tele_agents(jsonb_build_array(

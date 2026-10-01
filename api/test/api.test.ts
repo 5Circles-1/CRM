@@ -5237,6 +5237,100 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
     assert.equal(linked, '1', 'the CDR is tied back to the click that placed it');
   });
 
+  it('a softphone-first caller is rung by agent identity, with the phone as automatic fallback', async () => {
+    const caller = await login(h.app, EMAILS.callerA1);
+    // The roster knows caller A1's Smartflo agent; the person has chosen
+    // the browser headset (0082).
+    fixtureSql(`select * from crm.refresh_tata_tele_agents(
+      '[{"follow_me_number": "+919000000001", "agent_id": "agentA1",
+         "extension": "0608337350001", "login_id": "0608337350001",
+         "name": "Caller A One"}]'::jsonb);`);
+    fixtureSql(`update crm.users set ring_softphone = true where id = '${USERS.callerA1}';`);
+
+    const softLead = makeLeadFor(USERS.callerA1, 'Softphone Client');
+    const dialled: { agentNumber: string }[] = [];
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async (p) => {
+        dialled.push(p);
+        return { refId: 'SOFT-1', message: 'Call originated successfully.' };
+      },
+    };
+
+    const placed = await h.app.inject({
+      method: 'POST', url: `/leads/${softLead}/call`, headers: auth(caller),
+    });
+    assert.equal(placed.statusCode, 200, placed.body);
+    assert.match(placed.json().message, /softphone/i, 'the toast says what is actually ringing');
+    assert.equal(dialled.length, 1);
+    assert.equal(dialled[0].agentNumber, 'agentA1',
+      'the agent identity, not a phone number - Smartflo applies their own routing');
+
+    // Smartflo refuses the softphone leg: the phone rings instead, and the
+    // message says so rather than pretending the softphone rang.
+    const retried: { agentNumber: string }[] = [];
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async (p) => {
+        retried.push(p);
+        if (retried.length === 1) throw new TataTeleApiError(400, 'Agent not available');
+        return { refId: 'SOFT-2', message: 'Call originated successfully.' };
+      },
+    };
+    const fallback = await h.app.inject({
+      method: 'POST', url: `/leads/${softLead}/call`, headers: auth(caller),
+    });
+    assert.equal(fallback.statusCode, 200, fallback.body);
+    assert.match(fallback.json().message, /ringing your phone instead/i);
+    assert.deepEqual(retried.map((d) => d.agentNumber), ['agentA1', '919000000001']);
+
+    // Switched off, the click sends the number exactly as before 0082.
+    fixtureSql(`update crm.users set ring_softphone = false where id = '${USERS.callerA1}';`);
+    dialled.length = 0;
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async (p) => {
+        dialled.push(p);
+        return { refId: 'SOFT-3', message: 'Call originated successfully.' };
+      },
+    };
+    const phone = await h.app.inject({
+      method: 'POST', url: `/leads/${softLead}/call`, headers: auth(caller),
+    });
+    assert.equal(phone.statusCode, 200, phone.body);
+    assert.match(phone.json().message, /ringing your phone first/i);
+    assert.equal(dialled[0].agentNumber, '919000000001');
+
+    delete h.app.tataTele;
+  });
+
+  it('a CDR identified by the agent extension lands on the person, never in quarantine', async () => {
+    // A call answered on the softphone reports the extension, which is no
+    // dialable number: before 0082 this quarantined as "no active user has
+    // Dialing number +0608...".
+    const extLead = makeLeadFor(USERS.callerA1, 'Extension Client');
+    const extNumber = fixtureSql(`select phone_e164 from crm.leads where id = '${extLead}'`)
+      .trim().replace('+91', '');
+
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/integrations/tata-tele/webhook?secret=${TT_SECRET}`,
+      payload: hangupEvent({
+        uuid: 'wh-ext-1',
+        answered_agent_number: '0608337350001',
+        call_to_number: `91${extNumber}`,
+        billsec: '42',
+      }),
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.partialDeepStrictEqual(res.json(), { inserted: 1, matched: 1, quarantined: 0 });
+
+    const owner = fixtureSql(
+      `select user_id from crm.device_call_logs where device_row_key = 'tata:wh-ext-1'`,
+    ).trim();
+    assert.equal(owner, USERS.callerA1, 'resolved through the roster to the person');
+  });
+
   it('an upstream failure is a 502 that says whose fault it is - and the failed click is still a row', async () => {
     const caller = await login(h.app, EMAILS.callerA1);
     const failLead = makeLeadFor(USERS.callerA1, 'Unlucky Client');
