@@ -51,7 +51,7 @@ export async function render(outlet, me, params) {
         <div class="row">
           ${lead.pool ? '<button class="btn primary" data-act="claim" data-testid="claim-btn">Pick up &amp; work</button>' : ''}
           ${open && me.cloud_calling
-            ? '<button class="btn primary" data-act="dial" data-testid="dial-btn" title="Tata Tele rings your phone first, then connects the client — no manual dialling">📞 Call</button>'
+            ? '<button class="btn primary" data-act="dial" data-testid="dial-btn" title="Tata Tele rings you first — your phone, or your softphone — then connects the client. No manual dialling">📞 Call</button>'
             : ''}
           ${open ? '<button class="btn primary" data-act="call" data-testid="log-call-btn">Log a call</button>' : ''}
           <button class="btn" data-act="whatsapp" data-testid="whatsapp-btn">${lead.whatsapp_sent_at ? '✓ WhatsApp sent' : 'Mark WhatsApp sent'}</button>

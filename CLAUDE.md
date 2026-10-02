@@ -350,9 +350,19 @@ Do not undo these without understanding why they exist.
   modal), click-to-call sends the roster's *agent identity* instead of the
   number — a phone number passed as the agent leg rings that number
   literally, whatever the agent's own "Route Agent Through" says — so
-  Smartflo applies their routing and the headset rings; the phone is the
+  Smartflo applies their routing and the headset rings. **Where an
+  agent-identity leg rings is Smartflo's per-agent "Route Agent Through"
+  setting (Extension / Mobile Number / Both), changeable only in the
+  Smartflo portal**: left on Mobile Number, the phone keeps ringing with the
+  🎧 on and no error anywhere — the CRM cannot read or set it, so the SIM
+  modal names the requirement instead. The phone is the
   automatic fallback when the softphone leg is refused, named in the toast,
-  so switching it on can never make a person unreachable. A CDR answered on
+  so switching it on can never make a person unreachable — and a 🎧 switched
+  on for someone Smartflo has no agent identity for is named the same way,
+  never silently downgraded to the plain phone message. The Power dial
+  screen shows the server's own ringing message (which leg, and why) rather
+  than asserting "your phone", and each click's `lead_events` payload
+  records which leg rang. A CDR answered on
   a softphone reports the *extension*, no one's Dialing number, so the
   ingester resolves agent identifiers through the roster cache before
   quarantining, and stores the person's own msisdn — the mapping stays one

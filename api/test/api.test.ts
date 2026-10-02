@@ -5262,6 +5262,7 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
     });
     assert.equal(placed.statusCode, 200, placed.body);
     assert.match(placed.json().message, /softphone/i, 'the toast says what is actually ringing');
+    assert.equal(placed.json().rang, 'softphone');
     assert.equal(dialled.length, 1);
     assert.equal(dialled[0].agentNumber, 'agentA1',
       'the agent identity, not a phone number - Smartflo applies their own routing');
@@ -5282,6 +5283,7 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
     });
     assert.equal(fallback.statusCode, 200, fallback.body);
     assert.match(fallback.json().message, /ringing your phone instead/i);
+    assert.equal(fallback.json().rang, 'phone');
     assert.deepEqual(retried.map((d) => d.agentNumber), ['agentA1', '919000000001']);
 
     // Switched off, the click sends the number exactly as before 0082.
@@ -5329,6 +5331,38 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
       `select user_id from crm.device_call_logs where device_row_key = 'tata:wh-ext-1'`,
     ).trim();
     assert.equal(owner, USERS.callerA1, 'resolved through the roster to the person');
+  });
+
+  it('a softphone switched on that Smartflo has no agent for falls back by name, never silently', async () => {
+    // Caller B1 is in no roster row: the softphone cannot even be tried. The
+    // phone must still ring, and the message must say why it is the phone -
+    // a silent fallback reads exactly like the switch being off, which is
+    // how "I ticked it and nothing changed" goes undiagnosed on the floor.
+    const caller = await login(h.app, EMAILS.callerB1);
+    fixtureSql(`update crm.users set ring_softphone = true where id = '${USERS.callerB1}';`);
+    const unmappedLead = makeLeadFor(USERS.callerB1, 'Unmapped Softphone Client');
+
+    const dialled: { agentNumber: string }[] = [];
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async (p) => {
+        dialled.push(p);
+        return { refId: 'SOFT-NOAGENT', message: 'Call originated successfully.' };
+      },
+    };
+
+    const placed = await h.app.inject({
+      method: 'POST', url: `/leads/${unmappedLead}/call`, headers: auth(caller),
+    });
+    assert.equal(placed.statusCode, 200, placed.body);
+    assert.equal(dialled.length, 1, 'one leg: there is no softphone identity to try');
+    assert.equal(dialled[0].agentNumber, '919000000003', 'the phone, as the only reachable leg');
+    assert.equal(placed.json().rang, 'phone');
+    assert.match(placed.json().message, /softphone is switched on, but Smartflo has no agent/i,
+      'the fallback is named, so the person knows the switch did not simply fail silently');
+
+    fixtureSql(`update crm.users set ring_softphone = false where id = '${USERS.callerB1}';`);
+    delete h.app.tataTele;
   });
 
   it('an upstream failure is a 502 that says whose fault it is - and the failed click is still a row', async () => {
