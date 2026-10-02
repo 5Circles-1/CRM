@@ -1,4 +1,4 @@
--- 0083_a_moved_leads_callback_follows_it.sql
+-- 0084_a_moved_leads_callback_follows_it.sql
 -- A lead that changes hands takes its pending callback with it, and whoever
 -- may work a lead may update its callback.
 --
@@ -185,7 +185,7 @@ $$;
 comment on function crm.transfer_lead(uuid, uuid, crm.transfer_reason, uuid, text) is
   'Requirement 8. Moves a lead to another caller. Authority (counsellor or admin)
    and the lead.max_transfers cap are enforced here, not in the API. The pending
-   callback follows the lead (0083): assigned_to is what rings. Every refusal
+   callback follows the lead (0084): assigned_to is what rings. Every refusal
    carries an explicit SQLSTATE so api/src/http/errors.ts can turn it into a
    sentence the floor can act on rather than a 500.';
 
@@ -283,7 +283,7 @@ begin
      where id = p_lead_id;
   end if;
 
-  -- The ring follows the lead (0083), exactly as in transfer_lead and
+  -- The ring follows the lead (0084), exactly as in transfer_lead and
   -- hand_over_leads.
   update crm.callbacks
      set assigned_to = p_to_user,
@@ -308,7 +308,7 @@ comment on function crm.assign_unowned_lead(uuid, uuid, uuid, text) is
    stage decides who: new/working/callback to an active caller;
    qualified/negotiation and paying clients (won/handed_off) who enquired again
    to an active counsellor, leaving the sale and its credit untouched.
-   Spends no transfer. A pending callback follows the lead (0083). Owned leads
+   Spends no transfer. A pending callback follows the lead (0084). Owned leads
    are refused - they move by transfer_lead.';
 
 -- ---------------------------------------------------------------------------

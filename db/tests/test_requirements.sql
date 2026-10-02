@@ -565,7 +565,7 @@ begin
     coalesce(v_msg, 'no refusal was raised at all'));
 end $$;
 
--- A lead that changes hands takes its pending callback with it (0083). Found
+-- A lead that changes hands takes its pending callback with it (0084). Found
 -- on the floor, 2 Oct: after a transfer the client's booked time kept ringing
 -- the OLD caller - for a lead RLS no longer let them open - and the new
 -- caller's first save crashed against the stale pending row.
@@ -598,7 +598,7 @@ select crm_test.check(
 
 -- Whoever may work the lead may update its callback. A pending callback
 -- booked by (and assigned to) the counsellor, on a caller's own lead, far
--- enough out that logging a call does not complete it: before 0083 the
+-- enough out that logging a call does not complete it: before 0084 the
 -- caller's save collided with it, and Postgres answered the ON CONFLICT
 -- update of a row outside callbacks_update USING with "new row violates
 -- row-level security policy (USING expression)" - an ordinary save, refused
