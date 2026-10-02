@@ -345,7 +345,7 @@ function card(l, me) {
   // card down is the next call — nobody types a number all day.
   if (me?.cloud_calling) {
     const dial = h(`<button class="btn small" data-testid="card-dial"
-      title="Tata Tele rings your phone first, then connects ${esc(l.full_name ?? 'the client')}">📞 Call</button>`);
+      title="Tata Tele rings you first — your phone, or your softphone — then connects ${esc(l.full_name ?? 'the client')}">📞 Call</button>`);
     dial.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();

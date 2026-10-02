@@ -118,6 +118,7 @@ function session(outlet, me, sel) {
   let lead = null;   // the lead on screen
   let form = null;
   let errorMsg = '';
+  let ringMsg = '';  // the server's own word on what is ringing (softphone, phone, fallback)
   let pauseAfterSave = false;
   let countTimer = null;
   let recheckTimer = null;
@@ -216,11 +217,16 @@ function session(outlet, me, sel) {
     if (!live() || !lead) return;
     clearInterval(countTimer);
     state = 'dialling';
+    ringMsg = '';
     draw();
     try {
       const r = await post(`/leads/${lead.lead_id}/call`);
       if (!live()) return;
       stats.called += 1;
+      // What is actually ringing - softphone, phone, or the named fallback
+      // when the softphone leg was refused. The server knows; asserting
+      // "your phone" here told a softphone-first caller nothing was wrong.
+      ringMsg = r.message ?? '';
       // A minute of slack either side of the click: the call record carries
       // the time the phone system started the call, not the click.
       const since = new Date(new Date(r.requestedAt).getTime() - 60_000).toISOString();
@@ -359,7 +365,8 @@ function session(outlet, me, sel) {
             ${me.on_shift ? '' : `<div class="banner warn">You are off the floor — press <b>Start shift</b>
               at the top so today's hours count.</div>`}
             <p class="mt0">Power dialling calls your leads one after another — you never pick a
-              lead or press Call. Tata Tele rings <b>your phone first</b>, then the client the moment
+              lead or press Call. Tata Tele rings <b>you first</b> — your phone, or your browser
+              softphone if that is switched on for you — then the client the moment
               you answer. After each call, save what happened; the next lead is called
               ${Number(info?.countdown_seconds ?? 5)} seconds later.</p>
             ${listPicker()}
@@ -402,8 +409,8 @@ function session(outlet, me, sel) {
         const green = !!lead.green_reason;
         const panel = h(`
           <div class="panel" data-testid="dial-calling">
-            <div class="banner info">📞 Tata Tele is ringing <b>your phone</b> — answer it, and
-              ${esc(lead.full_name ?? 'the client')} is dialled at once.</div>
+            <div class="banner info" data-testid="dial-ringing">📞 ${esc(ringMsg
+              || `Tata Tele is ringing your phone — answer it, and ${lead.full_name ?? 'the client'} is dialled at once.`)}</div>
             ${green ? `<div class="hint">This lead is green, so choose its next follow-up below
               whatever happens on the call.</div>` : `
             <div class="hint">No conversation? One tap saves it and moves on:</div>
@@ -416,7 +423,7 @@ function session(outlet, me, sel) {
             <div class="row spread wrap" style="margin-top:10px">
               <button class="btn primary" data-act="save" data-save data-testid="dial-save">Save &amp; call next</button>
               <div class="row wrap">
-                <button class="btn small" data-act="redial">Phone didn't ring — call again</button>
+                <button class="btn small" data-act="redial">Nothing rang — call again</button>
                 <button class="btn small" data-act="skip">Skip (no call happened)</button>
                 <button class="btn small" data-act="pause-after">${pauseAfterSave
                   ? '▶ Keep going after this call' : '⏸ Pause after this call'}</button>

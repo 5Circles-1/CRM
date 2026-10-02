@@ -123,6 +123,8 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
       refId?: string | null;
       status: 'requested' | 'failed';
       reason?: string;
+      rang?: 'softphone' | 'phone';
+      softphoneRefusal?: string | null;
     }) =>
       req
         .tx(async (q) => {
@@ -141,7 +143,13 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
             await q.query(
               `insert into crm.lead_events (lead_id, event_type, actor_id, payload)
                values ($1, 'click_to_call', $2, $3::jsonb)`,
-              [ctx.lead.id, user.id, JSON.stringify({ ref_id: fields.refId ?? null })],
+              // Which leg rang, and why a softphone leg fell back: "did
+              // Priya's softphone get tried today?" has no other record.
+              [ctx.lead.id, user.id, JSON.stringify({
+                ref_id: fields.refId ?? null,
+                ...(fields.rang ? { rang: fields.rang } : {}),
+                ...(fields.softphoneRefusal ? { softphone_refusal: fields.softphoneRefusal } : {}),
+              })],
             );
           }
           return row;
@@ -157,6 +165,11 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
     // fallback when the softphone leg is refused - switching the softphone
     // on must never make a person unreachable.
     const wantsSoftphone = ctx.me.ring_softphone && Boolean(ctx.me.softphone_agent);
+    // A softphone switched on that Smartflo has no agent identity for cannot
+    // even be tried. The phone leg still places, but the message says why it
+    // is the phone - silent here reads exactly like the switch being off,
+    // which is how "I ticked it and nothing changed" goes unreported.
+    const softphoneUnmapped = ctx.me.ring_softphone && !ctx.me.softphone_agent;
     const legs: { agent: string; softphone: boolean }[] = wantsSoftphone
       ? [
           { agent: ctx.me.softphone_agent as string, softphone: true },
@@ -189,7 +202,12 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
         }
       }
       if (!placed) throw new Error('no agent leg could be placed');
-      const row = await record({ refId: placed.refId, status: 'requested' });
+      const row = await record({
+        refId: placed.refId,
+        status: 'requested',
+        rang: rang.softphone ? 'softphone' : 'phone',
+        softphoneRefusal,
+      });
       const who = ctx.lead.full_name ?? 'the client';
       return {
         ok: true,
@@ -198,11 +216,14 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
         // sends back is matched against this moment.
         callId: row?.id ?? null,
         requestedAt: row?.requested_at ?? new Date().toISOString(),
+        rang: rang.softphone ? 'softphone' : 'phone',
         message: rang.softphone
           ? `Smartflo is ringing your softphone - answer in the browser, and ${who} is dialled the moment you do.`
           : softphoneRefusal
             ? `Your softphone could not be rung (${softphoneRefusal}) - Smartflo is ringing your phone instead; ${who} is dialled the moment you answer.`
-            : `Smartflo is ringing your phone first - ${who} is dialled the moment you answer.`,
+            : softphoneUnmapped
+              ? `Your softphone is switched on, but Smartflo has no agent for you yet, so your phone is ringing - ${who} is dialled the moment you answer. An admin can match you to a Smartflo agent on the Tata Tele panel.`
+              : `Smartflo is ringing your phone first - ${who} is dialled the moment you answer.`,
       };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);

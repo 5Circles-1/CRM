@@ -420,10 +420,12 @@ function simModal(user, onDone, freeAgents = []) {
         <input type="checkbox" name="softphone" ${user.ring_softphone ? 'checked' : ''}>
         🎧 Ring their Smartflo softphone (browser headset) instead of this phone
       </label>
-      <p class="hint">Needs the Smartflo Softphone extension logged in on their computer —
-        their row shows green on Smartflo's Extension Status page. If the softphone
-        cannot be rung, the call falls back to this phone on its own, so this is
-        always safe to switch on.</p>`}
+      <p class="hint">Needs two things in the <b>Smartflo portal</b>: their agent's
+        <b>Route Agent Through</b> set to <b>Extension</b> — Smartflo routes the call by
+        that setting, so left on Mobile Number this phone still rings with the headset
+        switched on here — and the Smartflo Softphone logged in on their computer, their
+        row green on Smartflo's Extension Status page. If the softphone cannot be rung,
+        the call falls back to this phone on its own, so this is always safe to switch on.</p>`}
       ${freeAgents.length === 0 ? '' : `
       <div class="hint">Smartflo agents nobody answers yet:
         ${freeAgents.map((a) => `
