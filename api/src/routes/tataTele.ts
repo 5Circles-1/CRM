@@ -56,13 +56,14 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
       const me = await q.one<{
         dialing_msisdn: string | null;
         ring_softphone: boolean;
+        cloud_calling: boolean;
         softphone_agent: string | null;
       }>(
         // The roster's agent identifier, readable as oneself (0082): the
         // documented way to make Smartflo apply the agent's own routing -
         // their browser softphone included - is to pass the agent's
         // identity, not a phone number, which rings that number literally.
-        `select u.dialing_msisdn, u.ring_softphone,
+        `select u.dialing_msisdn, u.ring_softphone, u.cloud_calling,
                 (select coalesce(nullif(ta.agent_id, ''), nullif(ta.extension, ''),
                                  nullif(ta.login_id, ''))
                    from crm.tata_tele_agents ta
@@ -97,6 +98,16 @@ export async function tataTeleRoutes(app: FastifyInstance): Promise<void> {
       throw badRequest(
         'Tata Tele calling is not configured on this server - set TATA_TELE_LOGIN_EMAIL and '
           + 'TATA_TELE_LOGIN_PASSWORD (or TATA_TELE_API_TOKEN) in the API environment',
+      );
+    }
+    // Before the number check: a person outside cloud calling by choice
+    // (0083) often has no number on purpose, and "set your number" would be
+    // exactly the wrong advice. The UI hides their button; this holds the
+    // rule against a stale tab.
+    if (!ctx.me.cloud_calling) {
+      throw conflict(
+        'cloud calling is switched off for you - you call from an office or personal phone, '
+          + 'and write the call down with "Log a call". An admin can change this on Admin > Users.',
       );
     }
     if (!ctx.me.dialing_msisdn) {

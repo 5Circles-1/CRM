@@ -362,7 +362,19 @@ Do not undo these without understanding why they exist.
   never silently downgraded to the plain phone message. The Power dial
   screen shows the server's own ringing message (which leg, and why) rather
   than asserting "your phone", and each click's `lead_events` payload
-  records which leg rang. A CDR answered on
+  records which leg rang. **Some of the floor is outside cloud calling by
+  choice** (0083, owner request 2 Oct): they call from office or personal
+  phones, hold no Smartflo line, and the owner wants no personal numbers
+  stored for them — but the coverage panel named each of them a problem
+  ("no Dialing number") forever, and an alarm that can never clear teaches
+  the admin to ignore the panel. `users.cloud_calling` off records the
+  choice: they leave `v_tata_tele_coverage` (the health counts and watchdog
+  follow the view), `/me` hides their Call button and Power dial, and
+  `POST /leads/:id/call` refuses them with a 409 that says why, so a stale
+  tab cannot ring anyone. Working leads and "Log a call" are untouched —
+  their dials simply stay unverified, which is true. The 📵 switch is in
+  the SIM modal and one click on the panel's coverage rows; flipping it
+  never touches the stored number. A CDR answered on
   a softphone reports the *extension*, no one's Dialing number, so the
   ingester resolves agent identifiers through the roster cache before
   quarantining, and stores the person's own msisdn — the mapping stays one

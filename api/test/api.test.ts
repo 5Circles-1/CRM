@@ -5365,6 +5365,55 @@ describe('tata tele: the dialler and the sensor on one verification pipeline', (
     delete h.app.tataTele;
   });
 
+  it('a person outside cloud calling by choice is a decision, not a gap (0083)', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    h.app.tataTele = {
+      baseUrl: '',
+      clickToCall: async () => {
+        throw new Error('a click for a person outside cloud calling must never reach Smartflo');
+      },
+    };
+
+    // The one-click on the panel sends only the choice; the stored number
+    // must survive it - it may still verify companion-app calls.
+    const set = await h.app.inject({
+      method: 'PUT', url: `/admin/users/${USERS.callerB1}/dialing-msisdn`,
+      headers: auth(admin), payload: { cloudCalling: false },
+    });
+    assert.equal(set.statusCode, 200, set.body);
+    assert.equal(set.json().cloud_calling, false);
+    assert.equal(set.json().dialing_msisdn, '+919000000003', 'only the choice flipped');
+
+    // The Call button and Power dial key on me.cloud_calling.
+    const caller = await login(h.app, EMAILS.callerB1);
+    const meRes = await h.app.inject({ method: 'GET', url: '/me', headers: auth(caller) });
+    assert.equal(meRes.json().cloud_calling, false, 'no button for a person who chose the office phone');
+
+    // A stale tab still holds a button; the route holds the rule.
+    const officeLead = makeLeadFor(USERS.callerB1, 'Office Phone Client');
+    const refused = await h.app.inject({
+      method: 'POST', url: `/leads/${officeLead}/call`, headers: auth(caller),
+    });
+    assert.equal(refused.statusCode, 409, refused.body);
+    assert.match(refused.json().message, /cloud calling is switched off for you/i);
+
+    // Even with no number at all, coverage names them nowhere: before 0083
+    // that was a 'no_number' alarm nothing could ever clear.
+    fixtureSql(`update crm.users set dialing_msisdn = null where id = '${USERS.callerB1}';`);
+    const health = await h.app.inject({
+      method: 'GET', url: '/integrations/tata-tele/health', headers: auth(admin),
+    });
+    assert.ok(
+      !health.json().coverage.some((c) => c.user_id === USERS.callerB1),
+      'a deliberate choice is never listed as a Smartflo gap',
+    );
+
+    fixtureSql(`update crm.users
+                   set cloud_calling = true, dialing_msisdn = '+919000000003'
+                 where id = '${USERS.callerB1}';`);
+    delete h.app.tataTele;
+  });
+
   it('an upstream failure is a 502 that says whose fault it is - and the failed click is still a row', async () => {
     const caller = await login(h.app, EMAILS.callerA1);
     const failLead = makeLeadFor(USERS.callerA1, 'Unlucky Client');

@@ -50,7 +50,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return req.tx((q) =>
       q.many(
         `select u.id, u.full_name, u.email, u.role, u.employee_code, u.is_active,
-                u.dialing_msisdn, u.ring_softphone, u.avatar_url,
+                u.dialing_msisdn, u.ring_softphone, u.cloud_calling, u.avatar_url,
                 crm.team_of(u.id, current_date) as team_id,
                 t.name as team_name, tm.rotation_order,
                 crm.tier_of(u.id) as tier,
@@ -370,15 +370,22 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const { id } = z.object({ id: uuid }).parse(req.params);
     const body = z
       .object({
-        dialingMsisdn: z.string().max(20).nullable(),
+        // Omitted leaves the number as it is; null clears it. The 0083
+        // one-click "not on cloud calling" must not have to resend a
+        // number just to flip the choice.
+        dialingMsisdn: z.string().max(20).nullable().optional(),
         // Ring the Smartflo softphone (browser headset) instead of the
         // phone (0082). Optional so the coverage panel's number-only saves
         // leave the choice untouched.
         ringSoftphone: z.boolean().optional(),
+        // Off: this person deliberately calls from an office or personal
+        // phone (0083) - no Call button, click-to-call refuses them, and
+        // the coverage panel stops naming them as a gap.
+        cloudCalling: z.boolean().optional(),
       })
       .parse(req.body);
 
-    if (body.dialingMsisdn !== null) {
+    if (typeof body.dialingMsisdn === 'string') {
       const norm = await req.tx((q) =>
         q.one<{ normalise_phone: string | null; holder: string | null }>(
           `select crm.normalise_phone($1) as normalise_phone,
@@ -404,11 +411,17 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const row = await req.tx(async (q) => {
       const updated = await q.one(
         `update crm.users
-            set dialing_msisdn = crm.normalise_phone($2),
-                ring_softphone = coalesce($3, ring_softphone)
+            set dialing_msisdn = case when $2::boolean
+                                      then crm.normalise_phone($3)
+                                      else dialing_msisdn end,
+                ring_softphone = coalesce($4, ring_softphone),
+                cloud_calling  = coalesce($5, cloud_calling)
           where id = $1
-          returning id, full_name, dialing_msisdn, ring_softphone`,
-        [id, body.dialingMsisdn, body.ringSoftphone ?? null],
+          returning id, full_name, dialing_msisdn, ring_softphone, cloud_calling`,
+        [
+          id, body.dialingMsisdn !== undefined, body.dialingMsisdn ?? null,
+          body.ringSoftphone ?? null, body.cloudCalling ?? null,
+        ],
       );
       if (!updated) throw notFound('no user with that id');
       // The number is the Smartflo mapping: apply it now, so the agent maps

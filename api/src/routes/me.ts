@@ -18,6 +18,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
                 crm.team_of(u.id, current_date) as team_id,
                 t.name as team_name,
                 crm.is_on_shift(u.id) as on_shift,
+                u.cloud_calling as user_cloud_calling,
                 crm.setting_bool('tata_tele.enabled', false) as tata_tele_enabled
            from crm.users u
            left join crm.teams t on t.id = crm.team_of(u.id, current_date)
@@ -26,9 +27,15 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       );
       if (!row) return row;
       // The UI shows the Call button only when a click could actually place
-      // a call: the integration is on AND this server holds credentials.
-      const { tata_tele_enabled, ...rest } = row;
-      return { ...rest, cloud_calling: Boolean(tata_tele_enabled) && Boolean(app.tataTele) };
+      // a call: the integration is on, this server holds credentials, AND
+      // this person uses cloud calling at all (0083) - someone who calls
+      // from an office phone by choice gets no button to press.
+      const { tata_tele_enabled, user_cloud_calling, ...rest } = row;
+      return {
+        ...rest,
+        cloud_calling:
+          Boolean(tata_tele_enabled) && Boolean(app.tataTele) && user_cloud_calling !== false,
+      };
     });
   });
 
