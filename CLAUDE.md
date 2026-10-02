@@ -79,6 +79,17 @@ Do not undo these without understanding why they exist.
   team is grouped first so crossing one stays a decision rather than a slip,
   and a RESTRICTED caller stays on the list: that tier stops the *engine*
   handing them fresh leads, never a human handing them one by name.
+  **A moved lead takes its pending callback with it** (0083, floor report
+  2 Oct): `callbacks.assigned_to` is what rings, and a transfer that left it
+  behind kept ringing the old caller — for a lead RLS no longer let them
+  open — while the new caller's first save collided with the stale pending
+  row and died on the floor as "new row violates row-level security policy
+  (USING expression)", blocking the dialler. `transfer_lead` and
+  `assign_unowned_lead` now re-point it exactly as `hand_over_leads` always
+  did, existing strays were repaired in the migration, and the
+  `callbacks_update` policy admits whoever may *work* the lead
+  (`crm.can_work_lead`, the `leads_update` rule as a predicate) — a caller
+  still cannot touch a callback on a lead that is not theirs.
 
 - **A fresh lead with no caller can be assigned by an admin — by choice,
   never on its own** (0079, owner request 29 Sep). A lead parked "no caller"
