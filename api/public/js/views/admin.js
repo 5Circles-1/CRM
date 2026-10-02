@@ -198,7 +198,9 @@ async function users(body, me) {
               ? '<span class="badge b-bad" title="Receives no fresh leads">restricted</span>'
               : '<span class="badge b-mute">standard</span>'}
             ${u.tier_pinned ? '<span class="hint" title="An admin pinned this; the daily ranking will not change it until the pin expires">📌</span>' : ''}</td>
-          <td class="mono">${esc(u.dialing_msisdn ?? '—')}${u.ring_softphone
+          <td class="mono">${u.cloud_calling === false
+            ? '<span title="Does not use cloud calling — calls from an office or personal phone by choice; no Call button, never a Smartflo gap">📵</span>'
+            : esc(u.dialing_msisdn ?? '—')}${u.ring_softphone
             ? ' <span title="Click-to-call rings their Smartflo softphone (browser headset); this phone is the fallback">🎧</span>' : ''}</td>
           <td>${u.is_active ? '<span class="badge b-ok">active</span>' : '<span class="badge b-mute">deactivated</span>'}</td>
           <td class="right">${me.role !== 'admin' ? '' : u.is_active
@@ -426,6 +428,14 @@ function simModal(user, onDone, freeAgents = []) {
         switched on here — and the Smartflo Softphone logged in on their computer, their
         row green on Smartflo's Extension Status page. If the softphone cannot be rung,
         the call falls back to this phone on its own, so this is always safe to switch on.</p>`}
+      ${user.cloud_calling === undefined ? '' : `
+      <label class="f" style="flex-direction:row;align-items:center;gap:8px">
+        <input type="checkbox" name="nocloud" ${user.cloud_calling === false ? 'checked' : ''}>
+        📵 Doesn't use cloud calling — calls from an office or personal phone
+      </label>
+      <p class="hint">Their choice, not a gap: no Call button or Power dial, and the Tata Tele
+        panel stops listing them. They still work leads and write calls down with “Log a call”.
+        The number above can stay empty.</p>`}
       ${freeAgents.length === 0 ? '' : `
       <div class="hint">Smartflo agents nobody answers yet:
         ${freeAgents.map((a) => `
@@ -448,19 +458,29 @@ function simModal(user, onDone, freeAgents = []) {
     const act = e.target.dataset?.act;
     if (!act) return;
     const value = act === 'clear' ? null : bodyEl.querySelector('[name=msisdn]').value.trim();
-    if (act === 'save' && !value) { toast('Enter a number, or use Clear.', 'err'); return; }
     const softphoneBox = bodyEl.querySelector('[name=softphone]');
+    const noCloudBox = bodyEl.querySelector('[name=nocloud]');
+    // A person outside cloud calling needs no number, so Save without one is
+    // then a real choice, not a slip.
+    if (act === 'save' && !value && !noCloudBox?.checked) {
+      toast('Enter a number, or use Clear.', 'err');
+      return;
+    }
     try {
       const r = await put(`/admin/users/${user.id}/dialing-msisdn`, {
-        dialingMsisdn: value,
+        // An empty field under the 📵 choice leaves whatever number is
+        // stored untouched; Clear still clears it explicitly.
+        ...(act === 'clear' || value ? { dialingMsisdn: value } : {}),
         // Only when the modal rendered the choice: the coverage panel's
         // number-only path must never silently flip it.
         ...(softphoneBox ? { ringSoftphone: softphoneBox.checked } : {}),
+        ...(noCloudBox ? { cloudCalling: !noCloudBox.checked } : {}),
       });
       const released = Number(r?.held_calls_released ?? 0);
-      toast(!value ? 'Dialing SIM cleared.'
-        : released ? `Dialing SIM saved — ${released} held call record${released === 1 ? '' : 's'} released to them.`
-          : 'Dialing SIM saved.');
+      toast(act === 'clear' ? 'Dialing SIM cleared.'
+        : !value ? 'Saved.'
+          : released ? `Dialing SIM saved — ${released} held call record${released === 1 ? '' : 's'} released to them.`
+            : 'Dialing SIM saved.');
       close();
       onDone();
     } catch (err) {
@@ -967,7 +987,9 @@ function renderTataTele(body, tt, me, redraw, { people = [], teams = [] } = {}) 
       <b>${esc(c.full_name)}</b> <span class="hint">${esc(c.role)}</span>
       ${c.dialing_msisdn ? `<span class="mono">${esc(c.dialing_msisdn)}</span>` : ''}
       ${isAdmin ? `<button class="btn small" data-set-number="${esc(c.user_id)}">${
-        c.dialing_msisdn ? 'Change number' : 'Set number'}</button>` : ''}
+        c.dialing_msisdn ? 'Change number' : 'Set number'}</button>
+      <button class="btn small" data-no-cloud="${esc(c.user_id)}" data-testid="tt-no-cloud"
+        title="They call from an office or personal phone by choice — remove their Call button and stop listing them here">📵 Not on cloud calling</button>` : ''}
     </li>`;
 
   const agentRow = (a) => `
@@ -1139,6 +1161,23 @@ function renderTataTele(body, tt, me, redraw, { people = [], teams = [] } = {}) 
       if (c) {
         simModal({ id: c.user_id, full_name: c.full_name, dialing_msisdn: c.dialing_msisdn },
           redraw, unmapped);
+      }
+      return;
+    }
+
+    if (btn.dataset.noCloud) {
+      const c = coverage.find((x) => x.user_id === btn.dataset.noCloud);
+      if (!c) return;
+      btn.disabled = true;
+      try {
+        // Only the choice flips; whatever number is stored stays stored.
+        await put(`/admin/users/${c.user_id}/dialing-msisdn`, { cloudCalling: false });
+        toast(`${c.full_name} is marked as not on cloud calling — their choice, no longer a gap. `
+          + 'Their SIM button on Admin → Users undoes it.');
+        await redraw();
+      } catch (err) {
+        btn.disabled = false;
+        toast(err.message, 'err');
       }
       return;
     }
