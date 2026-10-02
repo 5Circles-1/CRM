@@ -565,6 +565,113 @@ begin
     coalesce(v_msg, 'no refusal was raised at all'));
 end $$;
 
+-- A lead that changes hands takes its pending callback with it (0084). Found
+-- on the floor, 2 Oct: after a transfer the client's booked time kept ringing
+-- the OLD caller - for a lead RLS no longer let them open - and the new
+-- caller's first save crashed against the stale pending row.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                       status, next_action_at, next_action_note)
+values (:SRC, 'Moved With Booking', '+919555000083', :A1, :TEAM_A, 'callback',
+        now() + interval '1 day', 'Visit booked');
+
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+select id, :A1, :A1, now() + interval '1 day', 'Client chose tomorrow 11am'
+  from crm.leads where full_name = 'Moved With Booking';
+
+select crm.transfer_lead((select id from crm.leads where full_name = 'Moved With Booking'),
+                         :A2, 'not_answered_streak', :CNS_A, 'booking travels too');
+
+select crm_test.check(
+  'R8', 'the pending callback follows the transferred lead - assigned_to is what rings',
+  (select cb.assigned_to = :A2 and cb.status = 'pending'
+     from crm.callbacks cb join crm.leads l on l.id = cb.lead_id
+    where l.full_name = 'Moved With Booking'),
+  (select 'assigned_to ' || cb.assigned_to from crm.callbacks cb
+     join crm.leads l on l.id = cb.lead_id where l.full_name = 'Moved With Booking'));
+
+select crm_test.check(
+  'R8', 'and keeps the time and words the client chose',
+  (select cb.scheduled_at > now() + interval '20 hours'
+          and cb.note = 'Client chose tomorrow 11am'
+     from crm.callbacks cb join crm.leads l on l.id = cb.lead_id
+    where l.full_name = 'Moved With Booking'), null);
+
+-- Whoever may work the lead may update its callback. A pending callback
+-- booked by (and assigned to) the counsellor, on a caller's own lead, far
+-- enough out that logging a call does not complete it: before 0084 the
+-- caller's save collided with it, and Postgres answered the ON CONFLICT
+-- update of a row outside callbacks_update USING with "new row violates
+-- row-level security policy (USING expression)" - an ordinary save, refused
+-- with the words of a server crash, on the lead page and the dialler alike.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                       status, next_action_at, next_action_note)
+values (:SRC, 'Promise Not Mine', '+919555000084', :A1, :TEAM_A, 'working',
+        now() - interval '1 hour', 'Follow up');
+
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+select id, :CNS_A, :CNS_A, now() + interval '2 days', 'Counsellor promised the client'
+  from crm.leads where full_name = 'Promise Not Mine';
+
+set role crm_app;
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000001', false) as _ \gset
+
+-- The exact two statements POST /leads/:id/calls runs, as the caller, through
+-- RLS: the attempt (whose trigger touches the pending callback), then the
+-- one-live-callback-per-lead upsert carrying the follow-up the caller chose.
+do $$
+declare v_lead uuid := (select id from crm.leads where full_name = 'Promise Not Mine');
+begin
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, '22222222-0000-0000-0000-000000000001', 'not_answered', 0);
+
+  insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+  values (v_lead, '22222222-0000-0000-0000-000000000001',
+          '22222222-0000-0000-0000-000000000001',
+          now() + interval '1 day', 'caller rebooked')
+  on conflict (lead_id) where status = 'pending'
+  do update set scheduled_at = excluded.scheduled_at, note = excluded.note;
+
+  perform crm_test.check(
+    'R8', 'a caller''s save gets past a callback booked for somebody else', true, null);
+exception when others then
+  perform crm_test.check(
+    'R8', 'a caller''s save gets past a callback booked for somebody else',
+    false, sqlstate || ': ' || sqlerrm);
+end $$;
+
+select crm_test.check(
+  'R8', 'the rebooking moved the one pending callback rather than stacking a second',
+  (select count(*) = 1
+          and bool_and(cb.note = 'caller rebooked'
+                       and cb.scheduled_at > now() + interval '20 hours')
+     from crm.callbacks cb join crm.leads l on l.id = cb.lead_id
+    where l.full_name = 'Promise Not Mine' and cb.status = 'pending'), null);
+
+-- But a lead that is NOT theirs stays out of reach: the policy widened to the
+-- lead's own workers, not to the floor.
+select set_config('app.user_id', '22222222-0000-0000-0000-000000000003', false) as _ \gset
+
+do $$
+declare v_rows int;
+begin
+  update crm.callbacks set note = 'hijacked'
+   where note = 'caller rebooked' and status = 'pending';
+  get diagnostics v_rows = row_count;
+  perform crm_test.check(
+    'R8', 'a caller on the other team cannot touch another caller''s callback',
+    v_rows = 0, v_rows || ' row(s) were updatable across the fence');
+end $$;
+
+reset role;
+
+-- Keep the fixtures out of the live views for everything that follows.
+update crm.callbacks set status = 'cancelled'
+ where status = 'pending'
+   and lead_id in (select id from crm.leads
+                    where full_name in ('Moved With Booking', 'Promise Not Mine'));
+update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+ where full_name in ('Moved With Booking', 'Promise Not Mine');
+
 -- A fresh lead with NO caller can be handed to a named caller - by an admin,
 -- by choice, and by nobody else (0079). It is an assignment, not a transfer:
 -- the lead never had an owner, so it spends none of lead.max_transfers.
