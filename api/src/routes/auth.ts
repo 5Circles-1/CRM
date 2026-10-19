@@ -5,13 +5,18 @@ import { badRequest, unauthorized } from '../http/errors.ts';
 
 export async function authRoutes(
   app: FastifyInstance,
-  opts: { cookieName: string; secureCookies: boolean },
+  opts: { cookieName: string; secureCookies: boolean; cookieDomain?: string },
 ): Promise<void> {
   const cookieOptions = {
     httpOnly: true,
     sameSite: 'lax' as const,
     secure: opts.secureCookies,
     path: '/',
+    // Unset by default, which leaves the cookie host-only exactly as before.
+    // Set COOKIE_DOMAIN to '.optionlab.co.in' and the session is presented to
+    // hr.optionlab.co.in too, so the team signs in once rather than twice.
+    // setCookie and clearCookie share this object, so logout keeps working.
+    ...(opts.cookieDomain ? { domain: opts.cookieDomain } : {}),
   };
 
   app.post('/auth/login', async (req, reply) => {

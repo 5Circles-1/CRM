@@ -4,6 +4,8 @@ export interface Config {
   databaseUrl: string;
   cookieName: string;
   secureCookies: boolean;
+  /** Share the session with a sibling subdomain, e.g. '.optionlab.co.in'. */
+  cookieDomain?: string;
   logLevel: string;
 }
 
@@ -21,6 +23,7 @@ export function loadConfig(): Config {
     cookieName: process.env.SESSION_COOKIE_NAME ?? 'crm_session',
     // Cookies are Secure unless explicitly running plain HTTP for local dev.
     secureCookies: process.env.INSECURE_COOKIES !== 'true',
+    cookieDomain: process.env.COOKIE_DOMAIN?.trim() || undefined,
     logLevel: process.env.LOG_LEVEL ?? 'info',
   };
 }

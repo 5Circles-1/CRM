@@ -61,6 +61,7 @@ export async function buildServer(config: Config, db?: Database): Promise<Fastif
     await authRoutes(scope, {
       cookieName: config.cookieName,
       secureCookies: config.secureCookies,
+      cookieDomain: config.cookieDomain,
     });
     await meRoutes(scope);
     await leadRoutes(scope);
