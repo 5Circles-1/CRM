@@ -67,7 +67,10 @@ Do not undo these without understanding why they exist.
   would own anything. Enforced inside `crm.transfer_lead`, not in the UI.
   Capped at `lead.max_transfers` (2), then the lead goes to nurture.
   **The "Give to" picker offers exactly what `crm.transfer_lead` accepts — every
-  active caller.** `/transfers/targets` used to narrow that to the *acting*
+  active caller or counsellor** (a counsellor takes the lead into their own
+  counsellor queue, 0085; a paying client may only go to a counsellor, because
+  `caller_id` on a won lead is the win's credit). `/transfers/targets` used to
+  narrow that to the *acting*
   user's team: an admin holds no team membership, so the comparison was
   `= crm.current_user_team()` against NULL, the dropdown rendered empty, and
   every Transfer button on Floor could only answer "No caller available to
@@ -108,7 +111,8 @@ Do not undo these without understanding why they exist.
   Fresh also lists re-enquiries whatever their status, and a repeat enquiry
   leaves a *won* lead won — so a paying client who enquired again showed "no
   caller" with a button that could only be refused. new/working/callback go
-  to a caller; qualified/negotiation and paying clients (won/handed_off) go
+  to a caller or counsellor (0085); qualified/negotiation and paying clients
+  (won/handed_off) go
   to a **counsellor**, preselected as the one who closed their latest deal
   (`crm.last_deal_counsellor`). A won lead is never handed to a caller:
   `leads.caller_id` is who gets credit for the win, so that would quietly
@@ -122,17 +126,36 @@ Do not undo these without understanding why they exist.
   clients' booked callbacks rang nobody. Transfer, one lead at a time, was
   refused outright on any lead already moved twice. `crm.hand_over_leads`
   (admin only, 42501; the leaver must already be deactivated, 23514) moves
-  every lead in their name to one active caller — lost and nurture included,
+  every lead in their name to one active caller or counsellor (0085) — lost
+  and nurture included,
   because a re-enquiry reopens those with their owner — **except paying
   clients** (won/handed_off), whose `caller_id` is the win's credit. Nothing is
   copied: call attempts, notes and the timeline hang off the lead, so the new
-  caller reads every response the client gave, marked with the leaver's name.
+  owner reads every response the client gave, marked with the leaver's name.
   Follow-up dates stay as the leaver agreed them, pending callbacks are
   re-pointed (`callbacks.assigned_to` is what rings), and no transfer is spent:
   a departure is not a judgement about any lead. Each lead still gets a
   `lead_transfers` row (`caller_unavailable`), so its page says where it came
   from. The **Hand over N leads** button shows only on a deactivated caller's
-  row in Admin → Users.
+  or counsellor's row in Admin → Users; a departed counsellor's book is
+  counselling work and goes only to another counsellor.
+
+- **Two or three people are a whole floor — a counsellor receives leads like
+  a caller** (0085, owner decision 30 Oct; the reset itself is
+  `docs/small-team-refresh.md`). The floor shrank to 2–3 people who each work
+  a lead end to end, and the counsellor role is that role — it dials its own
+  queue, closes deals, records walk-ins, transfers — except it could not
+  *receive* a lead. Four caller-only assumptions fixed, all the same
+  assumption: cover now spreads across the on-floor counsellors
+  (least-covered-today then rotation, instead of first-in-rotation drowning);
+  the stuck→re-tap park applies only to leads the ladder actually escalated
+  (`escalated_at` is the mark — before this, a covering counsellor's FIRST
+  failed dial on a brand-new covered lead parked it); and Transfer, Assign
+  and Hand over all accept a counsellor, who takes the lead into their own
+  counsellor queue. Deliberately unchanged: distribution still prefers
+  callers whenever one is eligible, and the escalation ladder, tiers, the
+  ACE seat and the 15-day stale mover stay caller-only and simply idle on a
+  floor that has none — hire a caller and it all wakes up, nothing to undo.
 
 - **Every refusal carries a SQLSTATE, or it reaches the floor as a crash**
   (0073). `crm.transfer_lead` makes six checks. Three raised bare, and a bare
@@ -169,8 +192,9 @@ Do not undo these without understanding why they exist.
   action on them would invent a missing setting.
 
 - **Absence is covered forward, never sideways** (0056, owner decision). A
-  fresh lead whose team has no caller on the floor goes to the team lead
-  (counsellor) if they are on the floor; otherwise it parks visibly. The
+  fresh lead whose team has no caller on the floor goes to an on-floor
+  counsellor of the team — the one who has received the fewest leads today,
+  rotation breaking ties (0085) — otherwise it parks visibly. The
   escalation ladder hands up only to an on-floor counsellor — an absent
   counsellor's share stays with the callers. Owned leads never move because
   of an absence: only new work routes around an empty chair.

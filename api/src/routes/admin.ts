@@ -58,11 +58,17 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
                  and (pt.pin_expires_at is null or pt.pin_expires_at > now())) as tier_pinned,
                 pt.pin_reason as tier_pin_reason,
                 pt.pin_expires_at as tier_pin_expires_at,
-                -- Leads still in a departed caller's name, less the sales
+                -- Leads still in a departed person's name, less the sales
                 -- that stay theirs: the number the Hand over button moves.
+                -- A counsellor's book is the queue that is actually theirs; a
+                -- dormant counsellor_id on a caller-stage lead is history.
                 case when not u.is_active and u.role = 'caller' then
                   (select count(*) from crm.leads l
                     where l.caller_id = u.id and l.status not in ('won', 'handed_off'))
+                     when not u.is_active and u.role = 'counsellor' then
+                  (select count(*) from crm.leads l
+                    where l.counsellor_id = u.id and l.escalation_stage = 'counsellor'
+                      and l.status not in ('won', 'handed_off'))
                 end as leads_held
            from crm.users u
            left join crm.team_memberships tm

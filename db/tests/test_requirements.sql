@@ -43,6 +43,7 @@ grant execute on function crm_test.check(text, text, boolean, text) to crm_app;
 \set B1     '''22222222-0000-0000-0000-000000000003'''
 \set B2     '''22222222-0000-0000-0000-000000000004'''
 \set CNS_A  '''22222222-0000-0000-0000-000000000005'''
+\set CNS_B  '''22222222-0000-0000-0000-000000000006'''
 \set ADMIN  '''22222222-0000-0000-0000-00000000000a'''
 \set SRC    '''33333333-0000-0000-0000-000000000001'''
 \set SRC_IMM '''33333333-0000-0000-0000-000000000002'''
@@ -517,17 +518,18 @@ do $$
 declare v_lead uuid;
 begin
   select id into v_lead from crm.leads where full_name = 'Lead 6';
-  -- A counsellor is not a caller, so they cannot be handed a lead this way.
-  perform crm.transfer_lead(v_lead, '22222222-0000-0000-0000-000000000006',
+  -- Ops holds no lead book: a target must be someone who works leads - an
+  -- active caller or counsellor (0085).
+  perform crm.transfer_lead(v_lead, '22222222-0000-0000-0000-00000000000b',
                             'load_balance', '22222222-0000-0000-0000-000000000005');
-  perform crm_test.check('R8', 'a target who is not an active caller is refused as a conflict',
-                         false, 'the transfer to a non-caller unexpectedly succeeded');
+  perform crm_test.check('R8', 'a target who cannot work leads is refused as a conflict',
+                         false, 'the transfer to the ops account unexpectedly succeeded');
 exception
   when check_violation then
-    perform crm_test.check('R8', 'a target who is not an active caller is refused as a conflict',
+    perform crm_test.check('R8', 'a target who cannot work leads is refused as a conflict',
                            true, null);
   when others then
-    perform crm_test.check('R8', 'a target who is not an active caller is refused as a conflict',
+    perform crm_test.check('R8', 'a target who cannot work leads is refused as a conflict',
                            false, 'wrong sqlstate: ' || sqlstate || ' - the API maps only coded refusals');
 end $$;
 
@@ -595,6 +597,103 @@ select crm_test.check(
           and cb.note = 'Client chose tomorrow 11am'
      from crm.callbacks cb join crm.leads l on l.id = cb.lead_id
     where l.full_name = 'Moved With Booking'), null);
+
+-- A counsellor can receive a transfer - into their own counsellor queue
+-- (0085). On a floor of two or three people everyone works a lead end to
+-- end, and before this the transfer feature had no legal target at all once
+-- the floor held no callers.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                       status, next_action_at, next_action_note)
+values (:SRC, 'Given To Counsellor', '+919555000085', :A1, :TEAM_A, 'working',
+        now() + interval '2 hours', 'Retry');
+
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+select id, :A1, :A1, now() + interval '3 days', 'Client chose Saturday'
+  from crm.leads where full_name = 'Given To Counsellor';
+
+select crm.transfer_lead((select id from crm.leads where full_name = 'Given To Counsellor'),
+                         :CNS_B, 'load_balance', :CNS_A, 'counsellor takes it end to end');
+
+select crm_test.check(
+  'R8', 'a counsellor can receive a transfer, into their own counsellor queue',
+  (select counsellor_id = :CNS_B and escalation_stage = 'counsellor'
+          and team_id = :TEAM_B and transfer_count = 1 and escalated_at is null
+     from crm.leads where full_name = 'Given To Counsellor'), null);
+
+select crm_test.check(
+  'R8', 'the lead now sits in that counsellor''s pipeline',
+  (select queue_owner_id = :CNS_B from crm.v_my_pipeline
+    where lead_id = (select id from crm.leads where full_name = 'Given To Counsellor')), null);
+
+select crm_test.check(
+  'R8', 'the booked callback rings the receiving counsellor now',
+  (select cb.assigned_to = :CNS_B and cb.status = 'pending'
+     from crm.callbacks cb join crm.leads l on l.id = cb.lead_id
+    where l.full_name = 'Given To Counsellor'), null);
+
+-- A transferred lead is not an escalated one: the counsellor's first failed
+-- dial keeps the retry schedule. The stuck->re-tap park is for two-strike
+-- escalations, which the ladder marks with escalated_at (0085).
+do $$
+declare v_lead uuid := (select id from crm.leads where full_name = 'Given To Counsellor');
+begin
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, '22222222-0000-0000-0000-000000000006', 'not_answered', 0);
+end $$;
+
+select crm_test.check(
+  'R8', 'the counsellor''s failed dial on a transferred lead keeps the retry, never the re-tap park',
+  (select status in ('working', 'callback') and pool is distinct from 'retap'
+          and next_action_at is not null
+     from crm.leads where full_name = 'Given To Counsellor'),
+  (select status || ' / ' || coalesce(pool, 'no pool')
+     from crm.leads where full_name = 'Given To Counsellor'));
+
+-- "Already with" means the queue the lead sits in NOW, so handing it back
+-- down to the caller it came from is a legitimate move, not a no-op (0085).
+select crm.transfer_lead((select id from crm.leads where full_name = 'Given To Counsellor'),
+                         :A1, 'load_balance', :CNS_A, 'back to the caller');
+
+select crm_test.check(
+  'R8', 'a counsellor-stage lead can be handed back down to its own caller',
+  (select caller_id = :A1 and escalation_stage = 'caller' and transfer_count = 2
+     from crm.leads where full_name = 'Given To Counsellor'), null);
+
+-- A paying client's follow-up is counselling work. leads.caller_id on a won
+-- lead is the win's credit (0080): handing it to a caller would quietly move
+-- a past sale, so only a counsellor may take it.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id,
+                       status, closed_at)
+values (:SRC, 'Paying Not Moved', '+919555000086', :A1, :TEAM_A, 'won', now());
+
+do $$
+declare v_lead uuid := (select id from crm.leads where full_name = 'Paying Not Moved');
+begin
+  perform crm.transfer_lead(v_lead, '22222222-0000-0000-0000-000000000002',
+                            'load_balance', '22222222-0000-0000-0000-000000000005');
+  perform crm_test.check('R8', 'a paying client is never transferred to a caller - the sale would move',
+                         false, 'the transfer of a won lead to a caller unexpectedly succeeded');
+exception when check_violation then
+  perform crm_test.check('R8', 'a paying client is never transferred to a caller - the sale would move',
+                         true, null);
+end $$;
+
+select crm.transfer_lead((select id from crm.leads where full_name = 'Paying Not Moved'),
+                         :CNS_A, 'load_balance', :CNS_A, 'client called again');
+
+select crm_test.check(
+  'R8', 'a paying client transferred to a counsellor keeps the sale exactly where it was',
+  (select status = 'won' and caller_id = :A1 and counsellor_id = :CNS_A
+          and escalation_stage = 'counsellor' and closed_at is not null
+     from crm.leads where full_name = 'Paying Not Moved'), null);
+
+-- Keep the fixtures out of the live views for everything that follows.
+update crm.callbacks set status = 'cancelled'
+ where status = 'pending'
+   and lead_id in (select id from crm.leads where full_name = 'Given To Counsellor');
+update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+ where full_name = 'Given To Counsellor';
+update crm.leads set next_action_at = null where full_name = 'Paying Not Moved';
 
 -- Whoever may work the lead may update its callback. A pending callback
 -- booked by (and assigned to) the counsellor, on a caller's own lead, far
@@ -806,6 +905,35 @@ begin
 exception when check_violation then
   perform crm_test.check('R8', 'a lost lead is refused - reopen it first', true, null);
 end $$;
+
+-- Fresh work can be hand-assigned to a counsellor too (0085): on a floor
+-- staffed by counsellors the Assign button must not be a dead end.
+insert into crm.leads (source_id, full_name, phone_e164, team_id, status,
+                       next_action_at, first_touch_due_at)
+values (:SRC, 'Parked For Counsellor', '+919555000087', :TEAM_A, 'new',
+        now() - interval '1 day', now() - interval '1 day');
+
+select crm.assign_unowned_lead((select id from crm.leads where full_name = 'Parked For Counsellor'),
+                               :CNS_B, :ADMIN, 'no caller on the floor today');
+
+select crm_test.check(
+  'R8', 'the admin can hand a fresh unowned lead to a counsellor, into their own queue',
+  (select counsellor_id = :CNS_B and escalation_stage = 'counsellor'
+          and caller_id is null and status = 'working' and escalated_at is null
+          and transfer_count = 0
+          and first_touch_due_at < now() - interval '20 hours'
+     from crm.leads where full_name = 'Parked For Counsellor'), null);
+
+select crm_test.check(
+  'R8', 'that assignment too is on the record as the admin''s choice',
+  (select exists (select 1 from crm.distribution_events de
+                   where de.lead_id = l.id and de.strategy = 'assigned_by_admin'
+                     and de.caller_id = :CNS_B)
+     from crm.leads l where full_name = 'Parked For Counsellor'), null);
+
+-- Keep the fixture out of the live views for everything that follows.
+update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+ where full_name = 'Parked For Counsellor';
 
 -- The automatic sweep SHIPS DISABLED (0049): the floor's rule is that a lead
 -- stays with its caller until a counsellor moves it by hand. First prove the
@@ -2758,6 +2886,82 @@ select crm_test.check(
      from crm.v_lead_flow_summary s),
   (select 'unassigned=' || s.unassigned || ' covered=' || s.covered
      from crm.v_lead_flow_summary s));
+
+-- A covered lead is the counsellor's FIRST attempt at the client, not a
+-- two-strike escalation: their failed dial keeps the retry schedule instead
+-- of parking the lead in the re-tap pool (0085). Before this, one
+-- not_answered on a brand-new covered lead and it left the pipeline.
+do $$
+declare v_lead uuid := (select id from crm.leads where full_name = 'Covered Fresh');
+begin
+  insert into crm.call_attempts (lead_id, user_id, disposition, duration_seconds)
+  values (v_lead, '22222222-0000-0000-0000-000000000005', 'not_answered', 0);
+end $$;
+
+select crm_test.check(
+  'CVR', 'the counsellor''s failed dial on a covered lead keeps the retry, never the re-tap park',
+  (select status = 'working' and pool is distinct from 'retap' and next_action_at is not null
+     from crm.leads where full_name = 'Covered Fresh'),
+  (select status || ' / ' || coalesce(pool, 'no pool')
+     from crm.leads where full_name = 'Covered Fresh'));
+
+-- Several counsellors on the floor share the cover - least-covered-today,
+-- rotation breaking ties, not first-in-rotation-takes-all (0085). On a floor
+-- of two or three people staffed by counsellors this IS fresh distribution,
+-- so one person must not drown while the rest watch.
+insert into crm.users (id, full_name, email, role, employee_code) values
+  ('22222222-0000-0000-0000-0000000000c2', 'Second Counsellor', 'cns2@5circles.test',
+   'counsellor', 'CNS-X2');
+insert into crm.team_memberships (user_id, team_id, rotation_order)
+values ('22222222-0000-0000-0000-0000000000c2', :TEAM_A, 10);
+insert into crm.attendance_sessions (user_id, started_at)
+values ('22222222-0000-0000-0000-0000000000c2', now());
+
+do $$
+declare i int; v_lead uuid;
+begin
+  for i in 1..4 loop
+    insert into crm.leads (source_id, full_name, phone_e164, team_id)
+    values ('33333333-0000-0000-0000-000000000002', 'Covered Fair ' || i,
+            '+91989920032' || i, '11111111-0000-0000-0000-000000000001')
+    returning id into v_lead;
+    perform crm.assign_lead(v_lead);
+  end loop;
+end $$;
+
+select crm_test.check(
+  'CVR', 'with two counsellors on the floor the cover is shared, not dumped on the first in rotation',
+  (select count(distinct counsellor_id) = 2
+      and bool_and(counsellor_id is not null and escalation_stage = 'counsellor')
+     from crm.leads where full_name like 'Covered Fair %'),
+  (select string_agg(coalesce(u.full_name, 'nobody') || '=' || c.n, ', ')
+     from (select counsellor_id, count(*)::text as n from crm.leads
+            where full_name like 'Covered Fair %' group by counsellor_id) c
+     left join crm.users u on u.id = c.counsellor_id));
+
+select crm_test.check(
+  'CVR', 'after the run the counsellors'' received-today counts differ by at most one',
+  (select max(n) - min(n) <= 1 from (
+     select count(*) as n
+       from crm.distribution_events de
+      where crm.ist_date(de.decided_at) = crm.ist_date(now())
+        and de.caller_id in (:CNS_A, '22222222-0000-0000-0000-0000000000c2')
+      group by de.caller_id) t),
+  (select string_agg(n::text, ' vs ') from (
+     select count(*) as n
+       from crm.distribution_events de
+      where crm.ist_date(de.decided_at) = crm.ist_date(now())
+        and de.caller_id in (:CNS_A, '22222222-0000-0000-0000-0000000000c2')
+      group by de.caller_id) t));
+
+-- Keep the fixtures out of the live views for everything that follows: the
+-- second counsellor leaves the floor and the fair-cover leads close.
+update crm.attendance_sessions set ended_at = now()
+ where user_id = '22222222-0000-0000-0000-0000000000c2' and ended_at is null;
+update crm.users set is_active = false, deactivated_at = now()
+ where id = '22222222-0000-0000-0000-0000000000c2';
+update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+ where full_name like 'Covered Fair %';
 
 -- A caller returning must NOT pull the lead back off the leader.
 insert into crm.attendance_sessions (user_id, started_at) values (:A1, now());
@@ -5455,11 +5659,11 @@ update crm.users set is_active = false, deactivated_at = now() where id = :LEAVE
 do $$
 begin
   perform crm.hand_over_leads('22222222-0000-0000-0000-0000000000e1',
-                              '22222222-0000-0000-0000-000000000005');
-  perform crm_test.check('R8', 'a hand-over goes to an active caller, never a counsellor',
-                         false, 'hand-over to a counsellor unexpectedly succeeded');
+                              '22222222-0000-0000-0000-00000000000b');
+  perform crm_test.check('R8', 'a hand-over goes to someone who works leads - never the ops account',
+                         false, 'hand-over to the ops account unexpectedly succeeded');
 exception when check_violation then
-  perform crm_test.check('R8', 'a hand-over goes to an active caller, never a counsellor', true, null);
+  perform crm_test.check('R8', 'a hand-over goes to someone who works leads - never the ops account', true, null);
 end $$;
 
 select set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false) as _ \gset
@@ -5538,6 +5742,109 @@ select crm_test.check(
   (select count(*) = 0 from crm.leads where full_name = 'HO Won'), null);
 
 reset role;
+
+-- A departed person's book can be handed to a counsellor (0085). On a floor
+-- of two or three people who each work a lead end to end there may be no
+-- caller to receive a book at all.
+
+-- A caller's book, whole, into a counsellor's queue.
+\set LEAVER2 '''22222222-0000-0000-0000-0000000000e4'''
+insert into crm.users (id, full_name, email, role, employee_code) values
+  (:LEAVER2, 'Sanjay Left', 'leaver2@5circles.test', 'caller', 'CLR-E4');
+insert into crm.team_memberships (user_id, team_id, rotation_order) values
+  (:LEAVER2, :TEAM_A, 23);
+
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                       next_action_at, next_action_note)
+values (:SRC, 'HO To Counsellor', '+919555008105', :LEAVER2, :TEAM_A, 'working',
+        now() + interval '2 days', 'Call after the weekend');
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+select id, :LEAVER2, :LEAVER2, now() + interval '2 days', 'Client booked Monday'
+  from crm.leads where full_name = 'HO To Counsellor';
+
+update crm.users set is_active = false, deactivated_at = now() where id = :LEAVER2;
+
+select * from crm.hand_over_leads(:LEAVER2, :CNS_B, :ADMIN, 'left 28 Oct') \gset hoc_
+
+select crm_test.check(
+  'R8', 'a caller''s book can be handed, whole, to a counsellor',
+  :hoc_leads_moved = 1 and :hoc_callbacks_moved = 1 and :'hoc_to_name' = 'Counsellor B',
+  format('moved %s, callbacks %s, to %s', :hoc_leads_moved, :hoc_callbacks_moved, :'hoc_to_name'));
+
+select crm_test.check(
+  'R8', 'the handed lead sits in the counsellor''s own queue, and the leaver''s name leaves the book',
+  (select counsellor_id = :CNS_B and escalation_stage = 'counsellor'
+          and caller_id is null and team_id = :TEAM_B and escalated_at is null
+     from crm.leads where full_name = 'HO To Counsellor'), null);
+
+select crm_test.check(
+  'R8', 'and its booked callback now rings the counsellor',
+  (select c.assigned_to = :CNS_B and c.status = 'pending'
+     from crm.callbacks c join crm.leads l on l.id = c.lead_id
+    where l.full_name = 'HO To Counsellor'), null);
+
+-- A departed counsellor's book. It holds counselling work, so it goes to
+-- another counsellor, never down to a caller - and only the leads whose
+-- counsellor queue was theirs move: a dormant counsellor_id on a lead that is
+-- back at caller stage is history, not work.
+\set LEAVER3 '''22222222-0000-0000-0000-0000000000e5'''
+insert into crm.users (id, full_name, email, role, employee_code) values
+  (:LEAVER3, 'Meera Left', 'leaver3@5circles.test', 'counsellor', 'CNS-E5');
+insert into crm.team_memberships (user_id, team_id, rotation_order) values
+  (:LEAVER3, :TEAM_A, 24);
+
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, counsellor_id,
+                       escalation_stage, team_id, status, next_action_at, closed_at)
+values
+  (:SRC, 'HOC Queue Owned', '+919555008106', null, :LEAVER3, 'counsellor', :TEAM_A,
+   'working', now() + interval '1 day', null),
+  (:SRC, 'HOC Dormant Pointer', '+919555008107', :A1, :LEAVER3, 'caller', :TEAM_A,
+   'working', now() + interval '1 day', null),
+  (:SRC, 'HOC Won', '+919555008108', :A1, :LEAVER3, 'counsellor', :TEAM_A,
+   'won', null, now() - interval '10 days');
+insert into crm.callbacks (lead_id, created_by, assigned_to, scheduled_at, note)
+select id, :LEAVER3, :LEAVER3, now() + interval '1 day', 'Counselling follow-up'
+  from crm.leads where full_name = 'HOC Queue Owned';
+
+update crm.users set is_active = false, deactivated_at = now() where id = :LEAVER3;
+
+do $$
+begin
+  perform crm.hand_over_leads('22222222-0000-0000-0000-0000000000e5',
+                              '22222222-0000-0000-0000-0000000000e2',
+                              '22222222-0000-0000-0000-00000000000a');
+  perform crm_test.check('R8', 'a counsellor''s book is counselling work - a caller cannot receive it',
+                         false, 'hand-over of a counsellor''s book to a caller unexpectedly succeeded');
+exception when check_violation then
+  perform crm_test.check('R8', 'a counsellor''s book is counselling work - a caller cannot receive it',
+                         true, null);
+end $$;
+
+select * from crm.hand_over_leads(:LEAVER3, :CNS_B, :ADMIN, 'moved cities') \gset hod_
+
+select crm_test.check(
+  'R8', 'a departed counsellor''s queue moves to one counsellor; their sale stays theirs',
+  :hod_leads_moved = 1 and :hod_callbacks_moved = 1 and :hod_sales_kept = 1,
+  format('moved %s, callbacks %s, kept %s', :hod_leads_moved, :hod_callbacks_moved, :hod_sales_kept));
+
+select crm_test.check(
+  'R8', 'the queue-owned lead is the new counsellor''s now, callback included',
+  (select l.counsellor_id = :CNS_B and l.escalation_stage = 'counsellor'
+          and c.assigned_to = :CNS_B and c.status = 'pending'
+     from crm.leads l join crm.callbacks c on c.lead_id = l.id
+    where l.full_name = 'HOC Queue Owned'), null);
+
+select crm_test.check(
+  'R8', 'the dormant pointer and the won lead do not move - history and credit stay put',
+  (select bool_and(counsellor_id = :LEAVER3::uuid)
+     from crm.leads where full_name in ('HOC Dormant Pointer', 'HOC Won')), null);
+
+-- Keep the fixtures out of the live views for everything that follows.
+update crm.callbacks set status = 'cancelled'
+ where status = 'pending'
+   and lead_id in (select id from crm.leads where full_name in ('HO To Counsellor', 'HOC Queue Owned'));
+update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+ where full_name in ('HO To Counsellor', 'HOC Queue Owned', 'HOC Dormant Pointer');
 
 -- =============================================================================
 -- Results

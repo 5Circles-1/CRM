@@ -61,6 +61,7 @@ const WAIT_WHY = (w) => ({
  */
 const targetLabel = (t) =>
   `${t.full_name} — ${t.on_shift ? 'on floor' : 'off floor'}, ${Number(t.leads_today)} today`
+  + (t.role === 'counsellor' ? ' · counsellor' : '')
   + (t.tier === 'restricted' ? ' · restricted' : '');
 
 /** The same line, plus the team, for a picker that spans the whole floor. */
@@ -71,12 +72,17 @@ const bulkTargetLabel = (t) => esc(`${targetLabel(t)}${t.team_name ? ` · ${t.te
  *
  * Everyone active is offered, because crm.transfer_lead() accepts everyone
  * active - a picker narrower than the rule it fronts is the rule living in a
- * second place, and that second place is where this screen broke. The lead's
- * own team is grouped first; the rest are grouped under a label that says what
- * choosing them does, since a transfer re-stamps the lead's team.
+ * second place, and that second place is where this screen broke. Counsellors
+ * are on the list (0085): one takes the lead into their own counsellor queue.
+ * The lead's own team is grouped first; the rest are grouped under a label
+ * that says what choosing them does, since a transfer re-stamps the lead's
+ * team. Only the queue the lead sits in NOW is excluded - its dormant other
+ * owner is a legal target, which is also how a lead is handed back down from
+ * a counsellor to its own caller.
  */
 export function targetOptions(targets, lead) {
-  const pool = targets.filter((t) => t.id !== lead.caller_id);
+  const owner = lead.escalation_stage === 'counsellor' ? lead.counsellor_id : lead.caller_id;
+  const pool = targets.filter((t) => t.id !== owner);
   if (pool.length === 0) return '';
 
   const opt = (t) => `<option value="${esc(t.id)}">${esc(targetLabel(t))}</option>`;

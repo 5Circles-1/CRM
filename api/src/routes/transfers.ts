@@ -129,30 +129,36 @@ export async function transferRoutes(app: FastifyInstance): Promise<void> {
    * Team is returned rather than filtered on, so the UI can put the lead's own
    * team first and name the move when it crosses one. RESTRICTED callers stay
    * on the list on purpose: the tier stops the *engine* handing them fresh
-   * leads, not a human handing them a specific one.
+   * leads, not a human handing them a specific one. Counsellors are on the
+   * list since 0085 - crm.transfer_lead accepts them, taking the lead into
+   * their own counsellor queue - so the picker and the rule stay one list.
+   * The load counts follow the queue a lead actually sits in, so a
+   * counsellor's open pile reads as honestly as a caller's.
    */
   app.get('/transfers/targets', async (req) => {
     req.requireRole('counsellor', 'admin');
     return req.tx((q) =>
       q.many(
-        `select u.id, u.full_name,
+        `select u.id, u.full_name, u.role,
                 tm.team_id,
                 t.name as team_name,
                 coalesce(pt.tier, 'standard') as tier,
                 crm.is_on_shift(u.id) as on_shift,
                 (select count(*) from crm.leads l
-                  where l.caller_id = u.id
+                  where case when l.escalation_stage = 'counsellor'
+                             then l.counsellor_id else l.caller_id end = u.id
                     and l.status not in ('won','lost','invalid','nurture','handed_off')) as open_leads,
                 (select count(*) from crm.leads l
-                  where l.caller_id = u.id
+                  where case when l.escalation_stage = 'counsellor'
+                             then l.counsellor_id else l.caller_id end = u.id
                     and crm.ist_date(l.created_at) = crm.ist_date(now())) as leads_today
            from crm.users u
            left join crm.team_memberships tm
              on tm.user_id = u.id and tm.period @> current_date
            left join crm.teams t on t.id = tm.team_id
            left join crm.performance_tiers pt on pt.user_id = u.id
-          where u.role = 'caller' and u.is_active
-          order by on_shift desc, leads_today asc, u.full_name`,
+          where u.role in ('caller', 'counsellor') and u.is_active
+          order by on_shift desc, u.role, leads_today asc, u.full_name`,
       ),
     );
   });

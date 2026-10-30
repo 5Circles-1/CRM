@@ -611,7 +611,7 @@ describe('a refused transfer says why', () => {
     const ca = await login(h.app, EMAILS.counsellorA);
     const refusals = [
       { label: 'already that caller', leadId: () => leadId, to: USERS.callerA1 },
-      { label: 'target is not a caller', leadId: () => leadId, to: USERS.counsellorB },
+      { label: 'target cannot work leads', leadId: () => leadId, to: USERS.ops },
       { label: 'no such lead', leadId: () => '00000000-0000-0000-0000-0000000000aa', to: USERS.callerA2 },
     ];
 
@@ -651,12 +651,33 @@ describe('a refused transfer says why', () => {
       method: 'POST',
       url: `/leads/${leadId}/transfer`,
       headers: auth(ca),
-      payload: { toCallerId: USERS.counsellorB, reason: 'load_balance' },
+      payload: { toCallerId: USERS.ops, reason: 'load_balance' },
     });
 
     assert.equal(res.statusCode, 409);
-    assert.match(res.json().message, /Counsellor B/);
-    assert.match(res.json().message, /active caller/);
+    assert.match(res.json().message, /Ops User/);
+    assert.match(res.json().message, /active caller or counsellor/);
+  });
+
+  it('hands a lead to a counsellor, who takes it into their own queue (0085)', async () => {
+    // Across teams, so by the admin - the same RLS shape as a cross-team
+    // caller transfer. Within one team a counsellor can do this themselves.
+    const admin = await login(h.app, EMAILS.admin);
+    const toCounsellor = makeLeadFor(USERS.callerA1, 'To a counsellor');
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/leads/${toCounsellor}/transfer`,
+      headers: auth(admin),
+      payload: { toCallerId: USERS.counsellorB, reason: 'load_balance' },
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().transfer_count, 1);
+    const row = fixtureSql(
+      `select counsellor_id || ' ' || escalation_stage
+         from crm.leads where id = '${toCounsellor}';`,
+    ).trim();
+    assert.equal(row, `${USERS.counsellorB} counsellor`);
   });
 
   it('reads a lead it cannot resolve as 404, not as a crash', async () => {
@@ -715,6 +736,18 @@ describe('transfer targets', () => {
     const names = res.json().map((t: { full_name: string }) => t.full_name);
     assert.ok(names.includes('Caller A1'), 'their own team is offered');
     assert.ok(names.includes('Caller B1'), 'so is the other team - the picker must not be narrower than the rule');
+  });
+
+  it('offers counsellors too, labelled by role, because transfer_lead accepts them (0085)', async () => {
+    const admin = await login(h.app, EMAILS.admin);
+    const res = await h.app.inject({ method: 'GET', url: '/transfers/targets', headers: auth(admin) });
+
+    const rows = res.json() as Array<{ full_name: string; role: string }>;
+    const counsellors = rows.filter((t) => t.role === 'counsellor').map((t) => t.full_name);
+    assert.ok(counsellors.includes('Counsellor A'), 'an active counsellor is a legal target');
+    assert.ok(counsellors.includes('Counsellor B'), 'both of them');
+    assert.ok(rows.every((t) => t.role === 'caller' || t.role === 'counsellor'),
+      'and nobody who cannot work leads is offered');
   });
 
   it('names each target team, so a hand-off across one is visible before it happens', async () => {
