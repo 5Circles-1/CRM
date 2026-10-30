@@ -348,20 +348,26 @@ async function handOverModal(user, onDone) {
     toast(err.message, 'err');
     return;
   }
+  // The picker offers exactly what crm.hand_over_leads() accepts: anyone
+  // active who works leads - but a counsellor's book is counselling work and
+  // goes only to another counsellor (0085).
+  if (user.role === 'counsellor') targets = targets.filter((t) => t.role === 'counsellor');
   const held = Number(user.leads_held);
   const bodyEl = h(`
     <div>
       <p class="hint mt0">
         <b>${held}</b> lead${held === 1 ? ' is' : 's are'} still in ${esc(user.full_name)}'s name.
-        ${held === 1 ? 'It goes' : 'All of them go'} to the caller you pick, with every call ${esc(user.full_name)} logged —
-        outcome, talk time and notes — still on each lead, so the new caller can read what the
-        client already said.
+        ${held === 1 ? 'It goes' : 'All of them go'} to the person you pick, with every call ${esc(user.full_name)} logged —
+        outcome, talk time and notes — still on each lead, so the new owner can read what the
+        client already said.${user.role === 'counsellor'
+          ? ' A counsellor’s book is counselling work, so it goes to another counsellor.' : ''}
       </p>
       ${targets.length === 0
-        ? '<div class="banner" data-testid="handover-no-targets">No active caller to receive them. Add or reactivate a caller first.</div>'
+        ? '<div class="banner" data-testid="handover-no-targets">No one active to receive them. Add or reactivate a caller or counsellor first.</div>'
         : `<label class="f">Give them to
         <select name="to" data-testid="handover-target">
           ${targets.map((t) => `<option value="${esc(t.id)}">${esc(t.full_name)}${
+            t.role === 'counsellor' ? ' (counsellor)' : ''}${
             t.team_name ? ` — ${esc(t.team_name)}` : ''} · ${Number(t.open_leads)} open</option>`).join('')}
         </select>
       </label>
@@ -370,9 +376,9 @@ async function handOverModal(user, onDone) {
       </label>`}
       <ul class="hint">
         <li>Follow-up dates stay as ${esc(user.full_name)} agreed them with the client.</li>
-        <li>Callbacks clients booked will ring the new caller instead.</li>
+        <li>Callbacks clients booked will ring the new owner instead.</li>
         <li>Paying clients stay credited to ${esc(user.full_name)} — a past sale never moves.</li>
-        <li>No transfer is used up: the new caller can still transfer any of these later.</li>
+        <li>No transfer is used up: the new owner can still transfer any of these later.</li>
       </ul>
     </div>`);
   const footer = h(`<div>${targets.length === 0 ? ''

@@ -546,9 +546,11 @@ async function bookVisitModal(lead, onDone) {
  * re-stamps the lead's team.
  */
 function transferOptions(targets, lead) {
-  const pool = targets.filter((t) => t.id !== lead.caller_id);
+  const owner = lead.escalation_stage === 'counsellor' ? lead.counsellor_id : lead.caller_id;
+  const pool = targets.filter((t) => t.id !== owner);
   const opt = (t) => `<option value="${esc(t.id)}">${esc(t.full_name)} — ${
     t.on_shift ? 'on floor' : 'off floor'}, ${Number(t.leads_today)} today${
+    t.role === 'counsellor' ? ' · counsellor' : ''}${
     t.tier === 'restricted' ? ' · restricted' : ''}</option>`;
   const same = lead.team_id ? pool.filter((t) => t.team_id === lead.team_id) : [];
   const other = pool.filter((t) => !same.includes(t));
@@ -564,9 +566,9 @@ async function transferModal(lead, onDone) {
     <div>
       ${options === '' ? `
         <div class="hint" data-testid="transfer-no-targets">
-          There is no other active caller to hand this lead to. Add or re-activate
-          one in <b>Admin → Users</b> — a transfer target needs the <b>caller</b>
-          role and an active account.
+          There is no one else active to hand this lead to. Add or re-activate
+          someone in <b>Admin → Users</b> — a transfer target needs an active
+          account with the <b>caller</b> or <b>counsellor</b> role.
         </div>` : `
       <label class="f">Give this lead to
         <select name="to" data-testid="transfer-target">${options}</select>

@@ -50,7 +50,8 @@ export async function render(outlet, me) {
   // Admin only (0079, 0080): a lead nobody owns can be handed to a person the
   // admin picks - when the admin chooses to, never on its own. The lead's
   // stage decides who may take it, exactly as crm.assign_unowned_lead does:
-  // callers for fresh work (the same list as Floor's Transfer), counsellors
+  // anyone who works leads for fresh work (the same list as Floor's Transfer,
+  // callers and counsellors alike since 0085), and dedicated counsellors
   // for a lead past the caller or a paying client who enquired again - whose
   // sale, and its credit, stay untouched.
   const canAssign = me.role === 'admin';
@@ -75,7 +76,7 @@ export async function render(outlet, me) {
     const toCounsellor = COUNSELLOR_STAGE.includes(l.status);
     const options = toCounsellor ? counsellorOptions(l) : targetOptions(callers, l);
     if (options === '') {
-      return `<div class="hint">No active ${toCounsellor ? 'counsellor' : 'caller'} to give it to — add one in Admin → Users.</div>`;
+      return `<div class="hint">No active ${toCounsellor ? 'counsellor' : 'caller or counsellor'} to give it to — add one in Admin → Users.</div>`;
     }
     return `
       ${PAYING.includes(l.status) ? '<div class="hint" style="margin-top:4px">Paying client — goes to a counsellor; the sale is untouched.</div>' : ''}
