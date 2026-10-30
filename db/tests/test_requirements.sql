@@ -4112,7 +4112,7 @@ end $$;
 -- The admin's dry run counts without moving anything.
 select set_config('app.user_id', '22222222-0000-0000-0000-00000000000a', false) as _ \gset
 
-select crm.archive_leads_before('2026-08-15'::date, true) as _arc_dry \gset
+select archived as _arc_dry from crm.archive_leads_before('2026-08-15'::date, true) \gset
 
 select crm_test.check(
   'ARC', 'the dry run counts the old waiting lead',
@@ -4126,7 +4126,7 @@ select crm_test.check(
      from crm.leads where full_name = 'Arc Old Waiting'), null);
 
 -- The real thing.
-select crm.archive_leads_before('2026-08-15'::date, false) as _arc_real \gset
+select archived as _arc_real from crm.archive_leads_before('2026-08-15'::date, false) \gset
 
 select crm_test.check(
   'ARC', 'the archive parks the old waiting lead in Previous months',
@@ -4162,6 +4162,87 @@ select crm_test.check(
   (select count(*) = 0 from crm.v_fresh_leads where full_name = 'Arc Old Waiting')
   and (select count(*) = 0 from crm.v_my_pipeline where full_name = 'Arc Old Waiting'),
   null);
+
+-- The flags the park cannot reach (0087): an invalid lead and a paying
+-- client, each with an undialled re-enquiry from before the cutoff - and a
+-- paying client who asked again AFTER the cutoff, who must stay. Found on
+-- the live floor reset: 74 invalid + 23 won leads carried flags nothing
+-- could ever retire, on the one list that never ages off.
+insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status,
+                       closed_at, created_at)
+values
+  (:SRC, 'Arc Invalid Asked', '+919555200004', :A1, crm.team_of(:A1, current_date),
+   'invalid', '2026-07-20 10:00:00+05:30', '2026-07-01 10:00:00+05:30'),
+  (:SRC, 'Arc Client Asked Old', '+919555200005', :A1, crm.team_of(:A1, current_date),
+   'won', '2026-07-20 10:00:00+05:30', '2026-07-01 10:00:00+05:30'),
+  (:SRC, 'Arc Client Asked Today', '+919555200006', :A1, crm.team_of(:A1, current_date),
+   'won', '2026-07-20 10:00:00+05:30', '2026-07-01 10:00:00+05:30');
+insert into crm.deals (lead_id, product_id, counsellor_id, team_id, booked_amount)
+select id, '44444444-0000-0000-0000-000000000010', :CNS_A::uuid, team_id, 5000
+  from crm.leads where full_name in ('Arc Client Asked Old', 'Arc Client Asked Today');
+-- Pin the close dates the fixtures mean, whatever the deal trigger stamped.
+update crm.leads set closed_at = '2026-07-20 10:00:00+05:30', status = case
+         when full_name = 'Arc Invalid Asked' then 'invalid'::crm.lead_status
+         else 'won'::crm.lead_status end
+ where full_name in ('Arc Invalid Asked', 'Arc Client Asked Old', 'Arc Client Asked Today');
+insert into crm.lead_events (lead_id, event_type, payload, occurred_at)
+select id, 're_enquiry', '{}'::jsonb, '2026-08-01 10:00:00+05:30'
+  from crm.leads where full_name in ('Arc Invalid Asked', 'Arc Client Asked Old');
+insert into crm.lead_events (lead_id, event_type, payload)
+select id, 're_enquiry', '{}'::jsonb
+  from crm.leads where full_name = 'Arc Client Asked Today';
+
+select set_config('app.user_id', '22222222-0000-0000-0000-00000000000a', false) as _ \gset
+
+select archived as _arc2_parked, reenquiries_retired as _arc2_ret
+  from crm.archive_leads_before('2026-08-15'::date, true) \gset
+
+select crm_test.check(
+  'ARC', 'the dry run counts the pre-cutoff flags on closed and paying leads, and only those',
+  :_arc2_ret = 2, 'dry run said ' || :_arc2_ret || ' flags');
+
+select archived as _arc3_parked, reenquiries_retired as _arc3_ret
+  from crm.archive_leads_before('2026-08-15'::date, false) \gset
+
+select crm_test.check(
+  'ARC', 'the real run retires exactly the flags the dry run counted',
+  :_arc3_ret = 2, 'real run retired ' || :_arc3_ret);
+
+select crm_test.check(
+  'ARC', 'a pre-cutoff flag on an invalid or paying lead leaves the fresh list',
+  (select count(*) = 0 from crm.v_reenquired_leads
+    where full_name in ('Arc Invalid Asked', 'Arc Client Asked Old')), null);
+
+select crm_test.check(
+  'ARC', 'a client who asked again after the cutoff stays - current work, not history',
+  (select count(*) = 1 from crm.v_reenquired_leads
+    where full_name = 'Arc Client Asked Today'), null);
+
+select crm_test.check(
+  'ARC', 'retiring the flag touches nothing about the sale or the close',
+  (select status = 'won' and closed_at = '2026-07-20 10:00:00+05:30'::timestamptz
+          and caller_id = :A1
+          and exists (select 1 from crm.deals d where d.lead_id = l.id)
+     from crm.leads l where full_name = 'Arc Client Asked Old'), null);
+
+select crm_test.check(
+  'ARC', 'each retired flag is on the lead''s own timeline, once',
+  (select count(*) = 2 from crm.lead_events e
+     join crm.leads l on l.id = e.lead_id
+    where l.full_name in ('Arc Invalid Asked', 'Arc Client Asked Old')
+      and e.event_type = 'reenquiry_archived'), null);
+
+-- Run it again: everything already handled, nothing retired twice.
+select archived as _arc4_parked, reenquiries_retired as _arc4_ret
+  from crm.archive_leads_before('2026-08-15'::date, false) \gset
+
+select crm_test.check(
+  'ARC', 'a second run finds nothing left to retire - one flag, one clearing record',
+  :_arc4_ret = 0, 'second run retired ' || :_arc4_ret);
+
+-- Keep the after-cutoff fixture out of the live views for what follows: a
+-- deliberate close after the re-enquiry is the view's own clearing rule.
+update crm.leads set closed_at = now() where full_name = 'Arc Client Asked Today';
 
 -- =============================================================================
 -- TIER (TIR): the daily ACE ranking. Each team's best caller PER DAY PRESENT
