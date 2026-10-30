@@ -113,8 +113,11 @@ async function data(body) {
       <p class="hint mt0" style="max-width:680px">
         Every lead created before the date below — and not worked since it — leaves every
         pipeline, alert and fresh list and parks in <b>Previous months</b>. Paying clients and
-        anyone with a deal are never touched. A parked lead stays searchable in Find lead and
-        comes back with one click (Pick up &amp; work) if the person ever calls again.
+        anyone with a deal are never touched — though an undialled <b>enquired again</b> flag
+        from before the date is marked handled even on those, so the fresh list truly empties;
+        a client who asks again afterwards pops straight back up. A parked lead stays
+        searchable in Find lead and comes back with one click (Pick up &amp; work) if the
+        person ever calls again.
       </p>
       <div class="frow" style="max-width:460px;align-items:flex-end">
         <label class="f" style="margin:0">Keep leads from
@@ -133,14 +136,16 @@ async function data(body) {
     try {
       const r = await post('/admin/archive-leads', { before, dryRun: true });
       result.innerHTML = '';
-      if (r.archived === 0) {
+      const retiring = Number(r.reenquiriesRetired ?? 0);
+      if (r.archived === 0 && retiring === 0) {
         result.appendChild(h(`<div class="empty">Nothing older than ${esc(before)} is still live — the floor is already clean.</div>`));
         return;
       }
       const go = h(`
         <div class="banner warn">
           <b>${r.archived} lead${r.archived === 1 ? '' : 's'}</b> created before ${esc(before)}
-          would move to Previous months.
+          would move to Previous months${retiring > 0 ? `, and <b>${retiring}</b> enquired-again
+          flag${retiring === 1 ? '' : 's'} on closed or paying leads would be marked handled` : ''}.
           <button class="btn danger" id="arch-go" data-testid="archive-go" style="margin-left:10px">Archive them now</button>
         </div>`);
       result.appendChild(go);
@@ -149,9 +154,11 @@ async function data(body) {
         try {
           const done = await post('/admin/archive-leads', { before, dryRun: false });
           result.innerHTML = '';
+          const cleared = Number(done.reenquiriesRetired ?? 0);
           result.appendChild(h(`
             <div class="banner" style="background:var(--ok-bg);color:var(--ok);border-color:var(--ok-bg)">
-              ${done.archived} lead${done.archived === 1 ? '' : 's'} parked in Previous months.
+              ${done.archived} lead${done.archived === 1 ? '' : 's'} parked in Previous months${
+                cleared > 0 ? `, ${cleared} enquired-again flag${cleared === 1 ? '' : 's'} marked handled` : ''}.
               The pipelines now carry only current data.
             </div>`));
           toast('Archived.');

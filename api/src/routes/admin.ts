@@ -635,12 +635,20 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       .parse(req.body);
 
     const row = await req.tx((q) =>
-      q.one<{ archived: number }>(
-        `select crm.archive_leads_before($1::date, $2) as archived`,
+      q.one<{ archived: number; reenquiries_retired: number }>(
+        `select * from crm.archive_leads_before($1::date, $2)`,
         [body.before, body.dryRun],
       ),
     );
-    return { cutoff: body.before, dryRun: body.dryRun, archived: Number(row!.archived) };
+    return {
+      cutoff: body.before,
+      dryRun: body.dryRun,
+      archived: Number(row!.archived),
+      // Pre-cutoff "enquired again" flags retired on leads the park cannot
+      // reach - closed and paying leads (0087). The sale and close are
+      // untouched; only the call-them-back flag is marked handled.
+      reenquiriesRetired: Number(row!.reenquiries_retired),
+    };
   });
 
   app.get('/admin/quarantine', async (req) => {
