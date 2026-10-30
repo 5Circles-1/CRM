@@ -348,6 +348,51 @@ select crm_test.check(
     where l.full_name = 'Lead 3'),
   null);
 
+-- The archive keeps its promise (0086): "leaves every pipeline, alert and
+-- fresh list". Parking a lead is a person's decision exactly like a close,
+-- so an undialled re-enquiry on a lead archived AFTER it is dealt with -
+-- while a client who asks again after the archive resurfaces at once.
+do $$
+declare v_lead uuid;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, team_id, status, next_action_at)
+  values ('33333333-0000-0000-0000-000000000001', 'Asked Then Archived', '+919555000088',
+          '11111111-0000-0000-0000-000000000001', 'working', now())
+  returning id into v_lead;
+  insert into crm.lead_events (lead_id, event_type, payload, occurred_at)
+  values (v_lead, 're_enquiry', '{}'::jsonb, now() - interval '2 days');
+  -- Exactly what crm.archive_leads_before (0050) writes per parked lead.
+  update crm.leads set status = 'nurture', pool = 'previous_month',
+                       next_action_at = null where id = v_lead;
+  insert into crm.lead_events (lead_id, event_type, payload)
+  values (v_lead, 'archived', '{}'::jsonb);
+end $$;
+
+select crm_test.check(
+  'R9', 'archiving a lead after its re-enquiry clears the worklist row - the archive keeps its promise',
+  (select count(*) = 0 from crm.v_reenquired_leads r
+     join crm.leads l on l.id = r.lead_id
+    where l.full_name = 'Asked Then Archived'),
+  null);
+
+do $$
+declare v_lead uuid := (select id from crm.leads where full_name = 'Asked Then Archived');
+begin
+  insert into crm.lead_events (lead_id, event_type, payload)
+  values (v_lead, 're_enquiry', '{}'::jsonb);
+end $$;
+
+select crm_test.check(
+  'R9', 'a client who enquires again after the archive resurfaces at once - never lost',
+  (select count(*) = 1 from crm.v_reenquired_leads r
+     join crm.leads l on l.id = r.lead_id
+    where l.full_name = 'Asked Then Archived'),
+  null);
+
+-- Keep the fixture out of the live views for everything that follows.
+update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
+ where full_name = 'Asked Then Archived';
+
 -- The 15-day stale mover (0066, owner decision): an open, overdue lead with
 -- not one dial in sla.stale_reassign_days moves to a different caller on the
 -- team - the number may be spam-flagged for the old caller's SIM. A lead
