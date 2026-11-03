@@ -393,6 +393,67 @@ select crm_test.check(
 update crm.leads set status = 'lost', closed_at = now(), next_action_at = null
  where full_name = 'Asked Then Archived';
 
+-- A client who answers their own re-enquiry by walking into the office
+-- (0088, floor report 3 Nov). The ARRIVAL clears the row - a booked visit is
+-- a promise, not an answer - and for a paying client it is the only clearing
+-- act there is: nobody dials a client who is standing at the desk. An undone
+-- "Walked in" (cancelled, arrival cleared) resurfaces the row on its own.
+do $$
+declare v_lead uuid;
+begin
+  insert into crm.leads (source_id, full_name, phone_e164, team_id, status, next_action_at)
+  values ('33333333-0000-0000-0000-000000000001', 'Enquired Then Walked In', '+919555000089',
+          '11111111-0000-0000-0000-000000000001', 'working', now())
+  returning id into v_lead;
+  insert into crm.lead_events (lead_id, event_type, payload, occurred_at)
+  values (v_lead, 're_enquiry', '{}'::jsonb, now() - interval '1 hour');
+  -- Booked for tomorrow: still a person waiting, whatever the promise says.
+  perform set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false);
+  perform crm.assign_walkin(v_lead, '22222222-0000-0000-0000-000000000005',
+                            now() + interval '1 day', null);
+  perform set_config('app.user_id', '', false);
+end $$;
+
+select crm_test.check(
+  'R9', 'booking the visit does not answer the re-enquiry - the row holds until they arrive',
+  (select count(*) = 1 from crm.v_reenquired_leads r
+     join crm.leads l on l.id = r.lead_id
+    where l.full_name = 'Enquired Then Walked In'),
+  null);
+
+do $$
+declare v_lead uuid := (select id from crm.leads where full_name = 'Enquired Then Walked In');
+begin
+  perform set_config('app.user_id', '22222222-0000-0000-0000-000000000005', false);
+  perform crm.record_walkin_arrival(v_lead, '22222222-0000-0000-0000-000000000005', null);
+  perform set_config('app.user_id', '', false);
+end $$;
+
+select crm_test.check(
+  'R9', 'the client walking in after the re-enquiry clears the worklist row',
+  (select count(*) = 0 from crm.v_reenquired_leads r
+     join crm.leads l on l.id = r.lead_id
+    where l.full_name = 'Enquired Then Walked In'),
+  null);
+
+-- Exactly what POST /leads/:id/walkin does to undo a mistaken mark.
+update crm.walkin_visits set status = 'cancelled', arrived_at = null, updated_at = now()
+ where lead_id = (select id from crm.leads where full_name = 'Enquired Then Walked In');
+update crm.leads set walked_in_at = null, updated_at = now()
+ where full_name = 'Enquired Then Walked In';
+
+select crm_test.check(
+  'R9', 'an undone walk-in resurfaces the row - the mistaken mark never buries a client',
+  (select count(*) = 1 from crm.v_reenquired_leads r
+     join crm.leads l on l.id = r.lead_id
+    where l.full_name = 'Enquired Then Walked In'),
+  null);
+
+-- Keep this fixture out of the live views for everything that follows too.
+update crm.leads set status = 'lost', closed_at = now(), next_action_at = null,
+                     walkin_expected_at = null
+ where full_name = 'Enquired Then Walked In';
+
 -- The 15-day stale mover (0066, owner decision): an open, overdue lead with
 -- not one dial in sla.stale_reassign_days moves to a different caller on the
 -- team - the number may be spam-flagged for the old caller's SIM. A lead
@@ -5412,6 +5473,20 @@ select crm_test.check(
   null);
 
 reset role;
+
+-- The 'PD Reenquiry' client answers their own re-enquiry by walking into the
+-- office (0088): the dialler stops reading the lead as a re-enquiry, and with
+-- that appointment gone the re-dial gap holds it like any other recent call -
+-- power dial never auto-rings a client who is sitting at the desk.
+insert into crm.walkin_visits (lead_id, status, arrived_at)
+values ('dd000000-0000-0000-0000-000000000007', 'arrived', now());
+
+select crm_test.check(
+  'PD', 'a walk-in after the re-enquiry takes it off the dialler - nobody rings the desk',
+  not exists (select 1 from crm.v_dial_queue
+               where lead_id = 'dd000000-0000-0000-0000-000000000007'
+                 and (dial_reason = 'reenquiry' or dialable)),
+  null);
 
 -- =============================================================================
 -- OFFICE VISITS (WLK): a walk-in is a row, from booked to counselled to
