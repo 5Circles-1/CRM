@@ -23,32 +23,23 @@ export const TEST_PASSWORD = 'correct-horse-battery';
 /** Seeded user ids, from db/seed/seed.sql. */
 export const USERS = {
   admin: '22222222-0000-0000-0000-00000000000a',
-  ops: '22222222-0000-0000-0000-00000000000b',
-  founder: '22222222-0000-0000-0000-00000000000c',
-  callerA1: '22222222-0000-0000-0000-000000000001',
-  callerA2: '22222222-0000-0000-0000-000000000002',
-  callerB1: '22222222-0000-0000-0000-000000000003',
-  callerB2: '22222222-0000-0000-0000-000000000004',
-  counsellorA: '22222222-0000-0000-0000-000000000005',
-  counsellorB: '22222222-0000-0000-0000-000000000006',
-  mentor: '22222222-0000-0000-0000-00000000000d',
+  system: '22222222-0000-0000-0000-00000000000b',
+  sanya: '22222222-0000-0000-0000-000000000001',
+  harsh: '22222222-0000-0000-0000-000000000002',
+  aisha: '22222222-0000-0000-0000-000000000003',
 } as const;
 
 export const EMAILS = {
   admin: 'admin@5circles.test',
-  ops: 'ops@5circles.test',
-  callerA1: 'a1@5circles.test',
-  callerA2: 'a2@5circles.test',
-  callerB1: 'b1@5circles.test',
-  counsellorA: 'ca@5circles.test',
-  counsellorB: 'cb@5circles.test',
-  founder: 'founder@5circles.test',
-  mentor: 'mentor@5circles.test',
+  sanya: 'sanya@5circles.test',
+  harsh: 'harsh@5circles.test',
+  aisha: 'aisha@5circles.test',
 } as const;
 
 export const SOURCES = {
   meta: '33333333-0000-0000-0000-000000000001',
-  website: '33333333-0000-0000-0000-000000000002',
+  chatgpt: '33333333-0000-0000-0000-000000000002',
+  manual: '33333333-0000-0000-0000-000000000003',
 } as const;
 
 function psql(database: string, sql: string): string {
@@ -90,15 +81,16 @@ export function rebuildTestDatabase(): void {
 }
 
 /**
- * Give every seeded user the same password.
+ * Give every human seeded user the same password. The System service account
+ * deliberately gets none - it must stay unable to log in.
  *
- * Note this works through crm.set_password even though the API role cannot
- * touch crm.user_credentials directly - that is the SECURITY DEFINER boundary
- * from migration 0013 doing its job.
+ * This works through crm.set_password even though the API role cannot touch
+ * crm.user_credentials directly - the SECURITY DEFINER boundary doing its job.
  */
 export async function seedPasswords(db: Database): Promise<void> {
   const hash = await hashPassword(TEST_PASSWORD);
-  for (const id of Object.values(USERS)) {
+  for (const [name, id] of Object.entries(USERS)) {
+    if (name === 'system') continue;
     await db.withoutUser((q) => q.query('select crm.set_password($1, $2, false)', [id, hash]));
   }
 }
@@ -159,21 +151,18 @@ export function fixtureSql(sql: string): string {
 let leadSeq = 0;
 
 /**
- * Create a fresh lead owned by `callerId`.
+ * Create a fresh lead owned by `userId`.
  *
  * Tests that need a lead in a particular state make their own rather than
- * picking one out of the seed - otherwise an earlier test moving a lead to
- * 'callback' silently breaks a later one.
+ * picking one out of earlier tests' leavings.
  */
-export function makeLeadFor(callerId: string, name = 'Fixture Lead'): string {
+export function makeLeadFor(userId: string, name = 'Fixture Lead'): string {
   leadSeq += 1;
   const phone = `+9199${String(700000 + leadSeq).padStart(8, '0')}`;
-  // psql prints the command tag ("INSERT 0 1") after the returned row, so take
-  // the first line rather than the whole output.
+  // psql prints the command tag after the returned row, so take the first line.
   return fixtureSql(`
-    insert into crm.leads (source_id, full_name, phone_e164, caller_id, team_id, status)
-    values ('${SOURCES.meta}', '${name} ${leadSeq}', '${phone}',
-            '${callerId}', crm.team_of('${callerId}', current_date), 'working')
+    insert into crm.leads (source_id, full_name, phone_e164, assigned_to)
+    values ('${SOURCES.manual}', '${name} ${leadSeq}', '${phone}', '${userId}')
     returning id;
   `)
     .trim()

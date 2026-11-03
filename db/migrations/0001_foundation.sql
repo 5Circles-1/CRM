@@ -1,71 +1,70 @@
 -- 0001_foundation.sql
--- Schemas, extensions, enums and shared helper functions.
--- Everything in this build lives in the `crm` schema.
+-- Schema, extensions, enums, shared helpers, settings.
+--
+-- This is the v2 ("pan-India program") schema: a deliberately small CRM for a
+-- floor of two to four people. Leads arrive from ChatGPT and Meta, Sanya and
+-- Harsh make the first call, qualified leads pass to Aisha for follow-up, and
+-- the whole pipeline is visible to everyone on one spreadsheet-like screen.
 
 create extension if not exists pgcrypto;
 create extension if not exists citext;
-create extension if not exists btree_gist;
 create extension if not exists pg_trgm;
 
 create schema if not exists crm;
+
+-- The application role. No login of its own; the server connects as a role
+-- that inherits crm_app. It never bypasses RLS and never owns a table.
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'crm_app') then
+    create role crm_app nologin;
+  end if;
+end
+$$;
 
 -- ---------------------------------------------------------------------------
 -- Enums
 -- ---------------------------------------------------------------------------
 
--- caller   = setter, first-touch dialling
--- counsellor = closer AND team lead (per 5C org: same person)
--- ops      = uploads sheets, manages sources/rules, no lead-level access
--- admin    = full access, small number of people
--- viewer   = founder/management, aggregate dashboards only
-create type crm.user_role as enum ('caller', 'counsellor', 'ops', 'admin', 'viewer');
+-- caller   = first call on a fresh lead (Sanya, Harsh)
+-- followup = works qualified leads to conversion (Aisha)
+-- admin    = sees and can do everything
+create type crm.user_role as enum ('admin', 'caller', 'followup');
 
-create type crm.lead_priority as enum ('immediate', 'normal');
-
-create type crm.lead_status as enum (
-  'new',            -- ingested, never dialled
-  'working',        -- in the calling loop
-  'callback',       -- caller scheduled a callback at client's request
-  'qualified',      -- passed from caller to counsellor
-  'negotiation',    -- counsellor working the close
-  'won',            -- deal booked
-  'lost',           -- explicit no
-  'invalid',        -- bad number / not a real person
-  'nurture',        -- parked, long-cycle, WhatsApp only
-  'handed_off'      -- pushed to the advisory pipeline post-payment
+-- Where a lead stands in the pipeline. "calling" covers every live lead that
+-- has been tried at least once but is not yet qualified - the detail of WHY it
+-- is still in calling (not answered, switched off, call back later) is the
+-- last call outcome, shown beside the stage, never a stage of its own.
+create type crm.lead_stage as enum (
+  'new',            -- arrived, nobody has called yet
+  'calling',        -- first-call loop (not answered / switched off / call back)
+  'qualified',      -- interested; with the follow-up person
+  'converted',      -- paid / registered - the win
+  'not_qualified'   -- an explicit "no, don't call me" - the only closed loss
 );
 
--- Terminal statuses do not require a scheduled next action.
-create type crm.disposition as enum (
-  'connected_interested',
-  'connected_not_interested',
-  'callback_requested',
+-- The five answers a call can have. Deliberately no more than five: this list
+-- IS the outcome dropdown, and a dropdown with twenty entries is how responses
+-- stop being recorded at all.
+create type crm.call_outcome as enum (
+  'qualified',      -- interested: passes to follow-up
+  'call_back',      -- asked to be called at a specific time
   'not_answered',
-  'busy',
   'switched_off',
-  'invalid_number',
-  'wrong_person',
-  'language_barrier',
-  'do_not_call'
+  'not_qualified'   -- said no / do not call
 );
 
-create type crm.transfer_reason as enum (
-  'not_answered_streak',
-  'language_mismatch',
-  'caller_unavailable',
-  'load_balance',
-  'escalation',
-  'other'
+create type crm.activity_kind as enum (
+  'call',        -- a dial with an outcome
+  'note',        -- free text
+  'assign',      -- lead changed hands
+  'checkpoint',  -- invite sent / confirmed / converted toggled
+  'enquiry',     -- the same phone number enquired again
+  'system'       -- created, reopened, imported...
 );
-
-create type crm.attendance_source as enum ('web', 'mobile', 'admin_adjustment');
-
-create type crm.instalment_status as enum ('due', 'paid', 'part_paid', 'overdue', 'written_off');
 
 -- ---------------------------------------------------------------------------
--- Session context: the app sets these per request/connection.
---   set_config('app.user_id', '<uuid>', true)
--- RLS policies and audit triggers read from here.
+-- Session context. The app sets app.user_id per request; RLS reads it here.
 -- ---------------------------------------------------------------------------
 
 create or replace function crm.current_user_id() returns uuid
@@ -75,26 +74,18 @@ as $$
 $$;
 
 comment on function crm.current_user_id() is
-  'UUID of the acting user, set by the application layer per request. NULL for migration/maintenance connections.';
+  'UUID of the acting user, set by the application per request. NULL for maintenance connections.';
 
 -- ---------------------------------------------------------------------------
--- Time helpers. The floor runs on IST; all storage is timestamptz.
+-- Time. Storage is timestamptz; the business day is IST.
 -- ---------------------------------------------------------------------------
-
-create or replace function crm.ist_now() returns timestamptz
-  language sql stable
-as $$ select now() $$;
 
 create or replace function crm.ist_date(ts timestamptz default now()) returns date
   language sql immutable
 as $$ select (ts at time zone 'Asia/Kolkata')::date $$;
 
 comment on function crm.ist_date(timestamptz) is
-  'Business date in Asia/Kolkata. All daily rollups key off this, not UTC date.';
-
--- ---------------------------------------------------------------------------
--- updated_at maintenance
--- ---------------------------------------------------------------------------
+  'Business date in Asia/Kolkata. Daily rollups key off this, never the UTC date.';
 
 create or replace function crm.tg_set_updated_at() returns trigger
   language plpgsql
@@ -106,9 +97,8 @@ end
 $$;
 
 -- ---------------------------------------------------------------------------
--- Phone normalisation. Indian mobile numbers arrive from Meta sheets in a
--- dozen shapes: +91 98..., 0098..., 098..., 98... , with spaces and dashes.
--- Dedupe is only as good as this function, so it is a first-class object.
+-- Phone normalisation. Numbers arrive from Meta/ChatGPT sheets in a dozen
+-- shapes; dedupe is only as good as this function.
 -- ---------------------------------------------------------------------------
 
 create or replace function crm.normalise_phone(raw text) returns text
@@ -148,4 +138,36 @@ end
 $$;
 
 comment on function crm.normalise_phone(text) is
-  'Canonicalises a raw phone string to E.164. Returns NULL when the input cannot be a dialable number - callers should quarantine those rows, never discard them.';
+  'Canonicalises a raw phone string to E.164. Returns NULL when the input cannot be a dialable number - quarantine those rows, never discard them.';
+
+-- ---------------------------------------------------------------------------
+-- Settings. Every tunable number lives here, not in code.
+-- ---------------------------------------------------------------------------
+
+create table crm.settings (
+  key         text primary key,
+  value       jsonb not null,
+  description text  not null,
+  updated_by  uuid,
+  updated_at  timestamptz not null default now()
+);
+
+create or replace function crm.setting_int(p_key text, p_default int default null)
+  returns int
+  language sql stable
+as $$
+  select coalesce((select (value #>> '{}')::int from crm.settings where key = p_key), p_default)
+$$;
+
+create or replace function crm.setting_text(p_key text, p_default text default null)
+  returns text
+  language sql stable
+as $$
+  select coalesce((select value #>> '{}' from crm.settings where key = p_key), p_default)
+$$;
+
+insert into crm.settings (key, value, description) values
+  ('follow_up.retry_hours', '24'::jsonb,
+   'When a call ends not-answered or switched-off and no date is chosen, the next follow-up lands this many hours later.'),
+  ('lead.dedupe_window_days', '90'::jsonb,
+   'A new enquiry whose phone matches a lead created within this window attaches to that lead instead of creating a duplicate. Live leads match at any age.');

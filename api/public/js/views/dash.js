@@ -1,172 +1,236 @@
 import { get } from '../api.js';
-import { esc, fmtDT, fmtINR, h, minsLabel } from '../util.js';
-import { barChart, donutChart, lineChart } from '../charts.js';
+import { barChart, lineChart, statTile } from '../charts.js';
+import { esc, h, istToday } from '../util.js';
 
-/** Requirement 2: caller and counsellor performance, plus the breakeven thermometer. */
+/**
+ * The dashboard: what needs attention now, what happened in the chosen range,
+ * the funnel for leads received in that range, and who did what.
+ */
+
+const RANGES = [
+  ['today', 'Today'],
+  ['7d', 'Last 7 days'],
+  ['30d', 'Last 30 days'],
+  ['custom', 'Dates…'],
+];
+
+let state = { range: '7d', from: '', to: '' };
+
+const shiftDate = (ymd, days) => {
+  const d = new Date(`${ymd}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+
 export async function render(outlet) {
-  const [thermo, funnel, counsellors, money, freshNow] = await Promise.all([
-    get('/dashboards/thermometer'),
-    get('/dashboards/funnel?days=30'),
-    get('/dashboards/counsellors'),
-    get('/dashboards/collections-series?days=30'),
-    get('/dashboards/fresh-now').catch(() => null),
-  ]);
-  const dayLabel = (d) =>
-    new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
-
   outlet.innerHTML = '';
+  const root = h(`
+    <div>
+      <div class="panel filterbar">
+        <div class="frow">
+          <span class="chips" data-ranges>
+            ${RANGES.map(([k, label]) => `<button class="chip${state.range === k ? ' on' : ''}" data-range="${k}">${label}</button>`).join('')}
+          </span>
+          <span data-custom ${state.range === 'custom' ? '' : 'hidden'}>
+            <input type="date" name="from" value="${esc(state.from)}">
+            <span class="hint">to</span>
+            <input type="date" name="to" value="${esc(state.to)}">
+          </span>
+        </div>
+      </div>
+      <div data-body><div class="spin"></div></div>
+    </div>`);
+  outlet.appendChild(root);
 
-  // The exact number of leads waiting for a call right now — the dashboard's
-  // answer to "how many fresh leads do we have?", matching the Fresh tab
-  // number for number: never-contacted plus enquired-again, floor-wide.
-  if (freshNow) {
-    outlet.appendChild(h(`
-      <div class="panel" data-testid="fresh-now">
-        <div class="row spread wrap">
-          <h2 class="mt0">Waiting for a call <small>right now, whole floor</small></h2>
-          <a class="btn small" href="#/fresh">Open Fresh leads →</a>
-        </div>
-        <div class="grid cols-4">
-          <div class="stat"><div class="k">Total waiting</div>
-            <div class="v">${Number(freshNow.waiting)}</div>
-            <div class="s">${Number(freshNow.fresh)} never contacted · ${Number(freshNow.reenquired)} enquired again</div></div>
-          <div class="stat ${Number(freshNow.late) ? 'tone-bad' : 'tone-good'}"><div class="k">Past their deadline</div>
-            <div class="v">${Number(freshNow.late)}</div><div class="s">call these first</div></div>
-          <div class="stat ${Number(freshNow.no_owner) ? 'tone-bad' : ''}"><div class="k">With no owner</div>
-            <div class="v">${Number(freshNow.no_owner)}</div>
-            <div class="s">${Number(freshNow.no_owner) ? 'held at team level' : 'everything is owned'}</div></div>
-          <div class="stat"><div class="k">By team</div>
-            <div class="v" style="font-size:15px">${(freshNow.teams ?? [])
-              .map((t) => `${esc(t.team_name)} ${Number(t.fresh)}`).join(' · ') || '—'}</div>
-            <div class="s">fresh split across teams</div></div>
-        </div>
-      </div>`));
+  root.querySelectorAll('[data-range]').forEach((chip) =>
+    chip.addEventListener('click', () => {
+      state.range = chip.dataset.range;
+      root.querySelectorAll('[data-range]').forEach((c) => c.classList.toggle('on', c === chip));
+      root.querySelector('[data-custom]').hidden = state.range !== 'custom';
+      if (state.range !== 'custom') draw(root);
+    }),
+  );
+  root.querySelector('[name=from]').addEventListener('change', (e) => { state.from = e.target.value; draw(root); });
+  root.querySelector('[name=to]').addEventListener('change', (e) => { state.to = e.target.value; draw(root); });
+
+  await draw(root);
+}
+
+async function draw(root) {
+  const today = istToday();
+  let from = '';
+  let to = '';
+  if (state.range === 'today') { from = today; to = today; }
+  else if (state.range === '7d') { from = shiftDate(today, -6); to = today; }
+  else if (state.range === '30d') { from = shiftDate(today, -29); to = today; }
+  else { from = state.from; to = state.to; }
+
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+
+  const body = root.querySelector('[data-body]');
+  let d;
+  try {
+    d = await get(`/dashboard?${params}`);
+  } catch (err) {
+    body.innerHTML = `<div class="panel empty">${esc(err.message)}</div>`;
+    return;
   }
 
-  // --- thermometer ---
-  const pace = Math.max(0, Math.min(130, Number(thermo.pct_of_pace) || 0));
-  const statusLabel = {
-    green: 'On pace', amber: 'Slipping', red: 'Behind — act now',
-    founder_intervention: 'Founder intervention',
-  }[thermo.status] ?? thermo.status;
-  const statusClass = { green: 'b-ok', amber: 'b-warn' }[thermo.status] ?? 'b-bad';
+  body.innerHTML = '';
 
-  outlet.appendChild(h(`
-    <div class="panel thermo t-${esc(thermo.status)}" data-testid="thermometer">
-      <div class="row spread">
-        <h2 class="mt0">Collection vs breakeven <small>this month</small></h2>
-        <span class="badge ${statusClass}">${esc(statusLabel)}</span>
-      </div>
-      <div class="grid cols-4">
-        <div class="stat"><div class="k">Collected MTD</div><div class="v">${fmtINR(thermo.collected_mtd)}</div>
-          <div class="s">should be ${fmtINR(thermo.expected_by_today)} by today</div></div>
-        <div class="stat"><div class="k">Monthly breakeven</div><div class="v">${fmtINR(thermo.monthly_breakeven)}</div>
-          <div class="s">gap ${fmtINR(thermo.gap_to_breakeven)}</div></div>
-        <div class="stat"><div class="k">Required booking</div><div class="v">${fmtINR(thermo.required_booking)}</div>
-          <div class="s">grossed up for collection slippage</div></div>
-        <div class="stat"><div class="k">Daily collection floor</div><div class="v" data-testid="daily-floor">${fmtINR(thermo.daily_collection_floor)}</div>
-          <div class="s">any day below this loses money</div></div>
-      </div>
-      <div class="bar"><div class="fill" style="width:${Math.min(100, pace)}%"></div></div>
-      <div class="hint">${pace.toFixed(0)}% of where collections should be by today · booked MTD ${fmtINR(thermo.booked_mtd)}</div>
-    </div>`));
-
-  // --- money in, and the funnel it came from ---
-  const chartRow = h('<div class="chart-grid" style="margin-bottom:18px"></div>');
-
-  const moneyPanel = h(`<div class="panel"><h2 class="mt0">Collections
-    <small>daily against the running month total — both in rupees, one scale</small></h2></div>`);
-  moneyPanel.appendChild(lineChart(money, {
-    x: 'day',
-    formatX: dayLabel,
-    format: (v) => fmtINR(v),
-    series: [
-      { key: 'collected', label: 'Collected that day' },
-      { key: 'cumulative', label: 'Running total' },
-    ],
-  }));
-  chartRow.appendChild(moneyPanel);
-
-  // The funnel is ordered stages, so it is bars, not a pie: a pie would imply
-  // the stages are parts of a whole when each one contains the next.
-  const funnelPanel = h(`<div class="panel"><h2 class="mt0">Funnel <small>last 30 days</small></h2></div>`);
-  funnelPanel.appendChild(barChart([
-    { label: 'Leads', value: Number(funnel.leads) },
-    { label: 'Contacted', value: Number(funnel.contacted) },
-    { label: 'Connected', value: Number(funnel.connected) },
-    { label: 'Qualified', value: Number(funnel.qualified) },
-    { label: 'Won', value: Number(funnel.won) },
-  ]));
-  funnelPanel.appendChild(h(`<div class="hint" style="margin-top:10px">
-    ${funnel.conversion_pct ?? 0}% conversion · average ${funnel.avg_attempts ?? 0} attempts per lead</div>`));
-  chartRow.appendChild(funnelPanel);
-  outlet.appendChild(chartRow);
-
-  // --- callers, with a date picker ---
-  const callersPanel = h(`
+  // ---- needs attention now (range-independent) ----
+  const now = h(`
     <div class="panel">
-      <div class="row spread">
-        <h2 class="mt0">Callers</h2>
-        <input type="date" id="caller-date" style="border:1px solid var(--line);border-radius:8px;padding:7px 10px">
-      </div>
-      <div id="caller-table"></div>
+      <div class="section-h" style="margin-top:0">Right now</div>
+      <div class="grid stat-grid" data-tiles></div>
     </div>`);
-  outlet.appendChild(callersPanel);
+  const tiles = now.querySelector('[data-tiles]');
+  tiles.appendChild(linkTile(statTile('Overdue follow-ups', d.now.overdue_now, 'promised and late', d.now.overdue_now > 0 ? 'red' : 'green'), '#/leads', { due: 'overdue', stage: 'open' }));
+  tiles.appendChild(linkTile(statTile('Due today', d.now.due_today, 'on the reminder list'), '#/reminders'));
+  tiles.appendChild(linkTile(statTile('Never called', d.now.untouched_now, 'new, waiting for call one', d.now.untouched_now > 0 ? 'amber' : 'green'), '#/leads', { stage: 'new' }));
+  tiles.appendChild(linkTile(statTile('Unassigned', d.now.unassigned_now, 'belonging to nobody', d.now.unassigned_now > 0 ? 'red' : 'green'), '#/leads', { assigned: 'none', stage: 'open' }));
+  tiles.appendChild(linkTile(statTile('Open pipeline', d.now.open_now, 'live leads in play'), '#/leads', { stage: 'open' }));
+  body.appendChild(now);
 
-  const dateInput = callersPanel.querySelector('#caller-date');
-  const drawCallers = async () => {
-    const qs = dateInput.value ? `?date=${dateInput.value}` : '';
-    const callers = await get(`/dashboards/callers${qs}`);
-    const target = callersPanel.querySelector('#caller-table');
-    if (callers.length === 0) { target.innerHTML = '<div class="empty">No caller activity for that day.</div>'; return; }
-    target.innerHTML = '';
-    target.appendChild(h(`
-      <table class="table" data-testid="callers-table"><thead><tr>
-        <th>Caller</th><th class="num">Score</th><th class="num">Dials</th><th class="num">Connects</th>
-        <th class="num">Talk</th><th class="num">Unverified</th><th class="num">Leads in SLA</th>
-        <th class="num">CB kept / missed</th><th class="num">Hours</th>
-      </tr></thead><tbody>
-      ${callers.map((c) => `
-        <tr>
-          <td>${esc(c.full_name)}</td>
-          <td class="num">${c.score !== null && c.score !== undefined ? Number(c.score).toFixed(0) : '—'}</td>
-          <td class="num">${Number(c.dials)} / ${Number(c.dial_target)}</td>
-          <td class="num">${Number(c.connects)} <span class="hint">(${c.connect_rate ? (Number(c.connect_rate) * 100).toFixed(0) + '%' : '—'})</span></td>
-          <td class="num">${Number(c.talk_minutes)}m</td>
-          <td class="num">${Number(c.unverified_dials) > 0 ? `<span class="badge b-warn">${Number(c.unverified_dials)}</span>` : '0'}</td>
-          <td class="num">${Number(c.touched_in_sla)} / ${Number(c.leads_assigned)}</td>
-          <td class="num">${Number(c.callbacks_kept)} / ${Number(c.callbacks_missed)}</td>
-          <td class="num">${c.logged_minutes !== null && c.logged_minutes !== undefined ? esc(minsLabel(c.logged_minutes)) : '—'}${c.is_late ? ' <span class="badge b-warn">late</span>' : ''}</td>
-        </tr>`).join('')}
-      </tbody></table>`));
-  };
-  dateInput.addEventListener('change', drawCallers);
-  await drawCallers();
-
-  // --- counsellors MTD ---
-  outlet.appendChild(h(`
+  // ---- the range ----
+  const t = d.totals;
+  const rangePanel = h(`
     <div class="panel">
-      <h2>Counsellors <small>month to date</small></h2>
-      ${counsellors.length === 0 ? '<div class="empty">No counsellors configured.</div>' : `
-      <table class="table" data-testid="counsellors-table"><thead><tr>
-        <th>Counsellor</th><th class="num">Leads</th><th class="num">Won</th><th class="num">Conversion</th>
-        <th class="num">Booked</th><th class="num">Collected</th><th class="num">vs target</th><th class="num">Overdue</th>
-      </tr></thead><tbody>
-      ${counsellors.map((c) => {
-        const pct = c.collection_target ? Math.round((Number(c.collected_amount) / Number(c.collection_target)) * 100) : 0;
-        return `<tr>
-          <td>${esc(c.full_name)}</td>
-          <td class="num">${Number(c.leads_received)}</td>
-          <td class="num">${Number(c.deals_won)}</td>
-          <td class="num">${c.conversion_rate ? (Number(c.conversion_rate) * 100).toFixed(0) + '%' : '—'}</td>
-          <td class="num">${fmtINR(c.booked_amount)}</td>
-          <td class="num">${fmtINR(c.collected_amount)}</td>
-          <td class="num" style="width:140px">
-            <div class="bar-mini"><div style="width:${Math.min(100, pct)}%"></div></div>
-            <span class="hint">${pct}% of ${fmtINR(c.collection_target)}</span></td>
-          <td class="num">${Number(c.overdue_amount) > 0 ? `<span class="badge b-bad">${fmtINR(c.overdue_amount)}</span>` : '—'}</td>
-        </tr>`;
-      }).join('')}
-      </tbody></table>`}
-    </div>`));
+      <div class="section-h" style="margin-top:0">${esc(fmtRange(d.from, d.to))}</div>
+      <div class="grid stat-grid">
+        ${tile('Leads in', t.leads_in)}
+        ${tile('Calls made', t.calls)}
+        ${tile('Qualified', t.qualified)}
+        ${tile('Invites sent', t.invites_sent)}
+        ${tile('Confirmed', t.confirmed)}
+        ${tile('Converted', t.converted, t.leads_in > 0 ? `${pct(t.converted, t.leads_in)} of leads in` : '')}
+      </div>
+    </div>`);
+  body.appendChild(rangePanel);
+
+  // ---- day by day ----
+  if (d.byDay.length > 1) {
+    const chartPanel = h('<div class="panel"><div class="section-h" style="margin-top:0">Day by day</div></div>');
+    chartPanel.appendChild(
+      lineChart(
+        d.byDay.map((r) => ({ ...r, day: String(r.day).slice(5, 10) })),
+        {
+          x: 'day',
+          series: [
+            { key: 'leads_in', label: 'Leads in' },
+            { key: 'calls', label: 'Calls' },
+            { key: 'qualified', label: 'Qualified' },
+            { key: 'converted', label: 'Converted' },
+          ],
+          height: 220,
+        },
+      ),
+    );
+    body.appendChild(chartPanel);
+  }
+
+  // ---- funnel for the cohort received in range ----
+  const f = d.funnel;
+  const funnelPanel = h(`
+    <div class="panel">
+      <div class="section-h" style="margin-top:0">Funnel — the ${Number(f.received)} lead${f.received === 1 ? '' : 's'} received in this range</div>
+    </div>`);
+  funnelPanel.appendChild(
+    barChart(
+      [
+        { label: 'Received', value: f.received },
+        { label: 'Contacted', value: f.contacted, sub: pct(f.contacted, f.received) },
+        { label: 'Qualified', value: f.qualified, sub: pct(f.qualified, f.received) },
+        { label: 'Invite sent', value: f.invite_sent, sub: pct(f.invite_sent, f.received) },
+        { label: 'Confirmed', value: f.confirmed, sub: pct(f.confirmed, f.received) },
+        { label: 'Converted', value: f.converted, sub: pct(f.converted, f.received) },
+      ],
+      {},
+    ),
+  );
+  body.appendChild(funnelPanel);
+
+  // ---- per person ----
+  const people = h(`
+    <div class="panel">
+      <div class="section-h" style="margin-top:0">Who did what</div>
+      <table class="table">
+        <thead><tr>
+          <th>Person</th><th>Calls</th><th>Qualified</th><th>Call-backs</th>
+          <th>Not answered</th><th>Not qualified</th><th>Conversions</th>
+          <th>Open now</th><th>Overdue now</th>
+        </tr></thead>
+        <tbody>
+          ${d.byPerson
+            .map(
+              (p) => `
+            <tr>
+              <td><b>${esc(p.full_name)}</b> <span class="hint">${esc(p.role === 'followup' ? 'follow-up' : p.role)}</span></td>
+              <td>${p.calls}</td><td>${p.qualified_calls}</td><td>${p.call_backs}</td>
+              <td>${p.not_answered}</td><td>${p.not_qualified_calls}</td><td>${p.conversions}</td>
+              <td>${p.open_now}</td>
+              <td class="${Number(p.overdue_now) > 0 ? 't-red' : 't-green'}">${p.overdue_now}</td>
+            </tr>`,
+            )
+            .join('')}
+        </tbody>
+      </table>
+      <div class="hint">Calls and conversions are for the chosen dates; "open" and "overdue" are right now.</div>
+    </div>`);
+  body.appendChild(people);
+
+  // ---- sources ----
+  const sources = h(`
+    <div class="panel">
+      <div class="section-h" style="margin-top:0">Where leads came from</div>
+      <table class="table">
+        <thead><tr><th>Source</th><th>Leads</th><th>Contacted</th><th>Qualified</th><th>Converted</th></tr></thead>
+        <tbody>
+          ${d.bySource
+            .map(
+              (s) => `
+            <tr>
+              <td><b>${esc(s.source)}</b></td>
+              <td>${s.leads}</td><td>${s.contacted}</td><td>${s.qualified}</td>
+              <td>${s.converted}${s.leads > 0 ? ` <span class="hint">${pct(s.converted, s.leads)}</span>` : ''}</td>
+            </tr>`,
+            )
+            .join('')}
+        </tbody>
+      </table>
+    </div>`);
+  body.appendChild(sources);
+}
+
+function tile(label, value, sub = '') {
+  return `<div class="stat"><div class="k">${esc(label)}</div><div class="v">${esc(String(value))}</div>${
+    sub ? `<div class="s">${esc(sub)}</div>` : ''
+  }</div>`;
+}
+
+/** Wrap a stat tile so clicking it opens the pre-filtered list behind it. */
+function linkTile(tileEl, hash, filters = null) {
+  tileEl.style.cursor = 'pointer';
+  tileEl.addEventListener('click', () => {
+    if (filters) {
+      try {
+        sessionStorage.setItem(
+          'crm-lead-filters',
+          JSON.stringify({ q: '', range: 'all', from: '', to: '', assigned: '', stage: '', source: '', due: '', ...filters }),
+        );
+      } catch { /* fine */ }
+    }
+    location.hash = hash;
+  });
+  return tileEl;
+}
+
+const pct = (a, b) => (Number(b) > 0 ? `${Math.round((Number(a) / Number(b)) * 100)}%` : '—');
+
+function fmtRange(from, to) {
+  const f = String(from).slice(0, 10);
+  const t = String(to).slice(0, 10);
+  return f === t ? f : `${f} → ${t}`;
 }

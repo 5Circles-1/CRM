@@ -2,7 +2,7 @@ import argon2 from 'argon2';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Database } from '../db/pool.ts';
 
-export type Role = 'caller' | 'counsellor' | 'ops' | 'admin' | 'viewer';
+export type Role = 'admin' | 'caller' | 'followup';
 
 export interface AuthedUser {
   id: string;

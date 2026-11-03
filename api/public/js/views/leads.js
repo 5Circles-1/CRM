@@ -1,306 +1,278 @@
-import { get } from '../api.js';
-import { addLeadModal } from '../addlead.js';
-import { badge, esc, fmtDT, h } from '../util.js';
+import { get, post } from '../api.js';
+import {
+  avatarHtml, esc, fmtDT, h, istToday, openModal, outcomeLabel, stageBadge, toast,
+} from '../util.js';
 
 /**
- * Find a lead, or build a re-tap list and work it.
+ * The spreadsheet. Every lead, one row each, filters along the top -
+ * everything visible to everyone, the way a shared Google Sheet is.
  *
- * The search box alone was not enough. The lists a caller actually works from —
- * "everyone who did not answer", "everyone who asked for a callback", "everyone
- * I have not messaged" — are not things you can type into a name search. Those
- * are one click each, and the filters combine, so "not answered AND overdue AND
- * no WhatsApp yet" is three clicks rather than a support request.
+ * Filters survive navigating into a lead and back (sessionStorage), so
+ * "yesterday's Meta leads with Harsh" stays put while you work through them.
  */
 
-/** One-click lists, in the order a caller would reach for them. */
-const PRESETS = [
-  { label: 'Everything', filters: {} },
-  // The owner's list (0068): every lead where a client showed real intent
-  // and nobody has closed it. Whatever else happens to these - unanswered
-  // dials, overdue actions, even parking - they never leave this list until
-  // a person ends them, so "potential" is always one click away.
-  { label: '🟢 Potential', filters: { green: 'yes' } },
-  { label: 'Not answered ×2+', filters: { na: '2plus' } },
-  { label: 'Did not answer', filters: { lastDisposition: 'not_answered' } },
-  { label: 'Asked for a callback', filters: { lastDisposition: 'callback_requested' } },
-  { label: 'Will call us back', filters: { lastDisposition: 'will_call_back_self' } },
-  // Keyed on the open PROMISE, not on the last outcome. Filtering on
-  // lastDisposition here was how a will-visit lead vanished from this list
-  // the moment one later dial went unanswered - and sank into the bulk
-  // not-answered pile instead. The promise outlives later outcomes.
-  { label: 'Will visit', filters: { visit: 'promised' } },
-  { label: 'Busy / switched off / unreachable', filters: { lastDisposition: 'busy,switched_off,incoming_unavailable' } },
-  { label: 'Overdue now', filters: { due: 'overdue' } },
-  { label: 'Never contacted', filters: { due: 'untouched' } },
-  { label: 'No WhatsApp yet', filters: { whatsapp: 'not_sent' } },
-];
+const FILTER_KEY = 'crm-lead-filters';
 
-/**
- * What the screen looked like when the user left it, kept for the session.
- *
- * Opening a lead and coming back used to land on a blank search - filters
- * gone, list gone, scroll gone - which read as "back to the main page" and
- * cost the caller their place in a list they were working top to bottom.
- * Module state survives in-app navigation, so back really means back.
- */
-const saved = { q: '', preset: 'Everything', controls: {}, scrollY: 0 };
+function loadFilters() {
+  try {
+    return JSON.parse(sessionStorage.getItem(FILTER_KEY)) ?? {};
+  } catch {
+    return {};
+  }
+}
 
-const DUE = [
-  ['', 'Any time'],
-  ['overdue', 'Overdue now'],
-  ['today', 'Due today'],
-  ['untouched', 'Never contacted'],
-  ['contacted', 'Already contacted'],
-];
+function saveFilters(f) {
+  try {
+    sessionStorage.setItem(FILTER_KEY, JSON.stringify(f));
+  } catch { /* private mode: filters just reset */ }
+}
 
-const STATUS = [
-  ['', 'Any status'],
-  ['new', 'New'],
-  ['working', 'Working'],
-  ['callback', 'Callback'],
-  ['qualified', 'Qualified'],
-  ['negotiation', 'Negotiation'],
-  ['nurture', 'Nurture'],
-];
-
-/**
- * The follow-up round a lead is on, in the language of the old Excel, whose
- * FU1..FU5 columns are how the floor still thinks. One call made means the
- * next dial is the 1st follow-up, and so on.
- */
-const ROUNDS = [
-  ['', 'Any round'],
-  ['0', 'Fresh — no call yet'],
-  ['1', 'Due 1st follow-up'],
-  ['2', 'Due 2nd follow-up'],
-  ['3', 'Due 3rd follow-up'],
-  ['4', 'Due 4th follow-up'],
-  ['5plus', 'Due 5th follow-up or later'],
-];
-
-const WHATSAPP = [
-  ['', 'WhatsApp: any'],
-  ['sent', 'WhatsApp sent'],
-  ['not_sent', 'WhatsApp not sent'],
-];
+const shiftDate = (ymd, days) => {
+  const d = new Date(`${ymd}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
 
 export async function render(outlet, me) {
-  const dispositions = await get('/meta/dispositions').catch(() => []);
-  let filters = {};
-  let preset = saved.preset;
+  const f = {
+    q: '', range: 'all', from: '', to: '', assigned: '', stage: '', source: '', due: '',
+    ...loadFilters(),
+  };
 
-  // Every view starts by clearing the outlet; this one forgot, so the
-  // router's loading spinner stayed on screen above the panel, spinning
-  // forever - which read as "the page never finishes loading".
+  const { users, sources } = await get('/leads/meta/options');
+
   outlet.innerHTML = '';
-
-  const panel = h(`
-    <div class="panel">
-      <div class="row spread">
-        <h2>Find and re-tap <small>pick a list, or combine the filters</small></h2>
-        <span id="addlead-slot"></span>
+  const root = h(`
+    <div>
+      <div class="panel filterbar">
+        <div class="frow">
+          <input type="search" name="q" placeholder="Search name / phone / city…" value="${esc(f.q)}" style="min-width:220px">
+          <span class="chips" data-ranges>
+            ${[['today', 'Today'], ['yesterday', 'Yesterday'], ['7d', 'Last 7 days'], ['all', 'All time'], ['custom', 'Dates…']]
+              .map(([k, label]) => `<button class="chip${f.range === k ? ' on' : ''}" data-range="${k}">${label}</button>`)
+              .join('')}
+          </span>
+          <span data-custom hidden>
+            <input type="date" name="from" value="${esc(f.from)}">
+            <span class="hint">to</span>
+            <input type="date" name="to" value="${esc(f.to)}">
+          </span>
+        </div>
+        <div class="frow">
+          <select name="assigned">
+            <option value="">Everyone</option>
+            <option value="me">Mine</option>
+            <option value="none">Unassigned</option>
+            ${users.map((u) => `<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}
+          </select>
+          <select name="stage">
+            <option value="">Any status</option>
+            <option value="open">Open (needs work)</option>
+            <option value="new">New — never called</option>
+            <option value="calling">Calling</option>
+            <option value="qualified">Qualified</option>
+            <option value="converted">Converted</option>
+            <option value="not_qualified">Not qualified</option>
+          </select>
+          <select name="source">
+            <option value="">Any source</option>
+            ${sources.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}
+          </select>
+          <select name="due">
+            <option value="">Any follow-up</option>
+            <option value="overdue">Overdue now</option>
+            <option value="today">Due today</option>
+          </select>
+          <button class="btn small" data-clear>Clear</button>
+          <span style="flex:1"></span>
+          <button class="btn primary" data-add>+ Add lead</button>
+        </div>
       </div>
-
-      <div class="chips" id="presets">
-        ${PRESETS.map((p) => `
-          <button class="chip ${p.label === preset ? 'on' : ''}" data-preset="${esc(p.label)}">${esc(p.label)}</button>`).join('')}
-      </div>
-
-      <div class="frow" style="align-items:flex-end">
-        <label class="f">Search <span class="hint">name or phone</span>
-          <input name="q" placeholder="e.g. Asha or 98765…" autocomplete="off" data-testid="lead-search">
-        </label>
-        <label class="f">Last outcome
-          <select name="lastDisposition">
-            <option value="">Any outcome</option>
-            <option value="busy,switched_off,incoming_unavailable">Unreachable — busy, switched off or unavailable</option>
-            ${dispositions.map((d) => `<option value="${esc(d.value)}">${esc(d.label)}</option>`).join('')}
-          </select>
-        </label>
-        <label class="f">Timing
-          <select name="due">${DUE.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
-        </label>
-        <label class="f">Status
-          <select name="status">${STATUS.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
-        </label>
-        <label class="f">WhatsApp
-          <select name="whatsapp">${WHATSAPP.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
-        </label>
-        <label class="f">Follow-up round
-          <select name="attempts">${ROUNDS.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
-        </label>
-        <label class="f">Not answered
-          <select name="na">
-            <option value="">Any</option>
-            <option value="2plus">2+ times in a row</option>
-          </select>
-        </label>
-        <label class="f">Visit
-          <select name="visit">
-            <option value="">Any</option>
-            <option value="promised">Promised — not yet come</option>
-            <option value="arrived">Walked in</option>
-          </select>
-        </label>
-        <label class="f">Potential
-          <select name="green">
-            <option value="">Any</option>
-            <option value="yes">🟢 Green — showed intent</option>
-          </select>
-        </label>
-        <button class="btn" id="clear">Clear</button>
-      </div>
-
-      <div id="results"></div>
+      <div class="panel" data-table><div class="spin"></div></div>
     </div>`);
-  outlet.appendChild(panel);
+  outlet.appendChild(root);
 
-  const input = panel.querySelector('[name=q]');
-  const results = panel.querySelector('#results');
-  const controls = ['lastDisposition', 'due', 'status', 'whatsapp', 'attempts', 'na', 'visit', 'green'];
-  let timer = null;
+  const el = (sel) => root.querySelector(sel);
+  el('[name=assigned]').value = f.assigned;
+  el('[name=stage]').value = f.stage;
+  el('[name=source]').value = f.source;
+  el('[name=due]').value = f.due;
 
-  const readControls = () => {
-    filters = {};
-    for (const name of controls) {
-      const v = panel.querySelector(`[name=${name}]`).value;
-      if (v) filters[name] = v;
+  const applyRangeUI = () => {
+    root.querySelectorAll('[data-range]').forEach((c) =>
+      c.classList.toggle('on', c.dataset.range === f.range),
+    );
+    el('[data-custom]').hidden = f.range !== 'custom';
+  };
+  applyRangeUI();
+
+  const rangeDates = () => {
+    const today = istToday();
+    if (f.range === 'today') return { from: today, to: today };
+    if (f.range === 'yesterday') return { from: shiftDate(today, -1), to: shiftDate(today, -1) };
+    if (f.range === '7d') return { from: shiftDate(today, -6), to: today };
+    if (f.range === 'custom') return { from: f.from, to: f.to };
+    return { from: '', to: '' };
+  };
+
+  let drawSeq = 0;
+  async function draw() {
+    saveFilters(f);
+    const seq = ++drawSeq;
+    const { from, to } = rangeDates();
+    const params = new URLSearchParams();
+    if (f.q) params.set('q', f.q);
+    if (f.stage) params.set('stage', f.stage);
+    if (f.assigned) params.set('assigned', f.assigned);
+    if (f.source) params.set('source', f.source);
+    if (f.due) params.set('due', f.due);
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    params.set('limit', '200');
+
+    let data;
+    try {
+      data = await get(`/leads?${params}`);
+    } catch (err) {
+      el('[data-table]').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+      return;
     }
-    // Remember the screen as it now is, so coming back from a lead restores it.
-    saved.preset = preset;
-    saved.controls = { ...filters };
-    saved.q = input.value;
-  };
+    if (seq !== drawSeq) return; // a newer filter is already loading
 
-  const applyPreset = (p) => {
-    for (const name of controls) panel.querySelector(`[name=${name}]`).value = p.filters[name] ?? '';
-    readControls();
-  };
-
-  const run = async () => {
-    const q = input.value.trim();
-
-    // A filter is a complete instruction; a two-character search is not, since
-    // it would match half the book.
-    if (Object.keys(filters).length === 0 && q.length < 2) {
-      results.innerHTML = '<div class="empty">Pick a list above, set a filter, or type at least two characters.</div>';
+    const { total, leads } = data;
+    const host = el('[data-table]');
+    if (leads.length === 0) {
+      host.innerHTML = '<div class="empty">No leads match these filters.</div>';
       return;
     }
 
-    const params = new URLSearchParams({ limit: '200', ...filters });
-    if (q.length >= 2) params.set('q', q);
+    host.innerHTML = `
+      <div class="hint" style="margin-bottom:8px">${total} lead${total === 1 ? '' : 's'}${
+        total > leads.length ? ` — showing the latest ${leads.length}; narrow the filters for the rest` : ''
+      }</div>
+      <table class="table lead-table">
+        <thead><tr>
+          <th>Received</th><th>Name</th><th>Phone</th><th>City</th><th>Source</th>
+          <th>Assigned</th><th>Status</th><th>Last response</th><th>Next follow-up</th><th title="Invite sent / Confirmed / Converted">✉ ✓ ★</th>
+        </tr></thead>
+        <tbody>
+          ${leads.map((l) => leadRow(l)).join('')}
+        </tbody>
+      </table>`;
 
-    results.innerHTML = '<div class="spin"></div>';
+    host.querySelectorAll('tr[data-id]').forEach((tr) => {
+      tr.addEventListener('click', (e) => {
+        if (e.target.closest('a')) return; // let tel:/copy links behave
+        location.hash = `#/lead/${tr.dataset.id}`;
+      });
+    });
+  }
+
+  // ---- wiring ----
+  let qTimer = null;
+  el('[name=q]').addEventListener('input', (e) => {
+    f.q = e.target.value.trim();
+    clearTimeout(qTimer);
+    qTimer = setTimeout(draw, 250);
+  });
+  root.querySelectorAll('[data-range]').forEach((chip) =>
+    chip.addEventListener('click', () => {
+      f.range = chip.dataset.range;
+      applyRangeUI();
+      if (f.range !== 'custom') draw();
+    }),
+  );
+  el('[name=from]').addEventListener('change', (e) => { f.from = e.target.value; draw(); });
+  el('[name=to]').addEventListener('change', (e) => { f.to = e.target.value; draw(); });
+  for (const name of ['assigned', 'stage', 'source', 'due']) {
+    el(`[name=${name}]`).addEventListener('change', (e) => { f[name] = e.target.value; draw(); });
+  }
+  el('[data-clear]').addEventListener('click', () => {
+    Object.assign(f, { q: '', range: 'all', from: '', to: '', assigned: '', stage: '', source: '', due: '' });
+    el('[name=q]').value = '';
+    el('[name=assigned]').value = '';
+    el('[name=stage]').value = '';
+    el('[name=source]').value = '';
+    el('[name=due]').value = '';
+    applyRangeUI();
+    draw();
+  });
+  el('[data-add]').addEventListener('click', () => addLeadModal(users, sources, me));
+
+  await draw();
+}
+
+function leadRow(l) {
+  const overdue = l.due_bucket === 'overdue';
+  const checks = [
+    l.template_sent_at ? '✉' : '·',
+    l.confirmed_at ? '✓' : '·',
+    l.converted_at ? '★' : '·',
+  ].join(' ');
+  return `
+    <tr data-id="${l.id}" class="${overdue ? 'row-overdue' : ''}">
+      <td class="mono">${esc(fmtDT(l.created_at))}${Number(l.enquiry_count) > 1 ? ` <span class="badge b-warn" title="Enquired ${l.enquiry_count} times">×${l.enquiry_count}</span>` : ''}</td>
+      <td><b>${esc(l.full_name ?? '—')}</b></td>
+      <td class="mono"><a href="tel:${esc(l.phone_e164)}" title="Call">${esc(l.phone_e164)}</a></td>
+      <td>${esc(l.city ?? '')}</td>
+      <td>${esc(l.source_name)}</td>
+      <td>${l.assigned_name ? `${avatarHtml(l.assigned_name, 22)} ${esc(l.assigned_name)}` : '<span class="badge b-bad">Unassigned</span>'}</td>
+      <td>${stageBadge(l.stage)}</td>
+      <td>${esc(outcomeLabel(l))}</td>
+      <td class="${overdue ? 't-red' : ''}">${l.next_follow_up_at ? esc(fmtDT(l.next_follow_up_at)) : '—'}</td>
+      <td class="mono" title="Invite sent / Confirmed / Converted">${checks}</td>
+    </tr>`;
+}
+
+function addLeadModal(users, sources, me) {
+  const manual = sources.find((s) => s.name === 'Manual');
+  const bodyEl = h(`
+    <div>
+      <label class="f">Name <input name="name" autocomplete="off"></label>
+      <label class="f">Phone <span class="hint">(required)</span> <input name="phone" autocomplete="off" inputmode="tel"></label>
+      <label class="f">Email <input name="email" type="email" autocomplete="off"></label>
+      <label class="f">City <input name="city" autocomplete="off"></label>
+      <label class="f">Give to
+        <select name="assigned">
+          <option value="">Automatic (round-robin)</option>
+          ${users.map((u) => `<option value="${u.id}" ${u.id === me.id ? 'selected' : ''}>${esc(u.full_name)}</option>`).join('')}
+        </select>
+      </label>
+      <label class="f">Source
+        <select name="source">
+          ${sources.map((s) => `<option value="${s.id}" ${manual && s.id === manual.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+        </select>
+      </label>
+      <label class="f">Note <textarea name="note" rows="2" placeholder="Anything worth knowing before the first call"></textarea></label>
+    </div>`);
+  const footer = h('<div><button class="btn primary">Add lead</button></div>');
+  const { close } = openModal('Add a lead', bodyEl, footer);
+  bodyEl.querySelector('[name=phone]').focus();
+
+  footer.querySelector('button').addEventListener('click', async () => {
+    const v = (n) => bodyEl.querySelector(`[name=${n}]`).value.trim();
+    if (!v('phone')) { toast('A lead needs a phone number.', 'err'); return; }
     try {
-      const data = await get(`/leads?${params.toString()}`);
-      results.innerHTML = '';
-      if (data.leads.length === 0) {
-        results.appendChild(h('<div class="empty">Nothing you can see matches that.</div>'));
+      const lead = await post('/leads', {
+        fullName: v('name') || undefined,
+        phone: v('phone'),
+        email: v('email') || undefined,
+        city: v('city') || undefined,
+        note: v('note') || undefined,
+        assignedTo: v('assigned') || undefined,
+        sourceId: v('source') || undefined,
+      });
+      close();
+      toast(`Lead added${lead.assigned_name ? ` — with ${lead.assigned_name}` : ''}.`);
+      location.hash = `#/lead/${lead.id}`;
+    } catch (err) {
+      if (err.status === 409 && err.body?.leadId) {
+        close();
+        toast(err.message, 'err');
+        location.hash = `#/lead/${err.body.leadId}`;
         return;
       }
-      results.appendChild(h(`
-        <div class="row spread" style="margin:6px 0">
-          <b>${data.leads.length} lead${data.leads.length === 1 ? '' : 's'}</b>
-          <span class="hint">worked top to bottom, most overdue first</span>
-        </div>`));
-      results.appendChild(h(`
-        <div style="overflow-x:auto">
-        <table class="table"><thead><tr>
-          <th>Name</th><th>Phone</th><th>Status</th><th>Last outcome</th>
-          <th>Next action</th><th class="num">Calls so far</th><th>WA</th><th></th>
-        </tr></thead><tbody>
-        ${data.leads.map((l) => `
-          <tr>
-            <td>${esc(l.full_name ?? 'Unnamed')}</td>
-            <td class="mono">${esc(l.phone_e164)}</td>
-            <td>${badge(l.status)}${l.green_reason === 'will_visit'
-                  ? ' <span class="badge b-ok" title="Promised to visit and has not yet come — a quality lead, whatever the last outcome">🚶 will visit</span>'
-                  : l.green_reason === 'interested'
-                  ? ' <span class="badge b-ok" title="Showed real interest on a call — a quality lead, whatever the last outcome">🟢</span>'
-                  : ''}${Number(l.na_streak) >= 2
-                  ? ` <span class="badge b-bad" title="Not answered ${Number(l.na_streak)} times in a row">📵 ×${Number(l.na_streak)}</span>`
-                  : ''}</td>
-            <td>${l.last_disposition
-                  ? esc(String(l.last_disposition).replace(/_/g, ' '))
-                  : '<span class="hint">never contacted</span>'}</td>
-            <td>${esc(fmtDT(l.next_action_at))}</td>
-            <td class="num">${Number(l.attempt_count)}</td>
-            <td>${l.whatsapp_sent_at ? '<span class="badge b-ok">sent</span>' : '<span class="hint">—</span>'}</td>
-            <td class="right"><a href="#/lead/${esc(l.id)}">open</a></td>
-          </tr>`).join('')}
-        </tbody></table></div>`));
-    } catch (err) {
-      results.innerHTML = '';
-      results.appendChild(h(`<div class="empty">${esc(err.message)}</div>`));
+      toast(err.message, 'err');
     }
-  };
-
-  if (['counsellor', 'admin', 'ops', 'caller'].includes(me?.role)) {
-    const slot = panel.querySelector('#addlead-slot');
-    const openLead = (lead) => { location.hash = `#/lead/${lead.id}`; };
-    const inbound = h('<button class="btn small">📞 Inbound call</button>');
-    inbound.addEventListener('click', () => addLeadModal(me, openLead, 'inbound'));
-    slot?.appendChild(inbound);
-    if (me?.role === 'caller') {
-      // The one lead a caller may create; their button says exactly that.
-      inbound.classList.add('primary');
-      inbound.textContent = '📞 Log inbound call';
-    } else {
-      const btn = h('<button class="btn primary small">Add lead</button>');
-      btn.addEventListener('click', () => addLeadModal(me, openLead));
-      slot?.appendChild(btn);
-    }
-  }
-
-  panel.querySelector('#presets').addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-preset]');
-    if (!btn) return;
-    preset = btn.dataset.preset;
-    panel.querySelectorAll('#presets .chip').forEach((b) => b.classList.toggle('on', b === btn));
-    applyPreset(PRESETS.find((p) => p.label === preset));
-    run();
   });
-
-  // Changing a dropdown by hand leaves the preset chips highlighted on a list
-  // that is no longer what is shown, so clear the highlight.
-  controls.forEach((name) => {
-    panel.querySelector(`[name=${name}]`).addEventListener('change', () => {
-      readControls();
-      panel.querySelectorAll('#presets .chip').forEach((b) => b.classList.remove('on'));
-      run();
-    });
-  });
-
-  panel.querySelector('#clear').addEventListener('click', () => {
-    input.value = '';
-    applyPreset(PRESETS[0]);
-    panel.querySelectorAll('#presets .chip').forEach((b, i) => b.classList.toggle('on', i === 0));
-    run();
-  });
-
-  // Put the screen back the way it was left, so returning from a lead is a
-  // return - not a restart.
-  input.value = saved.q;
-  for (const name of controls) {
-    panel.querySelector(`[name=${name}]`).value = saved.controls[name] ?? '';
-  }
-  readControls();
-
-  // Opening a lead remembers where the list stood, so Back lands mid-list.
-  results.addEventListener('click', (e) => {
-    if (e.target.closest('a[href^="#/lead/"]')) saved.scrollY = window.scrollY;
-  });
-
-  input.addEventListener('input', () => {
-    clearTimeout(timer);
-    saved.q = input.value;
-    timer = setTimeout(run, 300);
-  });
-
-  input.focus({ preventScroll: true });
-  await run();
-  if (saved.scrollY) {
-    window.scrollTo(0, saved.scrollY);
-    saved.scrollY = 0;
-  }
 }
