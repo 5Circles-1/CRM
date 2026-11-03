@@ -240,8 +240,13 @@ Do not undo these without understanding why they exist.
   enquiry lands on the Fresh tab — the earlier call may have hit a
   spam-flagged number and never been picked up — so `crm.v_reenquired_leads`
   rows render *inside* the fresh list with an "enquired again" badge, flagged
-  against the deadline the re-enquiry set, and leave only when a call attempt
-  lands after the re-enquiry — never for age. A re-enquiry that reopens a
+  against the deadline the re-enquiry set, and leave only when a person acts
+  after the re-enquiry — a call attempt, a deliberate close, the admin's
+  archive (0086, 0087), or the client **arriving at the office** (0088, floor
+  report 3 Nov: for a paying client the walk-in is the only clearing act
+  there is, since nobody dials a client standing at the desk; the booking
+  alone is a promise and holds the row, and an undone "Walked in" resurfaces
+  it) — never for age. A re-enquiry that reopens a
   parked lead **with no owner at all** is adopted by the team's counsellor
   (`crm.adopt_orphan_reenquiries`, 0066, owner decision) — before that rule,
   revived leads sat on the whole-floor list belonging to nobody. The bell
