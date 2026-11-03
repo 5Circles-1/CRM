@@ -2,21 +2,16 @@
 # Install caddy, put this at /etc/caddy/Caddyfile, replace the domain,
 # then: sudo systemctl reload caddy
 crm.yourcompany.in {
-    # ---- OPTIONAL: office-only access (runbook Phase 4b) -------------------
+    # ---- OPTIONAL: office-only access --------------------------------------
     # Uncomment the block below and replace the IP with your office's
     # STATIC public IP (ask your ISP; check it from the office at
-    # https://ifconfig.me). Everyone outside the office then gets a refusal
-    # before even seeing the login page. Multiple IPs: list them separated
-    # by spaces.
-    #
-    # The webhook line keeps Tata Tele Smartflo's call records coming in:
-    # Smartflo posts from its own servers, never from your office, so without
-    # it every delivery is cut off here and the CRM never hears of it. The
-    # webhook is still locked - it admits nothing without its ?secret=.
+    # https://ifconfig.me). Everyone outside then gets a refusal before even
+    # seeing the login page. Multiple IPs: list them separated by spaces.
+    # Note: a pan-India floor signing in from home or a phone cannot use
+    # this - it is only for a single-office setup.
     #
     # @outside {
     #     not remote_ip 203.0.113.7
-    #     not path /integrations/tata-tele/webhook
     # }
     # abort @outside
     # ------------------------------------------------------------------------

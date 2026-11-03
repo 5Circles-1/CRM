@@ -66,6 +66,10 @@ npm start          # open http://host:8080/ui/
 
 ## First-time production setup
 
+**The complete step-by-step runbook is `docs/go-live.md`** — server install,
+database, bootstrap, HTTPS, backups, Google Sheets sync, auto-deploy. The
+short version:
+
 v2 needs a **fresh, empty database** — the v1 schema is not migrated, because
 the product was reset while unused.
 

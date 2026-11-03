@@ -75,7 +75,7 @@ cat <<'HOWTO'
      4. Set it to  Viewer , untick "Notify people", press  Send
 
    Within five minutes every waiting lead imports and distributes across
-   both teams. To pull them immediately instead, open the CRM, go to
-   Floor, and press "Import the sheet now".
+   the callers. To pull them immediately instead, open the CRM, go to
+   Admin -> Sources, and press "Sync now".
 
 HOWTO
