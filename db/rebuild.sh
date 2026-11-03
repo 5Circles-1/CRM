@@ -24,7 +24,7 @@ echo "==> seeding"
 
 if [[ "${1:-}" == "--with-tests" ]]; then
   echo "==> running tests"
-  "${PSQL[@]}" -d "${DB}" -f "${HERE}/tests/test_requirements.sql"
+  "${PSQL[@]}" -d "${DB}" -f "${HERE}/tests/test_core.sql"
 fi
 
 echo "==> done"

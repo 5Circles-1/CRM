@@ -1,784 +1,229 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { hashPassword } from '../auth/credentials.ts';
-import { normaliseSpreadsheetId, rowsFromCsv } from '../ingest/source.ts';
-import { mapRow } from '../ingest/worker.ts';
-import { badRequest, conflict, notFound } from '../http/errors.ts';
-
-const uuid = z.string().uuid();
+import { badRequest, notFound } from '../http/errors.ts';
+import { IngestWorker } from '../ingest/worker.ts';
+import { normaliseSpreadsheetId, rowsFromCsv, StaticSheetReader } from '../ingest/source.ts';
 
 /**
- * Ops and admin surface: users, teams, sources, and the settings that hold
- * every tunable number in the system.
+ * Admin: the accounts, the sources, the importer. All admin-only - these are
+ * the only screens that are not for the whole floor.
  */
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/admin/settings', async (req) => {
-    req.requireRole('admin', 'ops', 'counsellor', 'viewer');
-    return req.tx((q) =>
-      q.many(`select key, value, description, updated_at from crm.settings order by key`),
-    );
-  });
-
-  /**
-   * Changing a target is an ops action, not a deploy. Every write here lands in
-   * crm.audit_log with the actor, because "who moved the dial target" is a
-   * question that gets asked the day after payout.
-   */
-  app.put('/admin/settings/:key', async (req) => {
-    const user = req.requireRole('admin');
-    const { key } = z.object({ key: z.string().min(1).max(100) }).parse(req.params);
-    const body = z.object({ value: z.union([z.string(), z.number(), z.boolean()]) }).parse(req.body);
-
-    // Store the JSON value with its type intact. Coercing everything to a
-    // string would make crm.setting_int() read "95" instead of 95 and quietly
-    // fall back to its default.
-    const row = await req.tx((q) =>
-      q.one(
-        `update crm.settings
-            set value = $2::jsonb, updated_by = $3, updated_at = now()
-          where key = $1
-          returning key, value, description`,
-        [key, JSON.stringify(body.value), user.id],
-      ),
-    );
-    if (!row) throw notFound(`no setting named ${key}`);
-    return row;
-  });
+  // ---- users -------------------------------------------------------------
 
   app.get('/admin/users', async (req) => {
-    req.requireRole('admin', 'ops', 'counsellor');
+    req.requireRole('admin');
     return req.tx((q) =>
       q.many(
-        `select u.id, u.full_name, u.email, u.role, u.employee_code, u.is_active,
-                u.dialing_msisdn, u.ring_softphone, u.cloud_calling, u.avatar_url,
-                crm.team_of(u.id, current_date) as team_id,
-                t.name as team_name, tm.rotation_order,
-                crm.tier_of(u.id) as tier,
-                (pt.pinned_by is not null
-                 and (pt.pin_expires_at is null or pt.pin_expires_at > now())) as tier_pinned,
-                pt.pin_reason as tier_pin_reason,
-                pt.pin_expires_at as tier_pin_expires_at,
-                -- Leads still in a departed person's name, less the sales
-                -- that stay theirs: the number the Hand over button moves.
-                -- A counsellor's book is the queue that is actually theirs; a
-                -- dormant counsellor_id on a caller-stage lead is history.
-                case when not u.is_active and u.role = 'caller' then
-                  (select count(*) from crm.leads l
-                    where l.caller_id = u.id and l.status not in ('won', 'handed_off'))
-                     when not u.is_active and u.role = 'counsellor' then
-                  (select count(*) from crm.leads l
-                    where l.counsellor_id = u.id and l.escalation_stage = 'counsellor'
-                      and l.status not in ('won', 'handed_off'))
-                end as leads_held
-           from crm.users u
-           left join crm.team_memberships tm
-             on tm.user_id = u.id and tm.period @> current_date
-           left join crm.teams t on t.id = tm.team_id
-           left join crm.performance_tiers pt on pt.user_id = u.id
-          order by u.role, u.full_name`,
+        `select id, full_name, email, role, rotation_order, is_active, created_at
+           from crm.users
+          where not is_service
+          order by is_active desc, role, rotation_order, full_name`,
       ),
     );
   });
 
-  /**
-   * Pin a caller's tier, or hand it back to the daily ranking.
-   *
-   * The ranking (crm.rank_performance_tiers) decides ACE automatically; a pin
-   * is the human override - it needs a reason, it can expire, and it lands in
-   * the audit log via the performance_tiers audit trigger. mode 'auto' clears
-   * the pin so the next ranking run owns the seat again.
-   */
-  app.put('/admin/users/:id/tier', async (req) => {
-    const actor = req.requireRole('admin');
-    const { id } = z.object({ id: uuid }).parse(req.params);
-    const body = z
-      .discriminatedUnion('mode', [
-        z.object({ mode: z.literal('auto') }),
-        z.object({
-          mode: z.literal('pin'),
-          tier: z.enum(['ace', 'standard', 'restricted']),
-          reason: z.string().trim().min(3).max(300),
-          expiresAt: z.coerce.date().nullable().optional(),
-        }),
-      ])
-      .parse(req.body);
-
-    return req.tx(async (q) => {
-      const target = await q.one<{ role: string }>(
-        `select role from crm.users where id = $1 and is_active`, [id],
-      );
-      if (!target) throw notFound('no active user with that id');
-      if (target.role !== 'caller') {
-        throw badRequest('tiers apply to callers - they shape fresh-lead distribution');
-      }
-
-      if (body.mode === 'auto') {
-        // Reset to standard NOW rather than leaving the pinned value to
-        // linger until the next ranking run - un-pinning a RESTRICTED caller
-        // must not keep them blocked for another fifteen minutes.
-        await q.query(
-          `update crm.performance_tiers
-              set tier = 'standard',
-                  pinned_by = null, pin_reason = null, pin_expires_at = null,
-                  updated_at = now()
-            where user_id = $1`,
-          [id],
-        );
-        return { userId: id, mode: 'auto' };
-      }
-
-      const row = await q.one(
-        `insert into crm.performance_tiers
-           (user_id, tier, pinned_by, pin_reason, pin_expires_at, updated_at)
-         values ($1, $2, $3, $4, $5, now())
-         on conflict (user_id) do update
-            set tier = excluded.tier, pinned_by = excluded.pinned_by,
-                pin_reason = excluded.pin_reason,
-                pin_expires_at = excluded.pin_expires_at, updated_at = now()
-         returning user_id, tier, pin_reason, pin_expires_at`,
-        [id, body.tier, actor.id, body.reason, body.expiresAt ?? null],
-      );
-      return { mode: 'pin', ...row };
-    });
-  });
-
-  app.post('/admin/users', async (req, reply) => {
+  app.post('/admin/users', async (req) => {
     req.requireRole('admin');
     const body = z
       .object({
-        fullName: z.string().min(1).max(120),
-        email: z.string().email(),
-        role: z.enum(['caller', 'counsellor', 'mentor', 'ops', 'admin', 'viewer']),
-        employeeCode: z.string().max(30).optional(),
-        dialingMsisdn: z.string().max(20).optional(),
-        teamId: uuid.optional(),
-        rotationOrder: z.number().int().min(1).optional(),
-        temporaryPassword: z.string().min(10).max(200),
+        fullName: z.string().trim().min(1).max(200),
+        email: z.string().trim().email().max(200),
+        role: z.enum(['admin', 'caller', 'followup']),
+        password: z.string().min(10).max(200),
+        rotationOrder: z.coerce.number().int().min(1).max(999).optional(),
       })
       .parse(req.body);
 
-    const created = await req.tx(async (q) => {
+    const hash = await hashPassword(body.password);
+
+    return req.tx(async (q) => {
       const user = await q.one<{ id: string }>(
-        `insert into crm.users (full_name, email, role, employee_code, dialing_msisdn)
-         values ($1, $2, $3, $4, crm.normalise_phone($5))
-         returning id, full_name, email, role`,
-        [body.fullName, body.email, body.role, body.employeeCode ?? null, body.dialingMsisdn ?? null],
+        `insert into crm.users (full_name, email, role, rotation_order)
+         values ($1, $2, $3, coalesce($4,
+           (select coalesce(max(rotation_order), 0) + 1 from crm.users
+             where role = $3 and not is_service)))
+         returning id`,
+        [body.fullName, body.email, body.role, body.rotationOrder ?? null],
       );
-
-      if (body.teamId) {
-        await q.query(
-          `insert into crm.team_memberships (user_id, team_id, rotation_order)
-           values ($1, $2, coalesce($3, (
-             select coalesce(max(rotation_order), 0) + 1
-               from crm.team_memberships where team_id = $2 and period @> current_date
-           )))`,
-          [user!.id, body.teamId, body.rotationOrder ?? null],
-        );
-      }
-      if (body.dialingMsisdn) {
-        // A newcomer whose number Smartflo already knows: their held calls
-        // are released as they are created.
-        await q.query('select crm.tata_tele_reconcile()');
-      }
-      return user;
-    });
-
-    // Credentials are set outside the RLS transaction: crm_app cannot touch
-    // crm.user_credentials directly, only through the SECURITY DEFINER function.
-    const hash = await hashPassword(body.temporaryPassword);
-    await app.db.withoutUser((q) =>
-      q.query('select crm.set_password($1, $2, true)', [created!.id, hash]),
-    );
-
-    return reply.status(201).send(created);
-  });
-
-  app.post('/admin/users/:id/deactivate', async (req) => {
-    req.requireRole('admin');
-    const { id } = z.object({ id: uuid }).parse(req.params);
-
-    // The trigger in migration 0013 revokes live sessions as a side effect, so
-    // a deactivated user is logged out immediately rather than at token expiry.
-    const row = await req.tx((q) =>
-      q.one(
-        `update crm.users set is_active = false, deactivated_at = now()
-          where id = $1 and is_active
-          returning id, full_name, is_active, deactivated_at`,
-        [id],
-      ),
-    );
-    if (!row) throw notFound('no active user with that id');
-    return row;
-  });
-
-  /**
-   * Bring a deactivated account back.
-   *
-   * Without this the only route back was a second account on a new email, which
-   * splits one person's history across two rows - their leads, calls and scores
-   * stay behind on the account nobody uses.
-   *
-   * The password is deliberately not restored: whoever is reactivating should
-   * set a fresh one through reset-password, because the reason for the original
-   * deactivation is not recorded here.
-   */
-  app.post('/admin/users/:id/reactivate', async (req) => {
-    req.requireRole('admin');
-    const { id } = z.object({ id: uuid }).parse(req.params);
-    const row = await req.tx((q) =>
-      q.one(
-        `update crm.users set is_active = true, deactivated_at = null
-          where id = $1 and not is_active
-          returning id, full_name, email, role, is_active`,
-        [id],
-      ),
-    );
-    if (!row) throw notFound('no deactivated user with that id');
-    return row;
-  });
-
-  /**
-   * Hand a departed caller's whole lead book to one active caller (0081).
-   *
-   * Deactivating someone stops new leads reaching them and nothing else: every
-   * lead they owned stayed in their name, and moving them one Transfer at a
-   * time was slow and refused outright on any lead already moved twice. The
-   * rules - admin only, the leaver must be deactivated, a paying client stays
-   * theirs, pending callbacks follow the lead, no transfer is spent - live in
-   * crm.hand_over_leads(). Call history needs no copying: it hangs off the
-   * lead, so the new caller reads every response the client already gave.
-   */
-  app.post('/admin/users/:id/hand-over', async (req) => {
-    req.requireRole('admin');
-    const { id } = z.object({ id: uuid }).parse(req.params);
-    const body = z
-      .object({ toCallerId: uuid, note: z.string().trim().max(300).optional() })
-      .parse(req.body);
-
-    const row = await req.tx((q) =>
-      q.one<{ leads_moved: number; callbacks_moved: number; sales_kept: number; to_name: string }>(
-        `select * from crm.hand_over_leads($1, $2, crm.current_user_id(), $3)`,
-        [id, body.toCallerId, body.note ?? null],
-      ),
-    );
-    return {
-      leadsMoved: row!.leads_moved,
-      callbacksMoved: row!.callbacks_moved,
-      salesKept: row!.sales_kept,
-      toName: row!.to_name,
-    };
-  });
-
-  /**
-   * Set or clear a person's Dialing number after creation.
-   *
-   * This number is how call records - the in-house app's and Smartflo's
-   * alike - are matched back to a person, and the number Smartflo rings
-   * first on a click-to-call. It is the fix for a Smartflo agent showing as
-   * unmapped: set it here and the next sync re-ingests the quarantined
-   * calls. Kept as its own small route because it is the ONE mapping fact;
-   * there is deliberately no second table to edit.
-   */
-  /**
-   * Put a person on a team, or move them to another one.
-   *
-   * Admin -> Users showed the team, and even badged a caller who had none
-   * ("no team - gets no leads"), but nothing on the screen could act on it:
-   * `teamId` was accepted only when the user was first created, so correcting
-   * it afterwards meant hand-written SQL against the live database. A screen
-   * that names a problem and offers no button for it is half a feature.
-   *
-   * Membership is a period, not a flag. crm.team_memberships holds a daterange
-   * per user under an exclusion constraint that forbids overlaps, and every
-   * "which team is this person on" read in the schema asks
-   * `period @> current_date`. So a move closes today's membership and opens the
-   * next one, and who was on which team last month still reads correctly.
-   *
-   * A membership that only STARTED today is corrected in place instead. That is
-   * somebody fixing a mistake they just made, there is no history worth
-   * keeping, and closing it would leave a zero-length range behind for ever -
-   * the app cannot DELETE (the privilege is revoked), so it would be litter.
-   */
-  app.put('/admin/users/:id/team', async (req) => {
-    req.requireRole('admin');
-    const { id } = z.object({ id: uuid }).parse(req.params);
-    const body = z
-      .object({ teamId: uuid, rotationOrder: z.number().int().min(1).optional() })
-      .parse(req.body);
-
-    return req.tx(async (q) => {
-      const target = await q.one<{ full_name: string; role: string }>(
-        `select full_name, role from crm.users where id = $1 and is_active`,
-        [id],
-      );
-      if (!target) throw notFound('no active user with that id');
-
-      const team = await q.one<{ name: string }>(
-        `select name from crm.teams where id = $1 and is_active`,
-        [body.teamId],
-      );
-      if (!team) throw badRequest('no active team with that id');
-
-      const current = await q.one<{ id: string; team_id: string; starts_today: boolean }>(
-        `select id, team_id, lower(period) = current_date as starts_today
-           from crm.team_memberships
-          where user_id = $1 and period @> current_date`,
-        [id],
-      );
-
-      const from = current?.team_id ?? null;
-      if (from === body.teamId) {
-        return { userId: id, teamId: body.teamId, teamName: team.name, from, changed: false };
-      }
-
-      // The same expression POST /admin/users defaults with, so the two doors
-      // into a team cannot disagree about where a newcomer lands in the
-      // rotation. Rotation order only breaks ties between callers who are
-      // level on leads today, so the back of the queue is the fair place.
-      const order = body.rotationOrder ?? null;
-
-      if (current?.starts_today) {
-        await q.query(
-          `update crm.team_memberships
-              set team_id = $2,
-                  rotation_order = coalesce($3, (
-                    select coalesce(max(rotation_order), 0) + 1
-                      from crm.team_memberships
-                     where team_id = $2 and period @> current_date))
-            where id = $1`,
-          [current.id, body.teamId, order],
-        );
-      } else {
-        if (current) {
-          await q.query(
-            `update crm.team_memberships
-                set period = daterange(lower(period), current_date)
-              where id = $1`,
-            [current.id],
-          );
-        }
-        await q.query(
-          `insert into crm.team_memberships (user_id, team_id, rotation_order)
-           values ($1, $2, coalesce($3, (
-             select coalesce(max(rotation_order), 0) + 1
-               from crm.team_memberships where team_id = $2 and period @> current_date
-           )))`,
-          [id, body.teamId, order],
-        );
-      }
-
-      return { userId: id, teamId: body.teamId, teamName: team.name, from, changed: true };
+      // New accounts must set their own password on first login.
+      await q.query('select crm.set_password($1, $2, true)', [user!.id, hash]);
+      return q.one('select id, full_name, email, role, rotation_order, is_active from crm.users where id = $1', [
+        user!.id,
+      ]);
     });
   });
 
-  app.put('/admin/users/:id/dialing-msisdn', async (req) => {
-    req.requireRole('admin');
-    const { id } = z.object({ id: uuid }).parse(req.params);
+  app.put('/admin/users/:id', async (req) => {
+    const me = req.requireRole('admin');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
     const body = z
       .object({
-        // Omitted leaves the number as it is; null clears it. The 0083
-        // one-click "not on cloud calling" must not have to resend a
-        // number just to flip the choice.
-        dialingMsisdn: z.string().max(20).nullable().optional(),
-        // Ring the Smartflo softphone (browser headset) instead of the
-        // phone (0082). Optional so the coverage panel's number-only saves
-        // leave the choice untouched.
-        ringSoftphone: z.boolean().optional(),
-        // Off: this person deliberately calls from an office or personal
-        // phone (0083) - no Call button, click-to-call refuses them, and
-        // the coverage panel stops naming them as a gap.
-        cloudCalling: z.boolean().optional(),
+        fullName: z.string().trim().min(1).max(200).optional(),
+        role: z.enum(['admin', 'caller', 'followup']).optional(),
+        rotationOrder: z.coerce.number().int().min(1).max(999).optional(),
+        isActive: z.boolean().optional(),
       })
       .parse(req.body);
 
-    if (typeof body.dialingMsisdn === 'string') {
-      const norm = await req.tx((q) =>
-        q.one<{ normalise_phone: string | null; holder: string | null }>(
-          `select crm.normalise_phone($1) as normalise_phone,
-                  (select full_name from crm.users
-                    where dialing_msisdn = crm.normalise_phone($1)
-                      and is_active and id <> $2) as holder`,
-          [body.dialingMsisdn, id],
-        ),
-      );
-      if (!norm?.normalise_phone) {
-        throw badRequest(`"${body.dialingMsisdn}" is not a dialable number`);
-      }
-      // The unique index would refuse this too, but could only say "another
-      // user" - and the admin fixing a mix-up needs to know which one.
-      if (norm.holder) {
-        throw conflict(
-          `${norm.normalise_phone} is already ${norm.holder}'s Dialing number - one number can only `
-            + `verify one person's calls. Clear or change it on ${norm.holder}'s row first.`,
-        );
-      }
+    if (body.isActive === false && id === me.id) {
+      throw badRequest('you cannot deactivate your own account');
     }
 
-    const row = await req.tx(async (q) => {
-      const updated = await q.one(
+    return req.tx(async (q) => {
+      const row = await q.one(
         `update crm.users
-            set dialing_msisdn = case when $2::boolean
-                                      then crm.normalise_phone($3)
-                                      else dialing_msisdn end,
-                ring_softphone = coalesce($4, ring_softphone),
-                cloud_calling  = coalesce($5, cloud_calling)
-          where id = $1
-          returning id, full_name, dialing_msisdn, ring_softphone, cloud_calling`,
-        [
-          id, body.dialingMsisdn !== undefined, body.dialingMsisdn ?? null,
-          body.ringSoftphone ?? null, body.cloudCalling ?? null,
-        ],
+            set full_name      = coalesce($2, full_name),
+                role           = coalesce($3, role),
+                rotation_order = coalesce($4, rotation_order),
+                is_active      = coalesce($5, is_active),
+                deactivated_at = case
+                  when $5 is false then coalesce(deactivated_at, now())
+                  when $5 is true then null
+                  else deactivated_at end
+          where id = $1 and not is_service
+          returning id, full_name, email, role, rotation_order, is_active`,
+        [id, body.fullName ?? null, body.role ?? null, body.rotationOrder ?? null, body.isActive ?? null],
       );
-      if (!updated) throw notFound('no user with that id');
-      // The number is the Smartflo mapping: apply it now, so the agent maps
-      // and this person's held calls are released at once, however old.
-      const reconciled = await q.one<{ released: number }>(
-        'select released from crm.tata_tele_reconcile()',
-      );
-      return { ...updated, held_calls_released: reconciled?.released ?? 0 };
+      if (!row) throw notFound('user not found');
+      return row;
     });
-    return row;
   });
 
-  /**
-   * Set or clear a person's leaderboard icon.
-   *
-   * The image arrives as a data URL the browser has already downsized, and is
-   * stored inline on the user row - no file store to run or leak. The format
-   * allow-list plus the size cap (matching the DB check constraint) keeps this
-   * from becoming an arbitrary-file upload with extra steps.
-   */
-  app.put('/admin/users/:id/avatar', async (req) => {
+  app.post('/admin/users/:id/password', async (req) => {
     req.requireRole('admin');
-    const { id } = z.object({ id: uuid }).parse(req.params);
-    const body = z
-      .object({
-        dataUrl: z
-          .string()
-          .max(200_000)
-          .regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/)
-          .nullable(),
-      })
-      .parse(req.body);
-
-    const row = await req.tx((q) =>
-      q.one(
-        `update crm.users set avatar_url = $2, updated_at = now()
-          where id = $1
-          returning id, full_name, (avatar_url is not null) as has_avatar`,
-        [id, body.dataUrl],
-      ),
-    );
-    if (!row) throw notFound('no user with that id');
-    return row;
-  });
-
-  app.post('/admin/users/:id/reset-password', async (req) => {
-    req.requireRole('admin');
-    const { id } = z.object({ id: uuid }).parse(req.params);
-    const body = z.object({ temporaryPassword: z.string().min(10).max(200) }).parse(req.body);
-
-    const hash = await hashPassword(body.temporaryPassword);
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = z.object({ password: z.string().min(10).max(200) }).parse(req.body);
+    const hash = await hashPassword(body.password);
+    // Through the SECURITY DEFINER boundary; a reset password must be changed.
+    await req.tx(async (q) => {
+      const user = await q.one('select id from crm.users where id = $1 and not is_service', [id]);
+      if (!user) throw notFound('user not found');
+    });
     await app.db.withoutUser((q) => q.query('select crm.set_password($1, $2, true)', [id, hash]));
-    return { ok: true, mustChangeOnNextLogin: true };
+    return { ok: true };
   });
 
-  app.get('/admin/teams', async (req) => {
-    req.requireRole('admin', 'ops', 'counsellor');
-    return req.tx((q) =>
-      q.many(
-        `select t.id, t.name, t.code, t.rotation_order, t.is_active,
-                (select count(*) from crm.team_memberships tm
-                  join crm.users u on u.id = tm.user_id
-                 where tm.team_id = t.id and tm.period @> current_date
-                   and u.role = 'caller' and u.is_active) as caller_count
-           from crm.teams t order by t.rotation_order`,
-      ),
-    );
-  });
+  // ---- sources and ingestion ----------------------------------------------
 
   app.get('/admin/sources', async (req) => {
-    req.requireRole('admin', 'ops');
-    return req.tx((q) =>
-      q.many(
-        `select id, name, spreadsheet_id, worksheet_name, column_map,
-                pinned_team_id, default_priority, is_active, last_synced_at
-           from crm.lead_sources order by name`,
-      ),
-    );
+    req.requireRole('admin');
+    return req.tx(async (q) => {
+      const sources = await q.many(
+        `select s.id, s.name, s.spreadsheet_id, s.worksheet_name, s.column_map,
+                s.is_active, s.last_synced_at,
+                r.started_at as last_run_at, r.error_text as last_run_error,
+                r.rows_created as last_run_created, r.rows_quarantined as last_run_quarantined
+           from crm.lead_sources s
+           left join lateral (
+             select * from crm.ingestion_runs
+              where source_id = s.id order by started_at desc limit 1
+           ) r on true
+          order by s.name`,
+      );
+      const quarantined = await q.many(
+        `select i.id, i.source_id, s.name as source_name, i.payload, i.reject_reason, i.created_at
+           from crm.ingested_rows i
+           join crm.lead_sources s on s.id = i.source_id
+          where i.status = 'quarantined'
+          order by i.created_at desc
+          limit 100`,
+      );
+      return { sources, quarantined, syncConfigured: Boolean(app.syncSheetsNow) };
+    });
   });
 
-  const sourceBody = z.object({
-    name: z.string().min(1).max(120),
-    spreadsheetId: z.string().max(120).optional(),
-    worksheetName: z.string().max(120).optional(),
-    columnMap: z.record(z.string()).optional(),
-    pinnedTeamId: uuid.nullable().optional(),
-    defaultPriority: z.enum(['immediate', 'normal']).default('normal'),
-    isActive: z.boolean().default(true),
-  });
-
-  app.post('/admin/sources', async (req, reply) => {
-    req.requireRole('admin', 'ops');
-    const body = sourceBody.parse(req.body);
-    const row = await req.tx((q) =>
-      q.one(
-        `insert into crm.lead_sources
-           (name, spreadsheet_id, worksheet_name, column_map, pinned_team_id, default_priority, is_active)
-         values ($1, $2, $3, coalesce($4::jsonb, '{}'::jsonb), $5, $6, $7)
-         returning id, name, spreadsheet_id, worksheet_name, column_map, default_priority, is_active`,
-        [
-          body.name,
-          body.spreadsheetId ? normaliseSpreadsheetId(body.spreadsheetId) : null,
-          body.worksheetName ?? null,
-          body.columnMap ? JSON.stringify(body.columnMap) : null,
-          body.pinnedTeamId ?? null,
-          body.defaultPriority,
-          body.isActive,
-        ],
-      ),
-    );
-    return reply.status(201).send(row);
-  });
-
-  app.put('/admin/sources/:id', async (req) => {
-    req.requireRole('admin', 'ops');
-    const { id } = z.object({ id: uuid }).parse(req.params);
-    const body = sourceBody.partial().parse(req.body);
-
-    // Unpinning a source is `pinnedTeamId: null`, which coalesce() cannot tell
-    // apart from "field not supplied". Send the intent separately so a sheet
-    // pinned to one team can be handed back to the alternating rotation.
-    const unpin = 'pinnedTeamId' in (req.body as object) && body.pinnedTeamId == null;
-
-    const row = await req.tx((q) =>
-      q.one(
-        `update crm.lead_sources set
-           name             = coalesce($2, name),
-           spreadsheet_id   = coalesce($3, spreadsheet_id),
-           worksheet_name   = coalesce($4, worksheet_name),
-           column_map       = coalesce($5::jsonb, column_map),
-           pinned_team_id   = case when $9 then null else coalesce($6, pinned_team_id) end,
-           default_priority = coalesce($7::crm.lead_priority, default_priority),
-           is_active        = coalesce($8, is_active),
-           updated_at       = now()
-         where id = $1
-         returning id, name, spreadsheet_id, worksheet_name, column_map,
-                   pinned_team_id, default_priority, is_active`,
-        [
-          id,
-          body.name ?? null,
-          body.spreadsheetId ? normaliseSpreadsheetId(body.spreadsheetId) : null,
-          body.worksheetName ?? null,
-          body.columnMap ? JSON.stringify(body.columnMap) : null,
-          body.pinnedTeamId ?? null,
-          body.defaultPriority ?? null,
-          body.isActive ?? null,
-          unpin,
-        ],
-      ),
-    );
-    if (!row) throw notFound('no source with that id');
-    return row;
-  });
-
-  app.post('/admin/products', async (req, reply) => {
+  app.post('/admin/sources', async (req) => {
     req.requireRole('admin');
     const body = z
       .object({
-        name: z.string().min(1).max(120),
-        code: z.string().min(1).max(30),
-        listPriceInr: z.number().positive().max(99_999_999),
-        isSebiRegulated: z.boolean().default(true),
-      })
-      .parse(req.body);
-    const row = await req.tx((q) =>
-      q.one(
-        `insert into crm.products (name, code, list_price_inr, is_sebi_regulated)
-         values ($1, $2, $3, $4)
-         returning id, name, code, list_price_inr, is_sebi_regulated, is_active`,
-        [body.name, body.code, body.listPriceInr, body.isSebiRegulated],
-      ),
-    );
-    return reply.status(201).send(row);
-  });
-
-  app.post('/admin/products/:id/deactivate', async (req) => {
-    req.requireRole('admin');
-    const { id } = z.object({ id: uuid }).parse(req.params);
-    const row = await req.tx((q) =>
-      q.one(
-        `update crm.products set is_active = false where id = $1 and is_active
-         returning id, name, is_active`,
-        [id],
-      ),
-    );
-    if (!row) throw notFound('no active product with that id');
-    return row;
-  });
-
-  /**
-   * Park everything older than a date - the "clean CRM" button.
-   *
-   * The SQL function owns the rules (admin gate re-checked inside, clients
-   * and recently-worked leads untouched, nothing deleted); this handler only
-   * shapes the request. dryRun counts what would move, so the button can say
-   * "this will park 117 leads" before anything happens.
-   */
-  app.post('/admin/archive-leads', async (req) => {
-    req.requireRole('admin', 'ops');
-    const body = z
-      .object({
-        before: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'before must be YYYY-MM-DD'),
-        dryRun: z.boolean().default(false),
-      })
-      .parse(req.body);
-
-    const row = await req.tx((q) =>
-      q.one<{ archived: number; reenquiries_retired: number }>(
-        `select * from crm.archive_leads_before($1::date, $2)`,
-        [body.before, body.dryRun],
-      ),
-    );
-    return {
-      cutoff: body.before,
-      dryRun: body.dryRun,
-      archived: Number(row!.archived),
-      // Pre-cutoff "enquired again" flags retired on leads the park cannot
-      // reach - closed and paying leads (0087). The sale and close are
-      // untouched; only the call-them-back flag is marked handled.
-      reenquiriesRetired: Number(row!.reenquiries_retired),
-    };
-  });
-
-  app.get('/admin/quarantine', async (req) => {
-    req.requireRole('admin', 'ops');
-    return req.tx((q) =>
-      q.many(
-        `select ir.id, ir.source_id, ls.name as source_name, ir.source_row_key,
-                ir.reject_reason, ir.payload, ir.created_at
-           from crm.ingested_rows ir
-           join crm.lead_sources ls on ls.id = ir.source_id
-          where ir.status = 'quarantined'
-          order by ir.created_at desc limit 500`,
-      ),
-    );
-  });
-
-  /**
-   * Upload a previous month's records, team-wise and month-wise.
-   *
-   * These are history, not live leads: they land parked in the previous-month
-   * pool (status nurture, no caller, no SLA clock) so they never clog the
-   * calling queue, and the counsellor works them from the Previous-months tab
-   * when they choose. Excel exports to CSV in one click, so the same paste box
-   * as normal ingestion takes them; the team and month are chosen here rather
-   * than guessed from the file.
-   */
-  app.post('/admin/history/import', async (req) => {
-    const user = req.requireRole('admin', 'ops');
-    const body = z
-      .object({
-        csv: z.string().min(1).max(20_000_000),
-        teamId: uuid,
-        // The calendar month these records belong to, as YYYY-MM.
-        month: z.string().regex(/^\d{4}-\d{2}$/),
+        name: z.string().trim().min(1).max(100),
+        spreadsheetId: z.string().trim().max(300).optional(),
+        worksheetName: z.string().max(200).optional(),
         columnMap: z.record(z.string()).optional(),
       })
       .parse(req.body);
+    return req.tx((q) =>
+      q.one(
+        `insert into crm.lead_sources (name, spreadsheet_id, worksheet_name, column_map)
+         values ($1, nullif($2, ''), nullif($3, ''), coalesce($4, '{}'::jsonb))
+         returning *`,
+        [
+          body.name,
+          // What is in the admin's clipboard is the sheet's URL; accept it.
+          body.spreadsheetId ? normaliseSpreadsheetId(body.spreadsheetId) : '',
+          body.worksheetName ?? '',
+          JSON.stringify(body.columnMap ?? {}),
+        ],
+      ),
+    );
+  });
 
-    const rows = rowsFromCsv(body.csv);
-    if (rows.length === 0) throw badRequest('no data rows found in the CSV');
-
-    const monthStart = `${body.month}-01`;
-    const batch = `${body.month}-${Date.now().toString(36)}`;
-
+  app.put('/admin/sources/:id', async (req) => {
+    req.requireRole('admin');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = z
+      .object({
+        name: z.string().trim().min(1).max(100).optional(),
+        spreadsheetId: z.string().trim().max(300).nullable().optional(),
+        worksheetName: z.string().max(200).nullable().optional(),
+        columnMap: z.record(z.string()).optional(),
+        isActive: z.boolean().optional(),
+      })
+      .parse(req.body);
     return req.tx(async (q) => {
-      const team = await q.one<{ id: string }>(
-        `select id from crm.teams where id = $1 and is_active`,
-        [body.teamId],
+      const row = await q.one(
+        `update crm.lead_sources
+            set name           = coalesce($2, name),
+                spreadsheet_id = case when $6 then nullif($3, '') else spreadsheet_id end,
+                worksheet_name = case when $7 then nullif($4, '') else worksheet_name end,
+                column_map     = coalesce($5, column_map),
+                is_active      = coalesce($8, is_active)
+          where id = $1
+          returning *`,
+        [
+          id,
+          body.name ?? null,
+          body.spreadsheetId ? normaliseSpreadsheetId(body.spreadsheetId) : '',
+          body.worksheetName ?? '',
+          body.columnMap ? JSON.stringify(body.columnMap) : null,
+          body.spreadsheetId !== undefined,
+          body.worksheetName !== undefined,
+          body.isActive ?? null,
+        ],
       );
-      if (!team) throw badRequest('unknown or inactive team');
-
-      let created = 0;
-      let duplicate = 0;
-      let skipped = 0;
-      const errors: string[] = [];
-
-      for (const row of rows) {
-        try {
-          const { mapped, extra } = mapRow(row.values, body.columnMap ?? {});
-          const rawPhone = mapped.phone ?? '';
-          const norm = await q.one<{ normalise_phone: string | null }>(
-            'select crm.normalise_phone($1) as normalise_phone',
-            [rawPhone],
-          );
-          const phone = norm?.normalise_phone ?? null;
-          if (!phone) {
-            skipped += 1;
-            continue;
-          }
-          // De-duplicate against EVERY live lead, not just this month's pool.
-          // The old check only looked inside the same imported month, so the
-          // same person uploaded in January's sheet (Team A) and February's
-          // sheet (Team B) became two live leads - one in each team's book.
-          // If any live row exists - live pipeline or another month's pool -
-          // this row is a duplicate of it, wherever it is. Only people whose
-          // every earlier lead is terminal get a fresh pool row.
-          const exists = await q.one<{ id: string }>(
-            `select id from crm.leads
-              where phone_e164 = $1
-                and status in ('new', 'working', 'callback', 'qualified', 'negotiation', 'nurture')
-              limit 1`,
-            [phone],
-          );
-          if (exists) {
-            duplicate += 1;
-            continue;
-          }
-          await q.query(
-            `insert into crm.leads
-               (full_name, phone_e164, phone_raw, email, city, team_id, status,
-                pool, is_historical, imported_month, import_batch, extra)
-             values ($1, $2, $3, nullif($4,''), nullif($5,''), $6, 'nurture',
-                     'previous_month', true, $7::date, $8, $9)`,
-            [
-              mapped.full_name ?? null,
-              phone,
-              rawPhone,
-              mapped.email ?? '',
-              mapped.city ?? '',
-              body.teamId,
-              monthStart,
-              batch,
-              JSON.stringify(extra),
-            ],
-          );
-          created += 1;
-        } catch (err) {
-          errors.push(`${row.rowKey}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-
-      return { batch, seen: rows.length, created, duplicate, skipped, errors };
+      if (!row) throw notFound('source not found');
+      return row;
     });
   });
 
-  /** Audit trail for one record. */
-  app.get('/admin/audit/:table/:rowId', async (req) => {
-    req.requireRole('admin');
-    const { table, rowId } = z
-      .object({ table: z.string().max(64), rowId: z.string().max(128) })
-      .parse(req.params);
-    return req.tx((q) =>
-      q.many(
-        `select a.action, a.changed, a.before, a.occurred_at, u.full_name as actor
-           from crm.audit_log a
-           left join crm.users u on u.id = a.actor_id
-          where a.table_name = $1 and a.row_id = $2
-          order by a.occurred_at desc limit 200`,
-        [table, rowId],
-      ),
-    );
+  /** Pull one source from its sheet right now, as the acting admin. */
+  app.post('/admin/sources/:id/sync', async (req) => {
+    const me = req.requireRole('admin');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const worker = new IngestWorker(app.db, me.id);
+    const summary = await worker.runSource(id);
+    return summary;
+  });
+
+  /**
+   * Paste-a-CSV import. Headers map like sheet columns (the usual aliases
+   * work: name / phone / email / city / campaign). Same idempotency and
+   * quarantine rules as the sheet sync - importing the same file twice can
+   * never duplicate a lead.
+   */
+  app.post('/admin/import', async (req) => {
+    const me = req.requireRole('admin');
+    const body = z
+      .object({
+        sourceId: z.string().uuid(),
+        csv: z.string().min(1).max(2_000_000),
+      })
+      .parse(req.body);
+    const rows = rowsFromCsv(body.csv);
+    if (rows.length === 0) throw badRequest('the CSV has no data rows');
+    const worker = new IngestWorker(app.db, me.id);
+    return worker.runSource(body.sourceId, new StaticSheetReader(rows, 'csv-import'));
   });
 }

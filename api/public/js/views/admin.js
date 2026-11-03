@@ -1,1466 +1,319 @@
-import { get, post, put } from '../api.js';
-import { avatarHtml, esc, fmtDT, fmtINR, h, openModal, toast } from '../util.js';
+import { api, get, post } from '../api.js';
+import { esc, fmtDT, h, openModal, toast } from '../util.js';
 
-/** Ops/admin surface: settings, users, ingestion, quarantine, security alerts. */
-const TABS = [
-  ['settings', 'Settings'],
-  ['users', 'Users'],
-  ['ingest', 'Ingestion'],
-  ['products', 'Products'],
-  ['data', 'Data'],
-  ['quarantine', 'Quarantine'],
-  ['alerts', 'Security alerts'],
-];
-
+/**
+ * Admin: the accounts, the sources (Meta / ChatGPT sheets), CSV import, and
+ * the quarantine - rows the importer refused, kept with the reason so a
+ * mistyped number is never silently lost.
+ */
 export async function render(outlet, me) {
+  const [users, sourcesData] = await Promise.all([get('/admin/users'), get('/admin/sources')]);
+  const { sources, quarantined, syncConfigured } = sourcesData;
+
   outlet.innerHTML = '';
-  const tabs = h(`<div class="tabs">${TABS.map(([k, l], i) =>
-    `<button class="btn ${i === 0 ? 'active' : ''}" data-tab="${k}">${esc(l)}</button>`).join('')}</div>`);
-  const body = h('<div></div>');
-  outlet.appendChild(tabs);
-  outlet.appendChild(body);
-
-  const draw = { settings, users, ingest, products, data, quarantine, alerts };
-
-  /**
-   * One tab at a time, and the LAST click wins.
-   *
-   * Each tab renders into its own detached container and is swapped in only if
-   * it is still the tab the user asked for. Without that guard a slow render
-   * lands on top of a newer one: opening Admin and immediately pressing Data
-   * showed Data, then Settings wiped it when its fetch came back - which reads
-   * as "the button does not work".
-   */
-  let seq = 0;
-  const show = (tab) => {
-    const mine = (seq += 1);
-    tabs.querySelectorAll('.btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-    body.innerHTML = '<div class="spin"></div>';
-    const pane = document.createElement('div');
-    return Promise.resolve(draw[tab](pane, me))
-      .then(() => {
-        if (mine !== seq) return; // a newer tab won; throw this render away
-        body.replaceChildren(pane);
-      })
-      .catch((err) => {
-        if (mine !== seq) return;
-        body.replaceChildren(
-          h(`<div class="panel"><div class="empty">${esc(err.message)}</div></div>`),
-        );
-      });
-  };
-
-  tabs.addEventListener('click', (e) => {
-    const tab = e.target?.dataset?.tab;
-    if (tab) show(tab);
-  });
-
-  await show('settings');
-}
-
-/* ---------------- settings ---------------- */
-
-async function settings(body, me) {
-  const rows = await get('/admin/settings');
-  body.innerHTML = '';
-  const panel = h(`
-    <div class="panel">
-      <h2>Every tunable number in the system <small>changes are audited with the actor</small></h2>
-      <table class="table"><thead><tr><th>Setting</th><th>Value</th><th></th></tr></thead><tbody>
-      ${rows.map((s) => `
-        <tr data-key="${esc(s.key)}">
-          <td><b>${esc(s.key)}</b><div class="hint">${esc(s.description)}</div></td>
-          <td style="width:160px"><input class="sv" value="${esc(JSON.stringify(s.value).replace(/^"|"$/g, ''))}"
-              style="width:100%;border:1px solid var(--line);border-radius:7px;padding:7px" ${me.role !== 'admin' ? 'disabled' : ''}></td>
-          <td class="right" style="width:90px">${me.role === 'admin' ? '<button class="btn small sv-save">Save</button>' : ''}</td>
-        </tr>`).join('')}
-      </tbody></table>
-    </div>`);
-  body.appendChild(panel);
-
-  // On the panel, not on `body`: the tab container outlives every redraw, so a
-  // listener there stacked once per visit - the third trip to this tab saved
-  // every setting three times and showed three toasts for one click.
-  panel.addEventListener('click', async (e) => {
-    if (!e.target.classList?.contains('sv-save')) return;
-    const tr = e.target.closest('tr');
-    const key = tr.dataset.key;
-    const raw = tr.querySelector('.sv').value.trim();
-    // Numbers and booleans go through typed; everything else as a string.
-    const value = raw === 'true' ? true : raw === 'false' ? false : raw !== '' && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
-    try {
-      await put(`/admin/settings/${encodeURIComponent(key)}`, { value });
-      toast(`${key} updated.`);
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
-
-/* ---------------- data: keep the floor on current leads ---------------- */
-
-/**
- * The archive button. Two steps on purpose: first a dry-run that says exactly
- * how many leads would move, then the real thing - an owner-level act should
- * never fire off one accidental click. Nothing is deleted: parked leads live
- * in Previous months, searchable, one click from being worked again.
- */
-async function data(body) {
-  body.innerHTML = '';
-  const panel = h(`
-    <div class="panel">
-      <h2>Keep the floor on current data <small>nothing is deleted — old leads park in Previous months</small></h2>
-      <p class="hint mt0" style="max-width:680px">
-        Every lead created before the date below — and not worked since it — leaves every
-        pipeline, alert and fresh list and parks in <b>Previous months</b>. Paying clients and
-        anyone with a deal are never touched — though an undialled <b>enquired again</b> flag
-        from before the date is marked handled even on those, so the fresh list truly empties;
-        a client who asks again afterwards pops straight back up. A parked lead stays
-        searchable in Find lead and comes back with one click (Pick up &amp; work) if the
-        person ever calls again.
-      </p>
-      <div class="frow" style="max-width:460px;align-items:flex-end">
-        <label class="f" style="margin:0">Keep leads from
-          <input type="date" name="cutoff" value="2026-08-15">
-        </label>
-        <button class="btn primary" id="arch-check" data-testid="archive-check">Check what would move</button>
-      </div>
-      <div id="arch-result" style="margin-top:12px"></div>
-    </div>`);
-  body.appendChild(panel);
-
-  const result = panel.querySelector('#arch-result');
-  panel.querySelector('#arch-check').addEventListener('click', async () => {
-    const before = panel.querySelector('[name=cutoff]').value;
-    if (!before) { toast('Pick a date first.', 'err'); return; }
-    try {
-      const r = await post('/admin/archive-leads', { before, dryRun: true });
-      result.innerHTML = '';
-      const retiring = Number(r.reenquiriesRetired ?? 0);
-      if (r.archived === 0 && retiring === 0) {
-        result.appendChild(h(`<div class="empty">Nothing older than ${esc(before)} is still live — the floor is already clean.</div>`));
-        return;
-      }
-      const go = h(`
-        <div class="banner warn">
-          <b>${r.archived} lead${r.archived === 1 ? '' : 's'}</b> created before ${esc(before)}
-          would move to Previous months${retiring > 0 ? `, and <b>${retiring}</b> enquired-again
-          flag${retiring === 1 ? '' : 's'} on closed or paying leads would be marked handled` : ''}.
-          <button class="btn danger" id="arch-go" data-testid="archive-go" style="margin-left:10px">Archive them now</button>
-        </div>`);
-      result.appendChild(go);
-      go.querySelector('#arch-go').addEventListener('click', async (e) => {
-        e.target.disabled = true;
-        try {
-          const done = await post('/admin/archive-leads', { before, dryRun: false });
-          result.innerHTML = '';
-          const cleared = Number(done.reenquiriesRetired ?? 0);
-          result.appendChild(h(`
-            <div class="banner" style="background:var(--ok-bg);color:var(--ok);border-color:var(--ok-bg)">
-              ${done.archived} lead${done.archived === 1 ? '' : 's'} parked in Previous months${
-                cleared > 0 ? `, ${cleared} enquired-again flag${cleared === 1 ? '' : 's'} marked handled` : ''}.
-              The pipelines now carry only current data.
-            </div>`));
-          toast('Archived.');
-        } catch (err) {
-          toast(err.message, 'err');
-          e.target.disabled = false;
-        }
-      });
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
-
-/* ---------------- users ---------------- */
-
-async function users(body, me) {
-  const [list, teams] = await Promise.all([get('/admin/users'), get('/admin/teams')]);
-  body.innerHTML = '';
-  const panel = h(`
-    <div class="panel">
-      <div class="row spread">
-        <h2 class="mt0">Users <small>${list.length}</small></h2>
-        ${me.role === 'admin' ? '<button class="btn primary" id="new-user">New user</button>' : ''}
-      </div>
-      <table class="table"><thead><tr>
-        <th>Name</th><th>Email</th><th>Role</th><th>Team</th>
-        <th title="ACE holds the guaranteed share of fresh leads. Ranked daily from the leaderboard; a pin overrides it.">Tier</th>
-        <th>SIM</th><th>Status</th><th></th>
-      </tr></thead><tbody>
-      ${list.map((u) => `
-        <tr>
-          <td>${avatarHtml(u.full_name, u.avatar_url, 26)} ${esc(u.full_name)}
-              <span class="hint">${esc(u.employee_code ?? '')}</span></td>
-          <td>${esc(u.email)}</td>
-          <td>${esc(u.role)}</td>
-          <td>${esc(u.team_name ?? '—')}
-              ${u.is_active && u.role === 'caller' && !u.team_name
-                ? '<span class="badge b-bad" title="Distribution walks the teams, so a caller in no team never receives a lead">no team — gets no leads</span>' : ''}</td>
-          <td>${u.role !== 'caller' ? '<span class="hint">—</span>'
-            : u.tier === 'ace'
-              ? `<span class="badge b-warn" title="Gets the guaranteed share of fresh leads${u.tier_pinned ? ' (pinned)' : ' (ranked daily)'}">⭐ ACE</span>`
-            : u.tier === 'restricted'
-              ? '<span class="badge b-bad" title="Receives no fresh leads">restricted</span>'
-              : '<span class="badge b-mute">standard</span>'}
-            ${u.tier_pinned ? '<span class="hint" title="An admin pinned this; the daily ranking will not change it until the pin expires">📌</span>' : ''}</td>
-          <td class="mono">${u.cloud_calling === false
-            ? '<span title="Does not use cloud calling — calls from an office or personal phone by choice; no Call button, never a Smartflo gap">📵</span>'
-            : esc(u.dialing_msisdn ?? '—')}${u.ring_softphone
-            ? ' <span title="Click-to-call rings their Smartflo softphone (browser headset); this phone is the fallback">🎧</span>' : ''}</td>
-          <td>${u.is_active ? '<span class="badge b-ok">active</span>' : '<span class="badge b-mute">deactivated</span>'}</td>
-          <td class="right">${me.role !== 'admin' ? '' : u.is_active
-            ? `${u.role === 'caller' ? `<button class="btn small u-tier" data-id="${esc(u.id)}">Tier</button>` : ''}
-               ${u.role === 'caller' || u.role === 'counsellor' ? `
-                 <button class="btn small${u.team_name ? '' : ' primary'} u-team"
-                         data-id="${esc(u.id)}" data-testid="user-team">${
-                   u.team_name ? 'Team' : 'Set team'}</button>` : ''}
-               <button class="btn small u-sim" data-id="${esc(u.id)}">SIM</button>
-               <button class="btn small u-avatar" data-id="${esc(u.id)}">${u.avatar_url ? 'Change icon' : 'Set icon'}</button>
-               <button class="btn small u-pwd" data-id="${esc(u.id)}">Reset password</button>
-               <button class="btn small danger u-deact" data-id="${esc(u.id)}">Deactivate</button>`
-            : `${Number(u.leads_held) > 0 ? `
-                 <button class="btn small primary u-handover" data-id="${esc(u.id)}" data-testid="user-handover"
-                         title="Their leads are still in their name and nobody is working them">Hand over ${
-                   Number(u.leads_held)} lead${Number(u.leads_held) === 1 ? '' : 's'}</button>` : ''}
-               <button class="btn small u-react" data-id="${esc(u.id)}">Reactivate</button>`}</td>
-        </tr>`).join('')}
-      </tbody></table>
-      <div class="hint" style="margin-top:8px">
-        ⭐ ACE is picked automatically every day: the team's best caller on the leaderboard over the
-        last week holds the guaranteed share of fresh leads (Admin → Settings → distribution.ace_share_pct).
-        Pin a tier only to override the ranking — pins need a reason and can expire.
-      </div>
-    </div>`);
-  body.appendChild(panel);
-
-  panel.querySelector('#new-user')?.addEventListener('click', () => newUserModal(teams, () => users(body, me)));
-
-  panel.addEventListener('click', async (e) => {
-    const id = e.target.dataset?.id;
-    if (!id) return;
-
-    if (e.target.classList.contains('u-avatar')) {
-      avatarModal(list.find((u) => u.id === id), () => users(body, me));
-      return;
-    }
-
-    if (e.target.classList.contains('u-team')) {
-      teamModal(list.find((u) => u.id === id), teams, () => users(body, me));
-      return;
-    }
-
-    if (e.target.classList.contains('u-handover')) {
-      handOverModal(list.find((u) => u.id === id), () => users(body, me));
-      return;
-    }
-
-    if (e.target.classList.contains('u-deact')) {
-      const u = list.find((x) => x.id === id);
-      if (!confirm(`Deactivate this user? Their sessions end immediately.${u?.role === 'caller'
-        ? '\n\nTheir leads stay in their name until you hand them over — the button appears on their row.' : ''}`)) return;
-      try {
-        await post(`/admin/users/${id}/deactivate`);
-        toast('Deactivated — live sessions revoked.');
-        users(body, me);
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-      return;
-    }
-
-    // Nothing is ever hard deleted here, so a deactivated account keeps its
-    // email. Without a way back, the only option was a second account on a new
-    // address - which strands the first one's leads, calls and scores.
-    if (e.target.classList.contains('u-react')) {
-      try {
-        await post(`/admin/users/${id}/reactivate`);
-        toast('Reactivated — set a new password before they log in.');
-        users(body, me);
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-      return;
-    }
-
-    if (e.target.classList.contains('u-pwd')) passwordModal(id, () => users(body, me));
-    if (e.target.classList.contains('u-tier')) tierModal(list.find((u) => u.id === id), () => users(body, me));
-    if (e.target.classList.contains('u-sim')) simModal(list.find((u) => u.id === id), () => users(body, me));
-  });
-}
-
-/**
- * Put someone on a team, or move them to another one.
- *
- * The row already showed the team and badged a caller who had none; until now
- * it offered nothing to do about either, and the only way to correct a team
- * was SQL against the live database.
- */
-function teamModal(user, teams, onDone) {
-  if (!user) return;
-  const bodyEl = h(`
+  const root = h(`
     <div>
-      <p class="hint mt0">
-        ${user.team_name
-          ? `${esc(user.full_name)} is on <b>${esc(user.team_name)}</b>.`
-          : `${esc(user.full_name)} is on <b>no team</b>.${
-            user.role === 'caller'
-              ? ' Distribution walks the teams, so they are receiving no fresh leads at all.' : ''}`}
-      </p>
-      <label class="f">Team
-        <select name="team" data-testid="team-select">
-          ${teams.filter((t) => t.is_active !== false).map((t) =>
-            `<option value="${esc(t.id)}"${t.id === user.team_id ? ' selected' : ''}>${esc(t.name)} — ${
-              Number(t.caller_count)} caller${Number(t.caller_count) === 1 ? '' : 's'}</option>`).join('')}
-        </select>
-      </label>
-      <div class="hint">
-        Takes effect today. Leads they already own stay with them — only newly
-        distributed leads follow the new team.
-      </div>
-    </div>`);
-  const footer = h(`<div><button class="btn primary" data-testid="team-save">Save team</button></div>`);
-  const { close } = openModal(`Team for ${user.full_name}`, bodyEl, footer);
-
-  footer.querySelector('button').addEventListener('click', async () => {
-    const teamId = bodyEl.querySelector('[name=team]').value;
-    try {
-      const r = await put(`/admin/users/${user.id}/team`, { teamId });
-      toast(r.changed ? `Moved to ${r.teamName}.` : `Already on ${r.teamName}.`);
-      close();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
-
-/**
- * Hand a departed caller's leads to one active caller (0081).
- *
- * Deactivation stops new leads reaching someone and nothing more: every lead
- * in their name stays there, unworked, until it is handed over. What moves and
- * what stays is crm.hand_over_leads()'s decision, not this screen's: paying
- * clients stay with the caller who won them, booked callbacks follow the
- * lead, and each lead keeps its whole call history, so the new caller reads
- * every response the client already gave.
- */
-async function handOverModal(user, onDone) {
-  if (!user) return;
-  let targets;
-  try {
-    targets = await get('/transfers/targets');
-  } catch (err) {
-    toast(err.message, 'err');
-    return;
-  }
-  // The picker offers exactly what crm.hand_over_leads() accepts: anyone
-  // active who works leads - but a counsellor's book is counselling work and
-  // goes only to another counsellor (0085).
-  if (user.role === 'counsellor') targets = targets.filter((t) => t.role === 'counsellor');
-  const held = Number(user.leads_held);
-  const bodyEl = h(`
-    <div>
-      <p class="hint mt0">
-        <b>${held}</b> lead${held === 1 ? ' is' : 's are'} still in ${esc(user.full_name)}'s name.
-        ${held === 1 ? 'It goes' : 'All of them go'} to the person you pick, with every call ${esc(user.full_name)} logged —
-        outcome, talk time and notes — still on each lead, so the new owner can read what the
-        client already said.${user.role === 'counsellor'
-          ? ' A counsellor’s book is counselling work, so it goes to another counsellor.' : ''}
-      </p>
-      ${targets.length === 0
-        ? '<div class="banner" data-testid="handover-no-targets">No one active to receive them. Add or reactivate a caller or counsellor first.</div>'
-        : `<label class="f">Give them to
-        <select name="to" data-testid="handover-target">
-          ${targets.map((t) => `<option value="${esc(t.id)}">${esc(t.full_name)}${
-            t.role === 'counsellor' ? ' (counsellor)' : ''}${
-            t.team_name ? ` — ${esc(t.team_name)}` : ''} · ${Number(t.open_leads)} open</option>`).join('')}
-        </select>
-      </label>
-      <label class="f">Note <span class="hint">(optional, shown on each lead)</span>
-        <input name="note" maxlength="300" placeholder="e.g. left 30 Sep">
-      </label>`}
-      <ul class="hint">
-        <li>Follow-up dates stay as ${esc(user.full_name)} agreed them with the client.</li>
-        <li>Callbacks clients booked will ring the new owner instead.</li>
-        <li>Paying clients stay credited to ${esc(user.full_name)} — a past sale never moves.</li>
-        <li>No transfer is used up: the new owner can still transfer any of these later.</li>
-      </ul>
-    </div>`);
-  const footer = h(`<div>${targets.length === 0 ? ''
-    : `<button class="btn primary" data-testid="handover-save">Hand over ${held} lead${held === 1 ? '' : 's'}</button>`}</div>`);
-  const { close } = openModal(`Hand over ${user.full_name}'s leads`, bodyEl, footer);
-
-  footer.querySelector('button')?.addEventListener('click', async (e) => {
-    const toCallerId = bodyEl.querySelector('[name=to]').value;
-    const note = bodyEl.querySelector('[name=note]').value.trim();
-    e.target.disabled = true;
-    try {
-      const r = await post(`/admin/users/${user.id}/hand-over`, { toCallerId, ...(note ? { note } : {}) });
-      toast(`${r.leadsMoved} lead${r.leadsMoved === 1 ? '' : 's'} handed to ${r.toName}${
-        r.callbacksMoved ? `, with ${r.callbacksMoved} booked callback${r.callbacksMoved === 1 ? '' : 's'}` : ''}.`);
-      close();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'err');
-      e.target.disabled = false;
-    }
-  });
-}
-
-/**
- * The Dialing number is how call records — the companion app's and Tata
- * Tele's — are matched back to a person, and the number Smartflo rings first
- * on a click-to-call. Saving it applies the mapping at once: the Smartflo
- * agent with that number maps to this person, and any calls of theirs being
- * held are released to them, however old.
- *
- * `freeAgents` are Smartflo agents nobody answers yet; offered from the Tata
- * Tele panel, one click fills the number in instead of retyping ten digits.
- */
-function simModal(user, onDone, freeAgents = []) {
-  if (!user) return;
-  const bodyEl = h(`
-    <div>
-      <p class="hint mt0">The number this person answers calls on. It must match the follow-me
-        number of their Smartflo agent — Tata Tele rings this phone first on every
-        click-to-call, and its call records are matched back to the person by it.</p>
-      <label class="f">Dialing SIM
-        <input name="msisdn" maxlength="20" placeholder="e.g. 98765 43210"
-               value="${esc(user.dialing_msisdn ?? '')}">
-      </label>
-      ${user.ring_softphone === undefined ? '' : `
-      <label class="f" style="flex-direction:row;align-items:center;gap:8px">
-        <input type="checkbox" name="softphone" ${user.ring_softphone ? 'checked' : ''}>
-        🎧 Ring their Smartflo softphone (browser headset) instead of this phone
-      </label>
-      <p class="hint">Needs two things in the <b>Smartflo portal</b>: their agent's
-        <b>Route Agent Through</b> set to <b>Extension</b> — Smartflo routes the call by
-        that setting, so left on Mobile Number this phone still rings with the headset
-        switched on here — and the Smartflo Softphone logged in on their computer, their
-        row green on Smartflo's Extension Status page. If the softphone cannot be rung,
-        the call falls back to this phone on its own, so this is always safe to switch on.</p>`}
-      ${user.cloud_calling === undefined ? '' : `
-      <label class="f" style="flex-direction:row;align-items:center;gap:8px">
-        <input type="checkbox" name="nocloud" ${user.cloud_calling === false ? 'checked' : ''}>
-        📵 Doesn't use cloud calling — calls from an office or personal phone
-      </label>
-      <p class="hint">Their choice, not a gap: no Call button or Power dial, and the Tata Tele
-        panel stops listing them. They still work leads and write calls down with “Log a call”.
-        The number above can stay empty.</p>`}
-      ${freeAgents.length === 0 ? '' : `
-      <div class="hint">Smartflo agents nobody answers yet:
-        ${freeAgents.map((a) => `
-          <button class="btn small" type="button" data-pick="${esc(a.agent_msisdn)}">${
-            esc(a.agent_msisdn)}${a.agent_name ? ` · ${esc(a.agent_name)}` : ''}</button>`).join('')}
-      </div>`}
-    </div>`);
-  const footer = h(`<div>
-    <button class="btn" data-act="clear">Clear</button>
-    <button class="btn primary" data-act="save">Save SIM</button>
-  </div>`);
-  const { close } = openModal(`Dialing SIM for ${user.full_name}`, bodyEl, footer);
-
-  bodyEl.addEventListener('click', (e) => {
-    const pick = e.target.closest('[data-pick]')?.dataset.pick;
-    if (pick) bodyEl.querySelector('[name=msisdn]').value = pick;
-  });
-
-  footer.addEventListener('click', async (e) => {
-    const act = e.target.dataset?.act;
-    if (!act) return;
-    const value = act === 'clear' ? null : bodyEl.querySelector('[name=msisdn]').value.trim();
-    const softphoneBox = bodyEl.querySelector('[name=softphone]');
-    const noCloudBox = bodyEl.querySelector('[name=nocloud]');
-    // A person outside cloud calling needs no number, so Save without one is
-    // then a real choice, not a slip.
-    if (act === 'save' && !value && !noCloudBox?.checked) {
-      toast('Enter a number, or use Clear.', 'err');
-      return;
-    }
-    try {
-      const r = await put(`/admin/users/${user.id}/dialing-msisdn`, {
-        // An empty field under the 📵 choice leaves whatever number is
-        // stored untouched; Clear still clears it explicitly.
-        ...(act === 'clear' || value ? { dialingMsisdn: value } : {}),
-        // Only when the modal rendered the choice: the coverage panel's
-        // number-only path must never silently flip it.
-        ...(softphoneBox ? { ringSoftphone: softphoneBox.checked } : {}),
-        ...(noCloudBox ? { cloudCalling: !noCloudBox.checked } : {}),
-      });
-      const released = Number(r?.held_calls_released ?? 0);
-      toast(act === 'clear' ? 'Dialing SIM cleared.'
-        : !value ? 'Saved.'
-          : released ? `Dialing SIM saved — ${released} held call record${released === 1 ? '' : 's'} released to them.`
-            : 'Dialing SIM saved.');
-      close();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
-
-/**
- * The tier override. The daily ranking owns ACE by default; this is the human
- * hand on the dial - pin somebody up or down with a reason (audited), or hand
- * the seat back to the ranking.
- */
-function tierModal(user, onDone) {
-  if (!user) return;
-  const bodyEl = h(`
-    <div>
-      <p class="hint mt0">Now: <b>${esc(user.tier ?? 'standard')}</b>${user.tier_pinned
-        ? ` — pinned${user.tier_pin_reason ? `: “${esc(user.tier_pin_reason)}”` : ''}`
-        : ' — set by the daily ranking'}</p>
-      <label class="f">What should decide their tier?
-        <select name="mode">
-          <option value="auto">The daily ranking (recommended)</option>
-          <option value="ace">Pin ⭐ ACE — guaranteed share of fresh leads</option>
-          <option value="standard">Pin STANDARD</option>
-          <option value="restricted">Pin RESTRICTED — no fresh leads</option>
-        </select>
-      </label>
-      <div id="pin-fields" style="display:none">
-        <label class="f">Reason <span class="hint">required — this is audited under your name</span>
-          <input name="reason" maxlength="300" placeholder="e.g. best converter this month">
-        </label>
-        <label class="f">Pin until <span class="hint">optional — after this it returns to the ranking</span>
-          <input name="expires" type="date">
-        </label>
-      </div>
-    </div>`);
-  const footer = h('<div><button class="btn primary" data-testid="tier-save">Save tier</button></div>');
-  const { close } = openModal(`Tier for ${user.full_name}`, bodyEl, footer);
-
-  const modeSel = bodyEl.querySelector('[name=mode]');
-  const pinFields = bodyEl.querySelector('#pin-fields');
-  modeSel.addEventListener('change', () => {
-    pinFields.style.display = modeSel.value === 'auto' ? 'none' : '';
-  });
-
-  footer.querySelector('button').addEventListener('click', async () => {
-    const mode = modeSel.value;
-    try {
-      if (mode === 'auto') {
-        await put(`/admin/users/${user.id}/tier`, { mode: 'auto' });
-        toast('Back with the daily ranking.');
-      } else {
-        const reason = bodyEl.querySelector('[name=reason]').value.trim();
-        if (reason.length < 3) { toast('A pin needs a reason — it is audited.', 'err'); return; }
-        const expires = bodyEl.querySelector('[name=expires]').value;
-        await put(`/admin/users/${user.id}/tier`, {
-          mode: 'pin', tier: mode, reason,
-          expiresAt: expires ? new Date(`${expires}T23:59:59`).toISOString() : null,
-        });
-        toast(`Pinned ${mode.toUpperCase()}.`);
-      }
-      close();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
-
-/**
- * Upload a leaderboard icon.
- *
- * The browser does the downsizing: whatever lands here - a 12MB phone photo
- * included - leaves as a 128px square PNG data URL a few KB long. Sending the
- * original and resizing on the server would mean running an image pipeline for
- * what is, in the end, a 26px circle next to a name.
- */
-function avatarModal(user, onDone) {
-  if (!user) return;
-  const bodyEl = h(`
-    <div>
-      <div class="row" style="align-items:center;gap:14px">
-        <span id="avatar-preview">${avatarHtml(user.full_name, user.avatar_url, 64)}</span>
-        <div>
-          <label class="f" style="margin:0">Choose an image
-            <input name="file" type="file" accept="image/png,image/jpeg,image/webp">
-          </label>
-          <div class="hint">Square images look best. It is resized to 128px before upload.</div>
+      <div class="panel">
+        <div class="frow" style="justify-content:space-between">
+          <div class="section-h" style="margin-top:0">Team</div>
+          <button class="btn primary" data-add-user style="flex:0 0 auto">+ Add person</button>
+        </div>
+        <table class="table">
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            ${users
+              .map(
+                (u) => `
+              <tr data-user="${u.id}" class="${u.is_active ? '' : 'row-muted'}">
+                <td><b>${esc(u.full_name)}</b></td>
+                <td class="mono">${esc(u.email)}</td>
+                <td>
+                  <select data-role ${u.id === me.id ? 'disabled title="Ask another admin to change your role"' : ''}>
+                    ${['caller', 'followup', 'admin']
+                      .map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${r === 'followup' ? 'Follow-up' : r[0].toUpperCase() + r.slice(1)}</option>`)
+                      .join('')}
+                  </select>
+                </td>
+                <td>${u.is_active ? '<span class="badge b-ok">Active</span>' : '<span class="badge b-mute">Deactivated</span>'}</td>
+                <td class="right">
+                  <button class="btn small" data-reset>Reset password</button>
+                  ${u.id === me.id
+                    ? ''
+                    : `<button class="btn small" data-toggle>${u.is_active ? 'Deactivate' : 'Reactivate'}</button>`}
+                </td>
+              </tr>`,
+              )
+              .join('')}
+          </tbody>
+        </table>
+        <div class="hint">
+          Fresh leads rotate between active <b>callers</b>; qualified leads pass to the
+          <b>follow-up</b> person. Deactivating someone stops both at once and signs them out.
         </div>
       </div>
-    </div>`);
-  const footer = h(`
-    <div>
-      ${user.avatar_url ? '<button class="btn danger" id="avatar-clear">Remove icon</button>' : ''}
-      <button class="btn primary" id="avatar-save" disabled>Save icon</button>
-    </div>`);
-  const { close } = openModal(`Icon for ${user.full_name}`, bodyEl, footer);
 
-  let dataUrl = null;
-  bodyEl.querySelector('[name=file]').addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const img = await createImageBitmap(file);
-      const size = 128;
-      const canvas = document.createElement('canvas');
-      canvas.width = size;
-      canvas.height = size;
-      const ctx = canvas.getContext('2d');
-      // Cover-crop to a square from the centre, so nobody arrives stretched.
-      const side = Math.min(img.width, img.height);
-      ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
-      dataUrl = canvas.toDataURL('image/png');
-      bodyEl.querySelector('#avatar-preview').innerHTML = avatarHtml(user.full_name, dataUrl, 64);
-      footer.querySelector('#avatar-save').disabled = false;
-    } catch {
-      toast('Could not read that image — try a PNG or JPG.', 'err');
-    }
-  });
+      <div class="panel">
+        <div class="section-h" style="margin-top:0">Lead sources</div>
+        ${syncConfigured ? '' : `<div class="hint" style="margin-bottom:8px">
+          Automatic sheet sync is off on this server (set SERVICE_USER_ID and a Google service
+          account). "Sync now" below still works once a sheet is configured and shared with the
+          service account.</div>`}
+        <table class="table">
+          <thead><tr><th>Source</th><th>Google Sheet</th><th>Tab</th><th>Last synced</th><th>Last run</th><th></th></tr></thead>
+          <tbody>
+            ${sources
+              .map(
+                (s) => `
+              <tr data-source="${s.id}">
+                <td><b>${esc(s.name)}</b>${s.is_active ? '' : ' <span class="badge b-mute">off</span>'}</td>
+                <td class="mono">${esc(shortId(s.spreadsheet_id))}</td>
+                <td>${esc(s.worksheet_name ?? '—')}</td>
+                <td>${s.last_synced_at ? esc(fmtDT(s.last_synced_at)) : '—'}</td>
+                <td>${lastRun(s)}</td>
+                <td class="right">
+                  <button class="btn small" data-edit-source>Edit</button>
+                  ${s.spreadsheet_id ? '<button class="btn small" data-sync>Sync now</button>' : ''}
+                </td>
+              </tr>`,
+              )
+              .join('')}
+          </tbody>
+        </table>
+        <div class="hint">
+          Point each source at the Google Sheet its leads land in (Meta's connected sheet, the
+          ChatGPT export). The importer reads the whole sheet every few minutes and can never
+          create the same lead twice; a repeat phone number becomes a repeat enquiry on the
+          existing lead.
+        </div>
+      </div>
 
-  footer.querySelector('#avatar-save').addEventListener('click', async () => {
-    if (!dataUrl) return;
-    try {
-      await put(`/admin/users/${user.id}/avatar`, { dataUrl });
-      toast('Icon saved — it shows on the leaderboard immediately.');
-      close();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-
-  footer.querySelector('#avatar-clear')?.addEventListener('click', async () => {
-    try {
-      await put(`/admin/users/${user.id}/avatar`, { dataUrl: null });
-      toast('Icon removed.');
-      close();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
-
-/** Set a temporary password. They are forced to change it at next login. */
-function passwordModal(userId, onDone) {
-  const bodyEl = h(`
-    <div>
-      <label class="f">Temporary password
-        <span class="hint">at least 10 characters — they must change it at first login</span>
-        <input name="temp" minlength="10" required>
-      </label>
-    </div>`);
-  const footer = h('<div><button class="btn primary">Set password</button></div>');
-  const { close } = openModal('Reset password', bodyEl, footer);
-
-  footer.querySelector('button').addEventListener('click', async () => {
-    const temp = bodyEl.querySelector('[name=temp]').value;
-    if (temp.length < 10) {
-      toast('The temporary password needs at least 10 characters.', 'err');
-      return;
-    }
-    try {
-      await post(`/admin/users/${userId}/reset-password`, { temporaryPassword: temp });
-      toast('Password set — they must change it at next login.');
-      close();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
-
-/**
- * `prefill` carries what is already known - from the Tata Tele panel, a
- * Smartflo agent's name and number - so creating the person behind an
- * unmatched agent is not an exercise in copying digits between tabs.
- */
-function newUserModal(teams, onDone, prefill = {}) {
-  const bodyEl = h(`
-    <div>
-      <label class="f">Full name <input name="name" required value="${esc(prefill.fullName ?? '')}"></label>
-      <label class="f">Email <input name="email" type="email" required></label>
-      <div class="frow">
-        <label class="f">Role
-          <select name="role">
-            <option value="caller">caller</option><option value="counsellor">counsellor</option>
-            <option value="mentor">mentor</option>
-            <option value="ops">ops</option><option value="viewer">viewer</option><option value="admin">admin</option>
+      <div class="panel">
+        <div class="section-h" style="margin-top:0">Import leads from CSV</div>
+        <div class="frow">
+          <select name="import-source" style="flex:0 0 auto">
+            ${sources.filter((s) => s.is_active).map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}
           </select>
+          <button class="btn" data-import style="flex:0 0 auto">Import</button>
+        </div>
+        <label class="f">
+          <span class="hint">First row is headers — name, phone, email, city, campaign (extra columns are kept on the lead)</span>
+          <textarea name="csv" rows="5" placeholder="Full Name,Phone Number,Email,City&#10;Asha Rao,98765 43210,asha@x.in,Pune"></textarea>
         </label>
-        <label class="f">Team
-          <select name="team"><option value="">— none —</option>
-            ${teams.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}
-          </select>
-        </label>
+        <div data-import-result></div>
       </div>
-      <div class="frow">
-        <label class="f">Dialing SIM <input name="msisdn" placeholder="+91…"
-                                            value="${esc(prefill.dialingMsisdn ?? '')}"></label>
-        <label class="f">Employee code <input name="code"></label>
+
+      <div class="panel">
+        <div class="section-h" style="margin-top:0">Quarantine
+          <span class="badge ${quarantined.length ? 'b-warn' : 'b-ok'}">${quarantined.length}</span>
+        </div>
+        ${quarantined.length === 0
+          ? '<div class="empty">Nothing quarantined — every imported row became a lead.</div>'
+          : `<div class="hint" style="margin-bottom:8px">Rows the importer refused, kept with the reason.
+               Fix the number and add the lead by hand from the Leads screen.</div>
+             <table class="table">
+               <thead><tr><th>When</th><th>Source</th><th>Row</th><th>Why</th></tr></thead>
+               <tbody>
+                 ${quarantined
+                   .map(
+                     (r) => `
+                   <tr>
+                     <td class="mono">${esc(fmtDT(r.created_at))}</td>
+                     <td>${esc(r.source_name)}</td>
+                     <td class="mono">${esc(payloadPreview(r.payload))}</td>
+                     <td>${esc(r.reject_reason ?? '')}</td>
+                   </tr>`,
+                   )
+                   .join('')}
+               </tbody>
+             </table>`}
       </div>
-      <label class="f">Temporary password
-        <span class="hint">at least 10 characters — they must change it at first login</span>
-        <input name="temp" minlength="10" required>
-      </label>
     </div>`);
-  const footer = h('<div><button class="btn primary">Create user</button></div>');
-  const { close } = openModal('New user', bodyEl, footer);
+  outlet.appendChild(root);
 
-  footer.querySelector('button').addEventListener('click', async () => {
-    // Check here too: the modal has no <form>, so the browser never enforces
-    // minlength on its own, and a round trip to be told "too short" is a
-    // worse experience than being told before sending.
-    const temp = bodyEl.querySelector('[name=temp]').value;
-    if (temp.length < 10) {
-      toast('The temporary password needs at least 10 characters.', 'err');
-      return;
-    }
-    try {
-      await post('/admin/users', {
-        fullName: bodyEl.querySelector('[name=name]').value.trim(),
-        email: bodyEl.querySelector('[name=email]').value.trim(),
-        role: bodyEl.querySelector('[name=role]').value,
-        teamId: bodyEl.querySelector('[name=team]').value || undefined,
-        dialingMsisdn: bodyEl.querySelector('[name=msisdn]').value.trim() || undefined,
-        employeeCode: bodyEl.querySelector('[name=code]').value.trim() || undefined,
-        temporaryPassword: temp,
-      });
-      toast('User created.');
-      close();
-      onDone();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
+  const reload = () => render(outlet, me);
 
-/* ---------------- ingestion ---------------- */
+  // ---- users ----
+  root.querySelector('[data-add-user]').addEventListener('click', () => addUserModal(reload));
 
-async function ingest(body, me) {
-  const [sources, runs, teams, tataTele, people] = await Promise.all([
-    get('/admin/sources'),
-    get('/ingest/runs'),
-    get('/admin/teams'),
-    get('/integrations/tata-tele/health').catch(() => null),
-    // Attaching a Smartflo agent puts its number on a person, which only an
-    // admin may do - so only an admin's panel needs the people to pick from.
-    me.role === 'admin' ? get('/admin/users').catch(() => []) : [],
-  ]);
-  body.innerHTML = '';
-  const teamName = (id) => teams.find((t) => t.id === id)?.name ?? null;
-
-  if (sources.length === 0) {
-    body.appendChild(h(`
-      <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-        No lead sources yet — create one below before importing anything.
-      </div>`));
-  }
-
-  // Two active sources on the same sheet and tab are not a second feed - they
-  // are the same feed read twice. The lead itself is deduped on phone, so the
-  // second read lands in the re-enquiry branch: priority jumps to 'immediate'
-  // and reenquiry_count climbs, for leads nobody enquired about twice. When
-  // every lead is immediate, none of them are, and the callers lose the queue.
-  const feedKey = (s) =>
-    s.spreadsheet_id
-      ? JSON.stringify([s.spreadsheet_id, (s.worksheet_name ?? '').trim().toLowerCase()])
-      : null;
-  const activeFeeds = new Map();
-  sources.filter((s) => s.is_active && feedKey(s)).forEach((s) => {
-    activeFeeds.set(feedKey(s), (activeFeeds.get(feedKey(s)) ?? 0) + 1);
-  });
-  const isDoubleRead = (s) => s.is_active && feedKey(s) && activeFeeds.get(feedKey(s)) > 1;
-  const doubleReadCount = sources.filter(isDoubleRead).length;
-
-  const srcPanel = h(`
-    <div class="panel">
-      <div class="row spread">
-        <h2 class="mt0">Lead sources <small>${sources.length}</small></h2>
-        <button class="btn primary" id="new-source">New source</button>
-      </div>
-      ${doubleReadCount === 0 ? '' : `
-      <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-        <b>${doubleReadCount} active sources read the same sheet and tab.</b>
-        Every lead they share would be counted as a repeat enquiry and forced to
-        <b>immediate</b> priority, which empties the immediate queue of meaning.
-        Keep one and deactivate the rest — nothing is deleted, and past runs stay.
-      </div>`}
-      ${sources.length === 0 ? '' : `
-      <table class="table"><thead><tr>
-        <th>Name</th><th>Sheet</th><th>Goes to</th><th>Priority</th><th>Last synced</th><th>Active</th><th></th>
-      </tr></thead><tbody>
-      ${sources.map((s) => `
-        <tr${isDoubleRead(s) ? ' style="background:var(--warn-bg)"' : ''}>
-          <td><b>${esc(s.name)}</b></td>
-          <td>${s.spreadsheet_id ? `${esc(s.spreadsheet_id.slice(0, 18))}… / ${esc(s.worksheet_name ?? '')}` : '<span class="hint">manual CSV only</span>'}</td>
-          <td>${s.pinned_team_id
-            ? esc(teamName(s.pinned_team_id) ?? 'unknown team')
-            : '<span class="hint">both teams, alternating</span>'}</td>
-          <td>${esc(s.default_priority)}</td>
-          <td>${esc(fmtDT(s.last_synced_at))}</td>
-          <td>${s.is_active ? '<span class="badge b-ok">yes</span>' : '<span class="badge b-mute">no</span>'}</td>
-          <td class="num">
-            <button class="btn small" data-edit="${esc(s.id)}">Edit</button>
-            <button class="btn small" data-toggle="${esc(s.id)}">${s.is_active ? 'Deactivate' : 'Reactivate'}</button>
-          </td>
-        </tr>`).join('')}
-      </tbody></table>`}
-    </div>`);
-  body.appendChild(srcPanel);
-  const redraw = () => ingest(body, me);
-  srcPanel.querySelector('#new-source').addEventListener('click', () => sourceModal(null, teams, redraw));
-
-  srcPanel.querySelectorAll('[data-edit]').forEach((btn) => {
-    btn.addEventListener('click', () =>
-      sourceModal(sources.find((s) => s.id === btn.dataset.edit), teams, redraw));
-  });
-
-  srcPanel.querySelectorAll('[data-toggle]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const source = sources.find((s) => s.id === btn.dataset.toggle);
-      btn.disabled = true;
+  root.querySelectorAll('tr[data-user]').forEach((tr) => {
+    const id = tr.dataset.user;
+    tr.querySelector('[data-role]')?.addEventListener('change', async (e) => {
       try {
-        await put(`/admin/sources/${source.id}`, { isActive: !source.is_active });
-        toast(source.is_active ? 'Source deactivated.' : 'Source reactivated.');
-        await redraw();
+        await api(`/admin/users/${id}`, { method: 'PUT', body: { role: e.target.value } });
+        toast('Role changed.');
+        reload();
       } catch (err) {
-        btn.disabled = false;
         toast(err.message, 'err');
+        reload();
+      }
+    });
+    tr.querySelector('[data-toggle]')?.addEventListener('click', async (e) => {
+      const activate = e.target.textContent === 'Reactivate';
+      try {
+        await api(`/admin/users/${id}`, { method: 'PUT', body: { isActive: activate } });
+        toast(activate ? 'Reactivated.' : 'Deactivated — their session is revoked and they receive no new leads.');
+        reload();
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    });
+    tr.querySelector('[data-reset]')?.addEventListener('click', () => resetPasswordModal(id, tr));
+  });
+
+  // ---- sources ----
+  root.querySelectorAll('tr[data-source]').forEach((tr) => {
+    const id = tr.dataset.source;
+    const source = sources.find((s) => s.id === id);
+    tr.querySelector('[data-edit-source]')?.addEventListener('click', () => editSourceModal(source, reload));
+    tr.querySelector('[data-sync]')?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      e.target.textContent = 'Syncing…';
+      try {
+        const s = await post(`/admin/sources/${id}/sync`);
+        toast(`Synced: ${s.created} new, ${s.duplicate} already known, ${s.quarantined} quarantined.`);
+        reload();
+      } catch (err) {
+        toast(err.message, 'err');
+        e.target.disabled = false;
+        e.target.textContent = 'Sync now';
       }
     });
   });
 
-  if (tataTele) renderTataTele(body, tataTele, me, () => ingest(body, me), { people, teams });
-
-  if (sources.length === 0) return;
-
-  const panel = h(`
-    <div class="panel">
-      <h2>Run an import</h2>
-      <div class="frow">
-        <label class="f">Source
-          <select name="source">${sources.map((s) =>
-            `<option value="${esc(s.id)}">${esc(s.name)}${s.spreadsheet_id ? ' (sheet linked)' : ''}</option>`).join('')}
-          </select>
-        </label>
-      </div>
-      <div class="row">
-        <button class="btn primary" id="run-sheet">Sync from Google Sheet</button>
-        <span class="hint">or paste CSV below — same pipeline, same dedupe and quarantine</span>
-      </div>
-      <label class="f" style="margin-top:12px">CSV (first row = headers)
-        <textarea name="csv" rows="5" placeholder="Full Name,Phone Number,Email,City&#10;Asha Rao,9876543210,asha@example.com,Pune"></textarea>
-      </label>
-      <button class="btn" id="run-csv">Import CSV</button>
-      <div id="ingest-result" style="margin-top:12px"></div>
-    </div>`);
-  body.appendChild(panel);
-
-  const resultBox = panel.querySelector('#ingest-result');
-  const showSummary = (s) => {
-    resultBox.innerHTML = '';
-    resultBox.appendChild(h(`
-      <div class="banner" style="background:var(--info-bg);color:var(--info);border-color:#c7d7f8">
-        Seen ${Number(s.seen)} · created ${Number(s.created)} · duplicates ${Number(s.duplicate)}
-        · quarantined ${Number(s.quarantined)} · assigned ${Number(s.assigned)}
-        ${s.errors?.length ? ` · <b>${s.errors.length} row errors</b>` : ''}
-      </div>`));
-  };
-
-  // Redraw the whole tab after every attempt, success or failure. "Recent
-  // runs" is rendered once when the tab opens, so without this it keeps
-  // showing the PREVIOUS attempt - which reads as though nothing happened,
-  // or worse, as though an old error is the new one.
-  const runImport = async (button, url, payload) => {
-    const label = button.textContent;
-    button.disabled = true;
-    button.textContent = 'Working…';
+  // ---- import ----
+  root.querySelector('[data-import]').addEventListener('click', async (e) => {
+    const csv = root.querySelector('[name=csv]').value.trim();
+    const sourceId = root.querySelector('[name=import-source]').value;
+    if (!csv) { toast('Paste the CSV first.', 'err'); return; }
+    e.target.disabled = true;
     try {
-      const summary = await post(url, payload);
-      const rowErrors = summary.errors?.length ?? 0;
-      toast(
-        rowErrors
-          ? `Imported, but ${rowErrors} row${rowErrors === 1 ? '' : 's'} failed — see Recent runs.`
-          : `Done: ${summary.created} created, ${summary.duplicate} duplicate, ${summary.quarantined} quarantined.`,
-        rowErrors ? 'err' : 'ok',
-      );
+      const s = await post('/admin/import', { sourceId, csv });
+      root.querySelector('[data-import-result]').innerHTML = `
+        <div class="hint">Imported: <b>${s.created}</b> new lead${s.created === 1 ? '' : 's'},
+        ${s.duplicate} already known, ${s.quarantined} quarantined${
+          s.errors.length ? `, ${s.errors.length} failed: ${esc(s.errors[0])}` : ''
+        }.</div>`;
+      if (s.created > 0) toast(`${s.created} lead${s.created === 1 ? '' : 's'} imported and assigned.`);
     } catch (err) {
       toast(err.message, 'err');
     } finally {
-      button.disabled = false;
-      button.textContent = label;
-      await ingest(body, me);
-    }
-  };
-
-  panel.querySelector('#run-sheet').addEventListener('click', (e) =>
-    runImport(e.target, `/ingest/sources/${panel.querySelector('[name=source]').value}/run`));
-
-  panel.querySelector('#run-csv').addEventListener('click', (e) => {
-    const csv = panel.querySelector('[name=csv]').value;
-    if (!csv.trim()) { toast('Paste some CSV first.', 'err'); return; }
-    runImport(e.target, `/ingest/sources/${panel.querySelector('[name=source]').value}/csv`, { csv });
-  });
-
-  body.appendChild(h(`
-    <div class="panel">
-      <h2>Recent runs</h2>
-      ${runs.length === 0 ? '<div class="empty">No runs yet.</div>' : `
-      <table class="table"><thead><tr>
-        <th>Source</th><th>Started</th><th class="num">Seen</th><th class="num">Created</th>
-        <th class="num">Dupes</th><th class="num">Quarantined</th><th>Error</th>
-      </tr></thead><tbody>
-      ${runs.map((r) => `
-        <tr>
-          <td>${esc(r.source_name)}</td><td>${esc(fmtDT(r.started_at))}</td>
-          <td class="num">${Number(r.rows_seen)}</td><td class="num">${Number(r.rows_created)}</td>
-          <td class="num">${Number(r.rows_duplicate)}</td><td class="num">${Number(r.rows_quarantined)}</td>
-          <td>${r.error_text ? `<span class="badge b-bad" style="white-space:normal;text-align:left;display:inline-block;max-width:46ch">${esc(r.error_text)}</span>` : '—'}</td>
-        </tr>`).join('')}
-      </tbody></table>`}
-    </div>`));
-}
-
-/**
- * "asha  RAO" in Smartflo is "Asha Rao" here: case, spacing
- * and punctuation do not make a different person.
- */
-const nameKey = (s) => String(s ?? '').toLowerCase().replace(/[^a-z]+/g, ' ').trim();
-
-/**
- * The person a Smartflo agent most likely is, or null. A whole-name match
- * counts; a first name alone counts only for someone who needs a number, so
- * a lone "Rahul" who already dials fine is never offered up by accident.
- * Only a single candidate is ever suggested - two Rahuls is a question for
- * the admin, not a guess for the screen.
- */
-function likelyPerson(agentName, candidates, needsNumber) {
-  const key = nameKey(agentName);
-  if (!key) return null;
-  const whole = candidates.filter((u) => nameKey(u.full_name) === key);
-  if (whole.length === 1) return whole[0];
-  if (whole.length > 1) return null;
-  const first = key.split(' ')[0];
-  const byFirst = candidates.filter((u) =>
-    needsNumber.has(u.id) && nameKey(u.full_name).split(' ')[0] === first);
-  return byFirst.length === 1 ? byFirst[0] : null;
-}
-
-/**
- * Tata Tele Smartflo: the floor's dialler and its call sensor. This panel
- * answers "is cloud calling alive, and who can it not serve", which are the
- * ways it fails silently - a person whose number Smartflo does not know can
- * neither click-to-call nor have their dials verified. Every gap is named,
- * with its fix beside the name: a banner that says "2 callers" and names
- * nobody sends the admin through the Users tab comparing digits by eye.
- * The alarm on the bell is the loud path; this is the detail.
- */
-function renderTataTele(body, tt, me, redraw, { people = [], teams = [] } = {}) {
-  const canAct = me.role === 'admin' || me.role === 'ops';
-  const isAdmin = me.role === 'admin';
-  const agents = tt.agents ?? [];
-  const unmapped = agents.filter((a) => !a.user_id);
-  const quarantine = tt.quarantine ?? [];
-  const coverage = tt.coverage ?? [];
-  const noNumber = coverage.filter((c) => c.problem === 'no_number');
-  const notAgent = coverage.filter((c) => c.problem === 'not_an_agent');
-  const failedClicks = tt.failed_clicks ?? [];
-  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-
-  const badge =
-    tt.state === 'healthy' ? '<span class="badge b-ok">healthy</span>'
-    : tt.state === 'off' ? '<span class="badge b-mute">off</span>'
-    : tt.state === 'attention' ? '<span class="badge b-bad">needs attention</span>'
-    : tt.state === 'auth' ? '<span class="badge b-bad">login expired</span>'
-    : `<span class="badge b-bad">${esc(tt.state ?? 'unknown')}</span>`;
-
-  // Who a Smartflo agent can be attached to: the people it cannot serve
-  // first, since one of them is almost always who the agent is.
-  const needsNumber = new Set(coverage.map((c) => c.user_id));
-  const staff = people.filter((u) => u.is_active && u.role !== 'viewer');
-  const byName = (a, b) => a.full_name.localeCompare(b.full_name);
-  const groups = [
-    ['Cannot be dialled yet', staff.filter((u) => needsNumber.has(u.id))],
-    ['Callers and counsellors', staff.filter((u) =>
-      !needsNumber.has(u.id) && (u.role === 'caller' || u.role === 'counsellor'))],
-    ['Other staff', staff.filter((u) =>
-      !needsNumber.has(u.id) && u.role !== 'caller' && u.role !== 'counsellor')],
-  ].map(([label, list]) => [label, [...list].sort(byName)]).filter(([, list]) => list.length);
-
-  const attachOptions = (agent) => {
-    const guess = likelyPerson(agent.agent_name, staff, needsNumber);
-    return `<option value="">— who answers this phone? —</option>${groups.map(([label, list]) => `
-      <optgroup label="${esc(label)}">${list.map((u) => `
-        <option value="${esc(u.id)}"${u.id === guess?.id ? ' selected' : ''}>${esc(u.full_name)} — ${
-          esc(u.role)}${u.dialing_msisdn ? `, now ${esc(u.dialing_msisdn)}` : ', no number'}</option>`).join('')}
-      </optgroup>`).join('')}`;
-  };
-
-  const personLine = (c) => `
-    <li data-testid="tt-person" data-user="${esc(c.user_id)}" style="margin-top:4px">
-      <b>${esc(c.full_name)}</b> <span class="hint">${esc(c.role)}</span>
-      ${c.dialing_msisdn ? `<span class="mono">${esc(c.dialing_msisdn)}</span>` : ''}
-      ${isAdmin ? `<button class="btn small" data-set-number="${esc(c.user_id)}">${
-        c.dialing_msisdn ? 'Change number' : 'Set number'}</button>
-      <button class="btn small" data-no-cloud="${esc(c.user_id)}" data-testid="tt-no-cloud"
-        title="They call from an office or personal phone by choice — remove their Call button and stop listing them here">📵 Not on cloud calling</button>` : ''}
-    </li>`;
-
-  const agentRow = (a) => `
-    <div class="row wrap" data-testid="tt-agent" data-msisdn="${esc(a.agent_msisdn)}"
-         style="gap:8px;margin-top:6px;align-items:center">
-      <span class="mono">${esc(a.agent_msisdn)}</span>
-      <b>${esc(a.agent_name ?? 'unnamed agent')}</b>
-      ${isAdmin ? `
-        <select data-testid="tt-attach-user" style="max-width:100%" aria-label="Who answers ${esc(a.agent_msisdn)}">${attachOptions(a)}</select>
-        <button class="btn small primary" data-attach="${esc(a.agent_msisdn)}" data-testid="tt-attach">Attach</button>
-        <button class="btn small" data-new-user="${esc(a.agent_msisdn)}">New user…</button>` : ''}
-    </div>`;
-
-  // Three different silences, three different fixes: never reached (the URL,
-  // or a firewall in front of the server), reached and turned away (the
-  // secret), reached and failed (the payload). Each run's result is kept, so
-  // the panel can say which one this is instead of a dash.
-  const hookError = tt.webhook_last_error ?? '';
-  const hookBanner = !tt.webhook_secret_configured ? ''
-    : hookError.startsWith('refused:') ? `
-      <div class="banner warn" data-testid="tt-webhook-refused">
-        <b>The last webhook delivery was turned away</b> (${esc(fmtDT(tt.webhook_last_at))}) —
-        ${esc(hookError.replace(/^refused:\s*/, ''))}. The <span class="mono">?secret=</span> at the
-        end of the webhook URL in the Smartflo portal must be exactly TATA_TELE_WEBHOOK_SECRET from the
-        server's <span class="mono">.env</span>. If that address is not Smartflo's, a stranger knocked
-        and was refused; Smartflo's next good delivery clears this.
-      </div>`
-    : hookError ? `
-      <div class="banner warn" data-testid="tt-webhook-failed">
-        <b>The last webhook delivery reached the CRM and failed</b> (${esc(fmtDT(tt.webhook_last_at))}):
-        ${esc(hookError)}. The scheduled pull still collects those calls.
-      </div>`
-    : !tt.webhook_last_at ? `
-      <div class="banner info" data-testid="tt-webhook-never">
-        <b>No webhook delivery has reached the CRM yet.</b> Nothing is lost — the scheduled pull
-        collects every call record — but with the webhook they land the moment a call ends. In the
-        Smartflo portal, check the webhook is enabled, fires on call hangup for inbound and outbound,
-        and posts to exactly <span class="mono">${esc(location.origin)}${esc(tt.webhook_path ?? '')}?secret=…</span>.
-        Its delivery log there shows what this server answered: <b>401</b> means the secret differs;
-        a <b>timeout or reset</b> means the server admits only the office network — exempt the webhook
-        path in <span class="mono">/etc/caddy/Caddyfile</span> (runbook Phase 4b).
-      </div>`
-    : '';
-
-  const panel = h(`
-    <div class="panel" data-testid="tata-tele-health">
-      <div class="row spread wrap">
-        <h2 class="mt0">Tata Tele cloud calling ${badge}</h2>
-        ${canAct && tt.enabled ? '<button class="btn" id="tt-sync">Sync now</button>' : ''}
-      </div>
-      ${!tt.enabled ? `
-        <div class="hint">The integration is switched off. Turn it on at
-          Admin → Settings → <span class="mono">tata_tele.enabled</span> once every caller's
-          Dialing number matches their Smartflo agent — the floor then dials with one click
-          and Smartflo's call records verify dials exactly like the companion app's.</div>` : `
-        <div class="hint">
-          Last pull ${esc(fmtDT(tt.sync_last_ok_at))} · last webhook ${
-            esc(tt.webhook_last_ok_at ? fmtDT(tt.webhook_last_ok_at) : 'never')}
-          · today ${Number(tt.clicks_today ?? 0)} click${Number(tt.clicks_today) === 1 ? '' : 's'} to call${
-            Number(tt.clicks_failed_today ?? 0) > 0 ? ` (<b>${Number(tt.clicks_failed_today)} failed</b>)` : ''}
-          · ${Number(tt.calls_today ?? 0)} call record${Number(tt.calls_today) === 1 ? '' : 's'}
-          (${Number(tt.matched_today ?? 0)} matched a lead)${Number(tt.missed_calls_today ?? 0) > 0
-            ? ` · <span data-testid="tt-missed-today" title="Clients who rang the office and reached nobody - each is now a lead, or back at the top of its owner's list">${
-              Number(tt.missed_calls_today)} missed call${Number(tt.missed_calls_today) === 1 ? '' : 's'} → call-back leads</span>` : ''}
-          · ${agents.length} Smartflo agent${agents.length === 1 ? '' : 's'}
-        </div>
-        ${failedClicks.length === 0 ? '' : `
-        <div class="hint" data-testid="tt-failed-clicks">Why today's clicks failed, in Smartflo's words:
-          ${failedClicks.map((f) => `<b>${esc(f.reason)}</b> ×${Number(f.n)}`).join(' · ')}</div>`}
-        ${tt.state === 'auth' ? `
-        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          <b>Smartflo is refusing the CRM's login</b> — clicks and the CDR sync are failing.
-          Smartflo rotates API passwords every 90 days; update TATA_TELE_LOGIN_PASSWORD
-          (or TATA_TELE_API_TOKEN) on the server.
-        </div>` : tt.sync_last_error ? `
-        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          Last pull failed: ${esc(tt.sync_last_error)}
-        </div>` : ''}
-        ${tt.credentials_configured ? '' : `
-        <div class="banner" style="background:var(--warn-bg);color:var(--warn);border-color:#eed9b8">
-          <b>The Smartflo credentials are not set on the server</b>
-          (TATA_TELE_LOGIN_EMAIL / TATA_TELE_LOGIN_PASSWORD or TATA_TELE_API_TOKEN), so
-          click-to-call and the scheduled pull cannot run. Only the webhook (if configured)
-          is feeding call records.
-        </div>`}
-        ${tt.webhook_secret_configured ? `
-        <div class="hint">Webhook: in the Smartflo portal (Services → Webhooks) send call-hangup
-          events as JSON to
-          <span class="mono">${esc(location.origin)}${esc(tt.webhook_path ?? '')}?secret=…</span>
-          using the same Secret as TATA_TELE_WEBHOOK_SECRET.</div>` : `
-        <div class="hint">TATA_TELE_WEBHOOK_SECRET is not set — the webhook is off and call records
-          arrive only by the scheduled pull.</div>`}
-        ${hookBanner}
-        ${unmapped.length === 0 ? '' : `
-        <div class="banner warn" data-testid="tt-unmapped">
-          <b>${count(unmapped.length, 'Smartflo agent matches', 'Smartflo agents match')} no CRM user</b>
-          — their calls are held, not verified. ${isAdmin
-            ? 'Attach each to the person who answers that phone: it becomes their Dialing number, and their held calls are released at once.'
-            : 'An admin can attach each to the person who answers that phone, from this panel.'}
-          ${unmapped.map(agentRow).join('')}
-        </div>`}
-        ${noNumber.length === 0 ? '' : `
-        <div class="banner warn" data-testid="tt-no-number">
-          <b>${count(noNumber.length, 'person has', 'people have')} no Dialing number</b> — click-to-call
-          has no phone to ring for them, and their calls cannot be verified.
-          <ul style="margin:4px 0 0;padding-left:18px">${noNumber.map(personLine).join('')}</ul>
-        </div>`}
-        ${notAgent.length === 0 ? '' : `
-        <div class="banner warn" data-testid="tt-not-agent">
-          <b>${count(notAgent.length, 'Dialing number is', 'Dialing numbers are')} not a Smartflo agent</b>
-          — their clicks are refused and their calls never verify. Either the number here is mistyped,
-          or their agent in the Smartflo portal has a different follow-me number.
-          <ul style="margin:4px 0 0;padding-left:18px">${notAgent.map(personLine).join('')}</ul>
-        </div>`}
-        ${quarantine.length === 0 ? '' : `
-        <details style="margin-top:8px">
-          <summary>${quarantine.length} held call record${quarantine.length === 1 ? '' : 's'} (kept whole, nothing dropped)</summary>
-          ${canAct ? `
-          <div class="row" style="margin:6px 0;align-items:center;gap:8px">
-            <button class="btn small" id="tt-reconcile">Retry held calls</button>
-            <span class="hint">Saving a Dialing number already does this; the button covers any other fix — a person reactivated, say.</span>
-          </div>` : ''}
-          <table class="table"><thead><tr><th>Agent</th><th>Why held</th><th>Last seen</th></tr></thead><tbody>
-          ${quarantine.map((r) => `
-            <tr>
-              <td class="mono">${esc(r.agent_identifier ?? '—')}</td>
-              <td>${esc(r.reason)}</td>
-              <td>${esc(fmtDT(r.last_seen_at))}</td>
-            </tr>`).join('')}
-          </tbody></table>
-        </details>`}`}
-    </div>`);
-  body.appendChild(panel);
-
-  panel.querySelector('#tt-sync')?.addEventListener('click', async (e) => {
-    e.target.disabled = true;
-    e.target.textContent = 'Syncing…';
-    try {
-      const s = await post('/integrations/tata-tele/sync', {});
-      toast(`Tata Tele: ${Number(s?.cdrs?.seen ?? 0)} records seen, ${Number(s?.cdrs?.inserted ?? 0)} new, `
-        + `${Number(s?.cdrs?.matched ?? 0)} matched, ${Number(s?.cdrs?.quarantined ?? 0)} held.`);
-      await redraw();
-    } catch (err) {
       e.target.disabled = false;
-      e.target.textContent = 'Sync now';
-      toast(err.message, 'err');
-    }
-  });
-
-  panel.querySelector('#tt-reconcile')?.addEventListener('click', async (e) => {
-    e.target.disabled = true;
-    try {
-      const r = await post('/integrations/tata-tele/reconcile', {});
-      toast(`${count(Number(r?.released ?? 0), 'held call record', 'held call records')} released; `
-        + `${Number(r?.still_held ?? 0)} still held.`);
-      await redraw();
-    } catch (err) {
-      e.target.disabled = false;
-      toast(err.message, 'err');
-    }
-  });
-
-  panel.addEventListener('click', async (e) => {
-    const btn = e.target.closest('button');
-    if (!btn) return;
-
-    if (btn.dataset.setNumber) {
-      const c = coverage.find((x) => x.user_id === btn.dataset.setNumber);
-      if (c) {
-        simModal({ id: c.user_id, full_name: c.full_name, dialing_msisdn: c.dialing_msisdn },
-          redraw, unmapped);
-      }
-      return;
-    }
-
-    if (btn.dataset.noCloud) {
-      const c = coverage.find((x) => x.user_id === btn.dataset.noCloud);
-      if (!c) return;
-      btn.disabled = true;
-      try {
-        // Only the choice flips; whatever number is stored stays stored.
-        await put(`/admin/users/${c.user_id}/dialing-msisdn`, { cloudCalling: false });
-        toast(`${c.full_name} is marked as not on cloud calling — their choice, no longer a gap. `
-          + 'Their SIM button on Admin → Users undoes it.');
-        await redraw();
-      } catch (err) {
-        btn.disabled = false;
-        toast(err.message, 'err');
-      }
-      return;
-    }
-
-    if (btn.dataset.newUser) {
-      const agent = unmapped.find((a) => a.agent_msisdn === btn.dataset.newUser);
-      newUserModal(teams, redraw, { fullName: agent?.agent_name ?? '', dialingMsisdn: btn.dataset.newUser });
-      return;
-    }
-
-    if (btn.dataset.attach) {
-      const msisdn = btn.dataset.attach;
-      const userId = btn.closest('[data-testid=tt-agent]')?.querySelector('select')?.value;
-      if (!userId) { toast('Choose who answers this phone first.', 'err'); return; }
-      const person = staff.find((u) => u.id === userId);
-      // Moving a number that already works is sometimes right (a SIM that
-      // changed hands) and never something to do by slip.
-      if (person?.dialing_msisdn && !needsNumber.has(userId)
-          && !confirm(`${person.full_name} already dials on ${person.dialing_msisdn}. `
-            + `Replace it with ${msisdn}?`)) return;
-      btn.disabled = true;
-      try {
-        const r = await put(`/admin/users/${userId}/dialing-msisdn`, { dialingMsisdn: msisdn });
-        const released = Number(r?.held_calls_released ?? 0);
-        toast(`${r.full_name} now answers ${r.dialing_msisdn}${
-          released ? ` — ${count(released, 'held call record', 'held call records')} released to them` : ''}.`);
-        await redraw();
-      } catch (err) {
-        btn.disabled = false;
-        toast(err.message, 'err');
-      }
     }
   });
 }
 
-/**
- * Create a source, or edit one that exists.
- *
- * Create-only was the wrong shape: a mistyped worksheet tab could not be
- * corrected, so the only way forward was to make another source. That is how a
- * single Meta sheet ends up wired in five times.
- */
-function sourceModal(source, teams, onDone) {
-  const editing = Boolean(source);
-  const mapText = source?.column_map && Object.keys(source.column_map).length
-    ? JSON.stringify(source.column_map, null, 2)
-    : '';
+function shortId(id) {
+  if (!id) return '—';
+  return id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id;
+}
 
+function lastRun(s) {
+  if (!s.last_run_at) return '—';
+  if (s.last_run_error) return `<span class="badge b-bad" title="${esc(s.last_run_error)}">failed</span>`;
+  return `<span class="badge b-ok">ok</span> <span class="hint">+${s.last_run_created ?? 0}</span>`;
+}
+
+function payloadPreview(payload) {
+  try {
+    const values = typeof payload === 'string' ? JSON.parse(payload) : payload;
+    return Object.values(values ?? {}).filter(Boolean).slice(0, 3).join(' · ').slice(0, 60);
+  } catch {
+    return '';
+  }
+}
+
+function addUserModal(reload) {
   const bodyEl = h(`
     <div>
-      <label class="f">Name <input name="name" required placeholder="Meta Lead Ads — Main Sheet" value="${esc(source?.name ?? '')}"></label>
-      <div class="frow">
-        <label class="f">Google Sheet
-          <span class="hint">paste the whole sheet URL, or just its ID — blank means CSV-only</span>
-          <input name="sheet" placeholder="https://docs.google.com/spreadsheets/d/…" value="${esc(source?.spreadsheet_id ?? '')}"></label>
-        <label class="f">Worksheet tab
-          <span class="hint">the tab name exactly as it appears at the bottom of the sheet</span>
-          <input name="tab" placeholder="Form Responses 1" value="${esc(source?.worksheet_name ?? '')}"></label>
-      </div>
-      <div class="frow">
-        <label class="f">Send these leads to
-          <span class="hint">pin this sheet to one team, or let it alternate between both</span>
-          <select name="team">
-            <option value="">— both teams, alternating —</option>
-            ${teams.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}
-          </select>
-        </label>
-        <label class="f">Default priority
-          <select name="priority">
-            <option value="normal">normal</option>
-            <option value="immediate">immediate (5-minute first-touch SLA)</option>
-          </select>
-        </label>
-      </div>
-      <label class="f">Column map <span class="hint">(optional JSON: field → sheet header; common headers are auto-detected)</span>
-        <textarea name="map" rows="3" placeholder='{"full_name":"Full Name","phone":"Phone Number"}'>${esc(mapText)}</textarea>
+      <label class="f">Full name <input name="name"></label>
+      <label class="f">Email <input name="email" type="email"></label>
+      <label class="f">Role
+        <select name="role">
+          <option value="caller">Caller — first call on fresh leads</option>
+          <option value="followup">Follow-up — works qualified leads</option>
+          <option value="admin">Admin — everything</option>
+        </select>
       </label>
+      <label class="f">Temporary password <span class="hint">(at least 10 characters — they change it at first sign-in)</span>
+        <input name="password" type="text" autocomplete="off"></label>
     </div>`);
-  bodyEl.querySelector('[name=priority]').value = source?.default_priority ?? 'normal';
-  bodyEl.querySelector('[name=team]').value = source?.pinned_team_id ?? '';
-
-  const footer = h(`<div><button class="btn primary">${editing ? 'Save changes' : 'Create source'}</button></div>`);
-  const { close } = openModal(editing ? `Edit ${source.name}` : 'New lead source', bodyEl, footer);
+  const footer = h('<div><button class="btn primary">Create account</button></div>');
+  const { close } = openModal('Add a person', bodyEl, footer);
 
   footer.querySelector('button').addEventListener('click', async () => {
-    const mapRaw = bodyEl.querySelector('[name=map]').value.trim();
-    let columnMap;
-    if (mapRaw) {
-      try { columnMap = JSON.parse(mapRaw); } catch { toast('The column map is not valid JSON.', 'err'); return; }
-    }
-    const sheet = bodyEl.querySelector('[name=sheet]').value.trim();
-    const tab = bodyEl.querySelector('[name=tab]').value.trim();
-    if (sheet && !tab) { toast('A sheet source also needs the worksheet tab name.', 'err'); return; }
-    const payload = {
-      name: bodyEl.querySelector('[name=name]').value.trim(),
-      spreadsheetId: sheet || undefined,
-      worksheetName: tab || undefined,
-      defaultPriority: bodyEl.querySelector('[name=priority]').value,
-      // null, not undefined: the update coalesces undefined to "leave alone",
-      // so unpinning a source has to be said explicitly.
-      pinnedTeamId: bodyEl.querySelector('[name=team]').value || null,
-      columnMap,
-    };
+    const v = (n) => bodyEl.querySelector(`[name=${n}]`).value.trim();
     try {
-      if (editing) await put(`/admin/sources/${source.id}`, payload);
-      else await post('/admin/sources', payload);
-      toast(editing ? 'Source updated.' : 'Source created.');
+      await post('/admin/users', {
+        fullName: v('name'),
+        email: v('email'),
+        role: bodyEl.querySelector('[name=role]').value,
+        password: v('password'),
+      });
       close();
-      onDone();
+      toast('Account created.');
+      reload();
     } catch (err) {
       toast(err.message, 'err');
     }
   });
 }
 
-/* ---------------- products ---------------- */
-
-async function products(body, me) {
-  const list = await get('/products');
-  body.innerHTML = '';
-  const panel = h(`
-    <div class="panel">
-      <div class="row spread">
-        <h2 class="mt0">Products <small>what counsellors can book deals against</small></h2>
-        ${me.role === 'admin' ? '<button class="btn primary" id="new-product">New product</button>' : ''}
-      </div>
-      ${list.length === 0 ? '<div class="empty">No products yet — counsellors cannot book a deal until one exists.</div>' : `
-      <table class="table"><thead><tr>
-        <th>Name</th><th>Code</th><th class="num">List price</th><th>SEBI-regulated</th><th></th>
-      </tr></thead><tbody>
-      ${list.map((p) => `
-        <tr>
-          <td>${esc(p.name)}</td><td class="mono">${esc(p.code)}</td>
-          <td class="num">${fmtINR(p.list_price_inr)}</td>
-          <td>${p.is_sebi_regulated ? '<span class="badge b-info">yes</span>' : '<span class="badge b-mute">no — needs the non-SEBI disclaimer</span>'}</td>
-          <td class="right">${me.role === 'admin'
-            ? `<button class="btn small danger p-deact" data-id="${esc(p.id)}">Retire</button>` : ''}</td>
-        </tr>`).join('')}
-      </tbody></table>`}
+function resetPasswordModal(id, tr) {
+  const name = tr.querySelector('b').textContent;
+  const bodyEl = h(`
+    <div>
+      <p class="hint">Set a temporary password for <b>${esc(name)}</b>. They must change it at next sign-in.</p>
+      <label class="f">Temporary password <input name="password" type="text" autocomplete="off"></label>
     </div>`);
-  body.appendChild(panel);
+  const footer = h('<div><button class="btn primary">Reset password</button></div>');
+  const { close } = openModal('Reset password', bodyEl, footer);
 
-  panel.querySelector('#new-product')?.addEventListener('click', () => {
-    const bodyEl = h(`
-      <div>
-        <label class="f">Name <input name="name" required placeholder="Advisory — Annual"></label>
-        <div class="frow">
-          <label class="f">Code <input name="code" required placeholder="ADV-A"></label>
-          <label class="f">List price (₹) <input name="price" type="number" min="1" step="0.01" required></label>
-        </div>
-        <label class="f">SEBI-regulated product?
-          <select name="sebi"><option value="true">Yes — advisory</option><option value="false">No — course / other activity</option></select>
-        </label>
-      </div>`);
-    const footer = h('<div><button class="btn primary">Create product</button></div>');
-    const { close } = openModal('New product', bodyEl, footer);
-    footer.querySelector('button').addEventListener('click', async () => {
-      try {
-        await post('/admin/products', {
-          name: bodyEl.querySelector('[name=name]').value.trim(),
-          code: bodyEl.querySelector('[name=code]').value.trim(),
-          listPriceInr: Number(bodyEl.querySelector('[name=price]').value),
-          isSebiRegulated: bodyEl.querySelector('[name=sebi]').value === 'true',
-        });
-        toast('Product created.');
-        close();
-        products(body, me);
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-    });
-  });
-
-  panel.addEventListener('click', async (e) => {
-    if (!e.target.classList?.contains('p-deact')) return;
-    if (!confirm('Retire this product? Existing deals keep it; new deals cannot use it.')) return;
+  footer.querySelector('button').addEventListener('click', async () => {
     try {
-      await post(`/admin/products/${e.target.dataset.id}/deactivate`);
-      toast('Product retired.');
-      products(body, me);
+      await post(`/admin/users/${id}/password`, {
+        password: bodyEl.querySelector('[name=password]').value,
+      });
+      close();
+      toast('Password reset.');
     } catch (err) {
       toast(err.message, 'err');
     }
   });
 }
 
-/* ---------------- quarantine ---------------- */
-
-async function quarantine(body) {
-  const rows = await get('/admin/quarantine');
-  body.innerHTML = '';
-  const panel = h(`
-    <div class="panel">
-      <h2>Quarantined rows <small>nothing is dropped — fix and replay</small></h2>
-      ${rows.length === 0 ? '<div class="empty">Quarantine is empty.</div>' : `
-      <table class="table"><tbody>
-      ${rows.map((r) => `
-        <tr data-id="${esc(r.id)}">
-          <td style="width:40%">
-            <b>${esc(r.source_name)}</b> · ${esc(r.source_row_key)}
-            <div class="hint">${esc(r.reject_reason)}</div>
-            <div class="hint">${esc(fmtDT(r.created_at))}</div>
-          </td>
-          <td>
-            <textarea class="q-payload" rows="4"
-              style="width:100%;font-size:12.5px;border:1px solid var(--line);border-radius:7px;padding:8px">${esc(JSON.stringify(r.payload, null, 1))}</textarea>
-          </td>
-          <td class="right" style="width:90px"><button class="btn small primary q-replay">Replay</button></td>
-        </tr>`).join('')}
-      </tbody></table>`}
+function editSourceModal(source, reload) {
+  const bodyEl = h(`
+    <div>
+      <label class="f">Name <input name="name" value="${esc(source.name)}"></label>
+      <label class="f">Google Sheet link or id
+        <span class="hint">paste the browser URL — share the sheet with the service account's email</span>
+        <input name="sheet" value="${esc(source.spreadsheet_id ?? '')}"></label>
+      <label class="f">Worksheet tab <input name="tab" value="${esc(source.worksheet_name ?? '')}" placeholder="Leads"></label>
+      <label class="f">Active
+        <select name="active">
+          <option value="true" ${source.is_active ? 'selected' : ''}>Yes</option>
+          <option value="false" ${source.is_active ? '' : 'selected'}>No — stop importing from it</option>
+        </select>
+      </label>
     </div>`);
-  body.appendChild(panel);
+  const footer = h('<div><button class="btn primary">Save</button></div>');
+  const { close } = openModal(`Edit source — ${source.name}`, bodyEl, footer);
 
-  panel.addEventListener('click', async (e) => {
-    if (!e.target.classList?.contains('q-replay')) return;
-    const tr = e.target.closest('tr');
-    let values;
+  footer.querySelector('button').addEventListener('click', async () => {
+    const v = (n) => bodyEl.querySelector(`[name=${n}]`).value.trim();
     try {
-      values = JSON.parse(tr.querySelector('.q-payload').value);
-    } catch {
-      toast('Fix the JSON first.', 'err');
-      return;
-    }
-    try {
-      const summary = await post(`/ingest/quarantine/${tr.dataset.id}/replay`, { values });
-      if (Number(summary.created) > 0) { toast('Row fixed — lead created and assigned.'); tr.remove(); }
-      else if (Number(summary.duplicate) > 0) { toast('Row matched an existing lead.'); tr.remove(); }
-      else toast('Still quarantined — the phone number is still not dialable.', 'err');
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-  });
-}
-
-/* ---------------- security alerts ---------------- */
-
-async function alerts(body, me) {
-  if (me.role !== 'admin') {
-    body.innerHTML = '';
-    body.appendChild(h('<div class="panel"><div class="empty">Security alerts are admin-only.</div></div>'));
-    return;
-  }
-  const rows = await get('/dashboards/security-alerts');
-  body.innerHTML = '';
-  const panel = h(`
-    <div class="panel">
-      <h2>Open security alerts <small>bulk reads and off-hours access</small></h2>
-      ${rows.length === 0 ? '<div class="empty">Nothing open. Quiet is good.</div>' : `
-      <table class="table"><thead><tr>
-        <th>When</th><th>Type</th><th>User</th><th>Severity</th><th>Detail</th><th></th>
-      </tr></thead><tbody>
-      ${rows.map((a) => `
-        <tr>
-          <td>${esc(fmtDT(a.raised_at))}</td>
-          <td>${esc(String(a.alert_type).replace(/_/g, ' '))}</td>
-          <td>${esc(a.full_name ?? '—')}</td>
-          <td>${a.severity === 'high' ? '<span class="badge b-bad">high</span>' : '<span class="badge b-warn">medium</span>'}</td>
-          <td><span class="hint">${esc(JSON.stringify(a.detail))}</span></td>
-          <td class="right"><button class="btn small a-ack" data-id="${esc(a.id)}">Acknowledge</button></td>
-        </tr>`).join('')}
-      </tbody></table>`}
-    </div>`);
-  body.appendChild(panel);
-
-  panel.addEventListener('click', async (e) => {
-    if (!e.target.classList?.contains('a-ack')) return;
-    try {
-      await post(`/dashboards/security-alerts/${e.target.dataset.id}/acknowledge`);
-      toast('Acknowledged.');
-      alerts(body, me);
+      await api(`/admin/sources/${source.id}`, {
+        method: 'PUT',
+        body: {
+          name: v('name'),
+          spreadsheetId: v('sheet') || null,
+          worksheetName: v('tab') || null,
+          isActive: bodyEl.querySelector('[name=active]').value === 'true',
+        },
+      });
+      close();
+      toast('Source saved.');
+      reload();
     } catch (err) {
       toast(err.message, 'err');
     }

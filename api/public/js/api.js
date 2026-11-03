@@ -5,6 +5,8 @@ export class ApiError extends Error {
     super(body?.message ?? `HTTP ${status}`);
     this.status = status;
     this.code = body?.error ?? 'error';
+    /** The parsed response body: some errors carry more than a message. */
+    this.body = body ?? null;
   }
 }
 

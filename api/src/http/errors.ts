@@ -16,17 +16,16 @@ export const unauthorized = (m = 'not authenticated') => new HttpError(401, 'una
 export const forbidden = (m = 'not permitted') => new HttpError(403, 'forbidden', m);
 export const notFound = (m = 'not found') => new HttpError(404, 'not_found', m);
 export const conflict = (m: string) => new HttpError(409, 'conflict', m);
-/** An upstream service (Smartflo) failed us: not the user's fault, not ours. */
-export const badGateway = (m: string) => new HttpError(502, 'upstream_failed', m);
 
 /**
  * Map the database's own guarantees onto HTTP.
  *
- * The rules that matter in this system are enforced in Postgres - the transfer
- * authority check, the transfer cap, the "an open lead always has a next
- * action" constraint, the append-only triggers. Those surface as SQLSTATEs, and
- * turning them into sensible status codes here means the API cannot drift out
- * of step with the rules it is meant to expose.
+ * The rules that matter are enforced in Postgres - who may move a lead, a
+ * call-back needs a time, the activity log is append-only. Those surface as
+ * SQLSTATEs, and turning them into status codes here means the API cannot
+ * drift out of step with the rules it exposes. Every RAISE in the schema
+ * carries an errcode for exactly this reason: a bare raise is P0001, which is
+ * in no map and reaches the floor as "something went wrong".
  */
 const PG_STATUS: Record<string, { status: number; code: string }> = {
   '42501': { status: 403, code: 'forbidden' }, // insufficient_privilege
@@ -34,9 +33,8 @@ const PG_STATUS: Record<string, { status: number; code: string }> = {
   '23505': { status: 409, code: 'duplicate' }, // unique_violation
   '23503': { status: 409, code: 'missing_reference' }, // foreign_key_violation
   '23502': { status: 400, code: 'missing_field' }, // not_null_violation
-  '23P01': { status: 409, code: 'overlap' }, // exclusion_violation
   '2201G': { status: 400, code: 'bad_request' }, // invalid_argument
-  'P0002': { status: 404, code: 'not_found' }, // no_data_found: absent, or fenced off by RLS
+  P0002: { status: 404, code: 'not_found' }, // no_data_found: absent, or fenced off by RLS
   '38000': { status: 409, code: 'append_only' }, // raised by tg_append_only
   '57014': { status: 503, code: 'query_timeout' }, // statement_timeout
 };
@@ -52,45 +50,30 @@ interface PgErrorish {
  * programmer who named the property.
  */
 const FIELD_LABELS: Record<string, string> = {
-  temporaryPassword: 'Temporary password',
+  fullName: 'Full name',
   newPassword: 'New password',
   currentPassword: 'Current password',
-  fullName: 'Full name',
-  dialingMsisdn: 'Dialing SIM',
-  employeeCode: 'Employee code',
-  bookedAmount: 'Booked amount',
-  discountAmount: 'Discount',
-  promisedDate: 'Promised date',
-  scheduledAt: 'Scheduled time',
-  callbackAt: 'Callback time',
-  durationSeconds: 'Talk time',
-  listPriceInr: 'List price',
-  toCallerId: 'Caller',
-  productId: 'Product',
-  instalmentId: 'Instalment',
+  nextFollowUpAt: 'Next follow-up',
+  assignedTo: 'Assigned to',
+  rotationOrder: 'Rotation order',
+  spreadsheetId: 'Spreadsheet',
+  worksheetName: 'Worksheet tab',
 };
 
 const humanField = (path: string): string =>
   FIELD_LABELS[path] ?? path.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
 
 /**
- * Say what a violated unique index means, in the terms of the thing being done.
- *
- * "duplicate key value violates unique constraint users_email_key" is accurate
- * and useless: it names an index, not a cause. Nothing here is ever hard
- * deleted, so the usual reason an email is taken is a deactivated account -
- * which is a different action (reactivate) rather than a different email.
+ * Say what a violated unique index means, in the terms of the thing being
+ * done. "duplicate key value violates unique constraint" names an index, not
+ * a cause.
  */
 const CONSTRAINT_MESSAGES: Record<string, string> = {
   users_email_key:
     'An account with that email address already exists. It may be deactivated — reactivate it instead of creating a second one.',
-  users_employee_code_key: 'That employee code is already used by another account.',
-  users_dialing_msisdn_idx:
-    'That dialing SIM is already assigned to another active user — one number can only verify one person\'s calls.',
   leads_one_live_per_phone_idx:
-    'A live lead with that phone number already exists — open it from Find lead instead of creating a second one.',
-  products_code_key: 'That product code is already in use.',
-  teams_code_key: 'That team code is already in use.',
+    'A live lead with that phone number already exists — open it from the Leads screen instead of creating a second one.',
+  lead_sources_name_key: 'A source with that name already exists.',
 };
 
 export const constraintMessage = (raw: string | undefined): string | null => {
@@ -105,11 +88,7 @@ export function registerErrorHandler(app: FastifyInstance): void {
       return reply.status(err.status).send({ error: err.code, message: err.message });
     }
 
-    // Zod and Fastify schema failures.
-    //
-    // Always send a human-readable `message`. Returning only the raw `issues`
-    // array left the UI with nothing to show but the status code, so a
-    // password two characters too short surfaced to the admin as "HTTP 400".
+    // Zod and Fastify schema failures: always send a human-readable message.
     const anyErr = err as {
       name?: string;
       issues?: Array<{ path?: Array<string | number>; message?: string }>;
@@ -135,10 +114,10 @@ export function registerErrorHandler(app: FastifyInstance): void {
       req.log.info({ pgcode: pgErr.code, msg: pgErr.message }, 'database rule rejected the request');
       return reply.status(mapped.status).send({
         error: mapped.code,
-        // These messages are written for the operator - "only a counsellor or
-        // admin may transfer a lead" is exactly what the UI should show. The
-        // exception is a unique violation, which names an index nobody outside
-        // the schema has heard of.
+        // These messages are written for the person on the floor - "a
+        // call-back needs the date and time the client asked for" is exactly
+        // what the UI should show. The exception is a unique violation, which
+        // names an index nobody outside the schema has heard of.
         message:
           constraintMessage(pgErr.message) ??
           pgErr.message ??

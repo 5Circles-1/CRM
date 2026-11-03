@@ -11,9 +11,6 @@ export function h(html) {
   return t.content.firstElementChild;
 }
 
-const inr0 = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
-export const fmtINR = (v) => (v === null || v === undefined || v === '' ? '—' : inr0.format(Number(v)));
-
 const dtFmt = new Intl.DateTimeFormat('en-IN', {
   timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
 });
@@ -22,16 +19,17 @@ const dFmt = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: '
 export const fmtDT = (ts) => (ts ? dtFmt.format(new Date(ts)) : '—');
 export const fmtDate = (ts) => (ts ? dFmt.format(new Date(ts)) : '—');
 
-export function minsLabel(mins) {
-  const m = Math.max(0, Math.round(Number(mins) || 0));
-  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
-}
+/** Today's date in IST as YYYY-MM-DD, for date inputs and filters. */
+export const istToday = () =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 
-export function agoLabel(mins) {
-  const m = Math.round(Number(mins) || 0);
-  if (m < 60) return `${m}m`;
-  if (m < 60 * 24) return `${Math.floor(m / 60)}h ${m % 60}m`;
-  return `${Math.floor(m / (60 * 24))}d ${Math.floor((m % (60 * 24)) / 60)}h`;
+export function agoLabel(ts) {
+  if (!ts) return '—';
+  const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
+  if (m < 1) return 'now';
+  if (m < 60) return `${m}m ago`;
+  if (m < 60 * 24) return `${Math.floor(m / 60)}h ago`;
+  return `${Math.floor(m / (60 * 24))}d ago`;
 }
 
 export function toast(msg, kind = 'ok') {
@@ -68,15 +66,44 @@ export function openModal(title, bodyEl, footerEl) {
 
 export const spinner = () => h('<div class="spin" role="status" aria-label="Loading"></div>');
 
-const STATUS_BADGE = {
-  new: 'b-info', working: 'b-info', callback: 'b-info', qualified: 'b-warn',
-  negotiation: 'b-warn', won: 'b-ok', lost: 'b-mute', invalid: 'b-mute',
-  nurture: 'b-mute', handed_off: 'b-ok',
-  due: 'b-info', part_paid: 'b-warn', overdue: 'b-bad', paid: 'b-ok', written_off: 'b-mute',
-  pending: 'b-info', completed: 'b-ok', missed: 'b-bad', cancelled: 'b-mute',
+/* ---- the five stages and five outcomes, named once ---------------------- */
+
+export const STAGE_LABEL = {
+  new: 'New',
+  calling: 'Calling',
+  qualified: 'Qualified',
+  converted: 'Converted',
+  not_qualified: 'Not qualified',
 };
-export const badge = (status) =>
-  `<span class="badge ${STATUS_BADGE[status] ?? 'b-mute'}">${esc(String(status ?? '—').replace(/_/g, ' '))}</span>`;
+
+export const OUTCOME_LABEL = {
+  qualified: 'Qualified — interested',
+  call_back: 'Call back later',
+  not_answered: 'Not answered',
+  switched_off: 'Switched off',
+  not_qualified: 'Not qualified — don’t call',
+};
+
+const STAGE_BADGE = {
+  new: 'b-info',
+  calling: 'b-info',
+  qualified: 'b-warn',
+  converted: 'b-ok',
+  not_qualified: 'b-mute',
+};
+
+export const stageBadge = (stage) =>
+  `<span class="badge ${STAGE_BADGE[stage] ?? 'b-mute'}">${esc(STAGE_LABEL[stage] ?? stage ?? '—')}</span>`;
+
+/** The latest response, the way the floor reads it: "Not answered ×3". */
+export function outcomeLabel(lead) {
+  if (!lead.last_outcome) return '';
+  const base = OUTCOME_LABEL[lead.last_outcome] ?? lead.last_outcome;
+  if (['not_answered', 'switched_off'].includes(lead.last_outcome) && Number(lead.na_streak) > 1) {
+    return `${base} ×${lead.na_streak}`;
+  }
+  return base;
+}
 
 /** datetime-local input value -> ISO string (browser local tz = floor IST). */
 export const localToIso = (value) => new Date(value).toISOString();
@@ -91,67 +118,15 @@ export function tomorrowAt(hour = 11) {
 }
 
 /**
- * Talk time as MM:SS, which is how anyone on a phone thinks about it.
- *
- * Raw seconds forced the floor to do arithmetic to answer "was that a long
- * call?" - 187 seconds means nothing at a glance, 3:07 means something.
- * Hours only appear when there are some, so the common case stays short.
- */
-export function fmtTalk(seconds) {
-  const s = Math.max(0, Math.round(Number(seconds) || 0));
-  const mm = Math.floor(s / 60);
-  const ss = String(s % 60).padStart(2, '0');
-  if (mm < 60) return `${mm}:${ss}`;
-  return `${Math.floor(mm / 60)}:${String(mm % 60).padStart(2, '0')}:${ss}`;
-}
-
-/**
- * Read a duration a person typed. Accepts "3:07", "3.5" and "187".
- *
- * A field labelled MM:SS that only accepts seconds is a trap, and one that
- * silently reads "3:07" as 3 is worse - it would log a three-second call and
- * quietly destroy the connect rate it feeds.
- */
-export function parseTalk(text) {
-  const raw = String(text ?? '').trim();
-  if (!raw) return 0;
-  if (raw.includes(':')) {
-    const parts = raw.split(':').map((p) => Number(p.trim()));
-    if (parts.some((n) => !Number.isFinite(n) || n < 0)) return null;
-    return parts.length === 3
-      ? parts[0] * 3600 + parts[1] * 60 + parts[2]
-      : parts[0] * 60 + parts[1];
-  }
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
-}
-
-/**
- * A 0-100 score as a five-star rating. The number is for analysis; the stars
- * are the rating the floor asked for - readable across the room, no
- * arithmetic. One star per 20 points, rounded.
- */
-export function starsHtml(points, title = '') {
-  const p = Number(points);
-  if (!Number.isFinite(p)) return '';
-  const n = Math.max(0, Math.min(5, Math.round(p / 20)));
-  return `<span class="stars" title="${esc(title || `${p.toFixed(0)} / 100`)}">${'★'.repeat(n)}${'☆'.repeat(5 - n)}</span>`;
-}
-
-/**
- * A person as a face: their uploaded icon, or initials on a colour that stays
- * stable for that name. Every board and table uses this one helper, so a
- * person looks the same everywhere.
+ * A person as initials on a colour that stays stable for that name, so a
+ * person looks the same on every list.
  */
 const AVATAR_HUES = [14, 42, 96, 152, 200, 232, 268, 310, 338];
 
-export function avatarHtml(name, url, size = 32) {
-  const s = Number(size) || 32;
-  if (url) {
-    return `<img class="avatar" src="${esc(url)}" alt="" width="${s}" height="${s}"
-      style="width:${s}px;height:${s}px">`;
-  }
+export function avatarHtml(name, size = 28) {
+  const s = Number(size) || 28;
   const clean = String(name ?? '').trim();
+  if (!clean) return '';
   const initials = clean
     .split(/\s+/).slice(0, 2).map((w) => w[0] ?? '').join('').toUpperCase() || '?';
   let hash = 0;
@@ -164,10 +139,6 @@ export function avatarHtml(name, url, size = 32) {
 
 /**
  * Point every brand image at the real artwork, falling back to the bundled SVG.
- *
- * Done here rather than with an inline onerror attribute: inline handlers are
- * the first thing a Content-Security-Policy blocks, and the failure would be
- * an invisible broken image rather than an error anyone notices.
  */
 export function wireLogoFallback(root = document) {
   root.querySelectorAll('img[data-logo]').forEach((img) => {

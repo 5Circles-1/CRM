@@ -5,116 +5,82 @@
 # Run this ON THE SERVER when the sheet has rows the CRM does not:
 #
 #     ssh root@<server>
-#     cd /opt/crm && sudo -u crm git pull && bash db/diagnose.sh
+#     cd /opt/crm && bash db/diagnose.sh
 #
 # It is read-only - it changes nothing, so it is always safe to run - and it
-# answers the four questions that distinguish the real causes from each other:
+# answers the questions that distinguish the real causes from each other:
 #
-#   1. Is the importer even running? (it starts only when SERVICE_USER_ID and
-#      Google credentials are both present; otherwise the app runs happily and
-#      imports nothing)
+#   1. Is the importer even configured? (the scheduled sync starts only when
+#      SERVICE_USER_ID and Google credentials are both present; otherwise the
+#      app runs happily and imports nothing on its own)
 #   2. What did the last runs actually do - and did they error?
-#   3. If rows arrived but no leads appeared, why were they rejected?
+#   3. If rows arrived but no leads appeared, why were they quarantined?
 #   4. Are the sources still connected to a sheet at all?
-#
-# Deliberately not a one-liner over ssh: quoting a query through PowerShell
-# mangles it before it ever reaches the server.
+#   5. Are fresh leads being assigned, or parking unassigned?
+set -euo pipefail
 
-set -u
 DB="${CRM_DB:-crm}"
+ENV_FILE="${ENV_FILE:-/opt/crm/api/.env}"
 
-# No pagers anywhere. psql pipes into `less` by default, which swallowed the
-# whole report in a screen nobody could scroll - the output has to land in the
-# terminal scrollback so it can be read and pasted.
-export PAGER=cat SYSTEMD_PAGER=cat
-psql_q() { sudo -u postgres psql -d "$DB" -X -q -P pager=off "$@" 2>&1; }
-rule()   { printf '\n=== %s ===\n' "$1"; }
+psql_q() {
+  sudo -u postgres psql -v ON_ERROR_STOP=0 -P pager=off -d "$DB" "$@"
+}
 
-echo "5 Circles CRM - lead intake diagnosis"
-echo "server: $(hostname)   database: $DB   time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+rule() {
+  echo
+  echo "================ $1"
+}
 
-rule "1. IS THE SERVICE UP?"
-systemctl is-active crm && systemctl show crm -p ActiveEnterTimestamp --value
+rule "1. IS THE SCHEDULED IMPORTER CONFIGURED?"
+if [[ -f "$ENV_FILE" ]]; then
+  for key in SERVICE_USER_ID GOOGLE_SERVICE_ACCOUNT_JSON GOOGLE_APPLICATION_CREDENTIALS; do
+    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+      echo "  ${key}: set"
+    else
+      echo "  ${key}: NOT SET"
+    fi
+  done
+  echo "  (scheduled sync needs SERVICE_USER_ID plus one of the GOOGLE_* keys;"
+  echo "   without them, only Admin -> Sync now and CSV import bring leads in)"
+else
+  echo "  ${ENV_FILE} not found - set ENV_FILE=... if the app lives elsewhere"
+fi
 
-rule "2. IS THE IMPORTER CONFIGURED?"
-# The two switches that silently disable everything. Values are never printed -
-# only whether they are set - so this is safe to paste into a chat.
-for var in SERVICE_USER_ID GOOGLE_SERVICE_ACCOUNT_JSON GOOGLE_APPLICATION_CREDENTIALS; do
-  if grep -qE "^${var}=." /opt/crm/api/.env 2>/dev/null; then
-    echo "  $var .......... SET"
-  else
-    echo "  $var .......... MISSING  <-- while missing, nothing is imported automatically"
-  fi
-done
-
-rule "3. WHAT THE APP SAID (last 3 days)"
-journalctl -u crm --since '3 days ago' --no-pager 2>/dev/null \
-  | grep -iE 'sheet sync|background jobs|SERVICE_USER_ID|google|ingest' \
-  | tail -20
-echo "(no lines above means the importer never logged anything at all)"
-
-rule "4. LAST IMPORT RUNS"
-psql_q -c "select r.started_at at time zone 'Asia/Kolkata' as ist_time,
-                  s.name as source, r.rows_seen, r.rows_created,
-                  r.rows_duplicate as matched, r.rows_quarantined as rejected,
-                  coalesce(left(r.error_text, 40), '-') as error
+rule "2. THE LAST TEN INGESTION RUNS"
+psql_q -c "select s.name as source,
+                  r.started_at at time zone 'Asia/Kolkata' as started_ist,
+                  r.rows_seen, r.rows_created, r.rows_duplicate, r.rows_quarantined,
+                  coalesce(left(r.error_text, 60), '-') as error
              from crm.ingestion_runs r
              join crm.lead_sources s on s.id = r.source_id
             order by r.started_at desc limit 10;"
 
-rule "4b. THE FULL ERROR TEXT (truncated above)"
-psql_q -c "select count(*) as runs, min(started_at)::date as since, error_text
-             from crm.ingestion_runs
-            where error_text is not null and started_at > now() - interval '7 days'
-            group by error_text order by 1 desc limit 5;"
+rule "3. WHY ROWS WERE QUARANTINED (most recent first)"
+psql_q -c "select s.name as source, i.reject_reason, count(*) as rows,
+                  max(i.created_at) at time zone 'Asia/Kolkata' as latest_ist
+             from crm.ingested_rows i
+             join crm.lead_sources s on s.id = i.source_id
+            where i.status = 'quarantined'
+            group by s.name, i.reject_reason
+            order by latest_ist desc limit 10;"
 
-# The single most common cause of a permission error, and the one thing needed
-# to fix it. The address is an identifier, not a secret - the private key in
-# the same file is never touched.
-rule "4c. THE CRM'S GOOGLE ADDRESS (share the sheet with this)"
-SA_FILE="${GOOGLE_APPLICATION_CREDENTIALS:-/opt/crm/api/google-sa.json}"
-if [ -r "$SA_FILE" ]; then
-  grep -o '"client_email"[^,]*' "$SA_FILE" | head -1
-else
-  grep -o '"client_email":"[^"]*"' /opt/crm/api/.env 2>/dev/null | head -1 \
-    || echo "  could not read a credentials file at $SA_FILE"
-fi
-echo "  -> open the Google Sheet, press Share, add that address as a Viewer"
-
-rule "5. WHY ROWS WERE REJECTED (last 4 days)"
-psql_q -c "select coalesce(reject_reason, '(accepted)') as reason, count(*)
-             from crm.ingested_rows
-            where created_at > now() - interval '4 days'
-            group by 1 order by 2 desc limit 10;"
-
-rule "6. LEADS CREATED PER DAY (last 7 days, IST)"
-psql_q -c "select crm.ist_date(created_at) as ist_day, count(*) as leads
-             from crm.leads
-            where created_at > now() - interval '7 days'
-            group by 1 order by 1;"
-
-rule "7. SOURCES AND THEIR CONNECTION"
+rule "4. SOURCES AND THEIR CONNECTION"
 psql_q -c "select name, is_active,
                   (spreadsheet_id is not null) as sheet_connected,
                   coalesce(worksheet_name, '-') as tab,
                   last_synced_at at time zone 'Asia/Kolkata' as last_sync_ist
              from crm.lead_sources order by name;"
 
-rule "8. INTAKE HEALTH (as the Floor tab now shows it)"
-psql_q -c "select source_name, state, created_today, quarantined_today,
-                  coalesce(minutes_since_sync::text, 'never') as mins_since_sync
-             from crm.v_intake_health order by state, source_name;" \
-  || echo "(this view arrives with migration 0047 - deploy first)"
-
-rule "9. IS THE BACKGROUND ENGINE ALIVE?"
-psql_q -c "select name, last_run_at at time zone 'Asia/Kolkata' as last_run_ist,
-                  coalesce(left(last_error, 60), '-') as last_error, run_count
-             from crm.job_runs order by last_run_at desc limit 8;" \
-  || echo "(this table arrives with migration 0047 - deploy first)"
-
-rule "10. QUARANTINED ROWS WAITING TO BE REPLAYED"
-psql_q -c "select count(*) as rows_held_for_fixing
-             from crm.ingested_rows where status = 'quarantined';"
+rule "5. TODAY'S LEADS, AND WHO GOT THEM"
+psql_q -c "select coalesce(u.full_name, 'UNASSIGNED') as assigned_to,
+                  count(*) as leads_today
+             from crm.leads l
+             left join crm.users u on u.id = l.assigned_to
+            where crm.ist_date(l.created_at) = crm.ist_date(now())
+            group by 1 order by 2 desc;"
+psql_q -c "select count(*) as open_unassigned_total
+             from crm.leads
+            where stage in ('new','calling','qualified') and assigned_to is null;"
 
 echo
 echo "Nothing here changed any data. Send this whole output back."

@@ -9,34 +9,21 @@ import { registerErrorHandler } from './http/errors.ts';
 import { authRoutes } from './routes/auth.ts';
 import { meRoutes } from './routes/me.ts';
 import { leadRoutes } from './routes/leads.ts';
-import { transferRoutes } from './routes/transfers.ts';
-import { attendanceRoutes } from './routes/attendance.ts';
-import { dashboardRoutes } from './routes/dashboards.ts';
+import { dashboardRoutes } from './routes/dashboard.ts';
 import { adminRoutes } from './routes/admin.ts';
-import { advisoryRoutes } from './routes/advisory.ts';
-import { mentorRoutes } from './routes/mentors.ts';
-import { eventRoutes } from './routes/events.ts';
-import { trainingRoutes } from './routes/training.ts';
-import { ingestRoutes } from './routes/ingest.ts';
-import { deviceLogRoutes } from './routes/deviceLogs.ts';
-import { tataTeleRoutes } from './routes/tataTele.ts';
-import { dealRoutes } from './routes/deals.ts';
-import { walkinRoutes } from './routes/walkins.ts';
-import { targetRoutes } from './routes/targets.ts';
-import { messageRoutes } from './routes/messages.ts';
 
 export async function buildServer(config: Config, db?: Database): Promise<FastifyInstance> {
   const database = db ?? new Database(config.databaseUrl);
 
-  // Boot-time guard: a role that bypasses RLS turns every policy in migration
-  // 0012 into decoration, and the failure is silent - everything works and
-  // everyone sees everything. Refuse to start instead.
+  // Boot-time guard: a role that bypasses RLS turns every policy into
+  // decoration, and the failure is silent - everything works and everyone
+  // sees everything, logged in or not. Refuse to start instead.
   await database.assertNotBypassingRls();
 
   const app = Fastify({
     logger: { level: config.logLevel },
     trustProxy: true,
-    bodyLimit: 1_000_000,
+    bodyLimit: 4_000_000, // the CSV import arrives as one JSON body
   });
 
   registerErrorHandler(app);
@@ -65,21 +52,8 @@ export async function buildServer(config: Config, db?: Database): Promise<Fastif
     });
     await meRoutes(scope);
     await leadRoutes(scope);
-    await transferRoutes(scope);
-    await attendanceRoutes(scope);
     await dashboardRoutes(scope);
     await adminRoutes(scope);
-    await advisoryRoutes(scope);
-    await mentorRoutes(scope);
-    await eventRoutes(scope);
-    await trainingRoutes(scope);
-    await ingestRoutes(scope);
-    await deviceLogRoutes(scope);
-    await tataTeleRoutes(scope);
-    await dealRoutes(scope);
-    await walkinRoutes(scope);
-    await targetRoutes(scope);
-    await messageRoutes(scope);
   });
 
   app.addHook('onClose', async () => {

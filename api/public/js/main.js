@@ -1,111 +1,52 @@
 import { get, post } from './api.js';
-import { esc, h, minsLabel, openModal, toast, wireLogoFallback } from './util.js';
+import { esc, h, openModal, toast, wireLogoFallback } from './util.js';
 import { renderLogin } from './views/login.js';
-import * as day from './views/day.js';
-import * as dial from './views/dial.js';
-import * as lead from './views/lead.js';
-import * as score from './views/score.js';
-import * as attendance from './views/attendance.js';
-import * as floor from './views/floor.js';
-import * as overview from './views/overview.js';
-import * as collections from './views/collections.js';
 import * as dash from './views/dash.js';
-import * as admin from './views/admin.js';
 import * as leads from './views/leads.js';
-import * as people from './views/people.js';
-import * as advisory from './views/advisory.js';
-import * as mentors from './views/mentors.js';
-import * as events from './views/events.js';
-import * as training from './views/training.js';
+import * as lead from './views/lead.js';
 import * as reminders from './views/reminders.js';
-import * as retap from './views/retap.js';
-import * as walkins from './views/walkins.js';
-import * as targets from './views/targets.js';
-import * as fresh from './views/fresh.js';
-import * as inbound from './views/inbound.js';
-import { startTour } from './views/training.js';
-import * as team from './views/team.js';
-import * as history from './views/history.js';
-import { bellMarkup, startAlerts, stopAlerts, wireBell } from './alerts.js';
-
-const NAV = [
-  { hash: '#/day', label: 'My Pipeline', roles: ['caller', 'counsellor'] },
-  // Only where a click can actually place a call: Tata Tele switched on
-  // and credentials on the server.
-  { hash: '#/dial', label: 'Power dial', roles: ['caller', 'counsellor'], when: (m) => m.cloud_calling },
-  { hash: '#/fresh', label: 'Fresh leads', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/inbound', label: 'Inbound calls', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/reminders', label: 'Alerts', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops'] },
-  { hash: '#/retap', label: 'Re-tap', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/walkins', label: 'Office visits', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/floor', label: 'Floor', roles: ['counsellor', 'admin'] },
-  { hash: '#/overview', label: 'Overview', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
-  // The client book was renamed Collections, and the dues queue Outstanding
-  // payments, at the floor's request - the hashes stay stable so old links,
-  // help anchors and muscle memory keep working.
-  { hash: '#/advisory', label: 'Collections', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/collections', label: 'Outstanding payments', roles: ['counsellor', 'admin', 'ops'] },
-  { hash: '#/mentors', label: 'Mentors', roles: ['mentor', 'counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/events', label: 'Events', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/dash', label: 'Dashboards', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/leads', label: 'Find lead', roles: ['caller', 'counsellor', 'admin', 'ops'] },
-  { hash: '#/people', label: 'Performance', roles: ['caller', 'counsellor', 'admin', 'ops'] },
-  { hash: '#/targets', label: 'Targets', roles: ['caller', 'counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/history', label: 'Previous months', roles: ['counsellor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/team', label: 'Team', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/score', label: 'My Score', roles: ['caller', 'counsellor'] },
-  { hash: '#/attendance', label: 'Attendance', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/training', label: 'Training', roles: ['caller', 'counsellor', 'mentor', 'admin', 'ops', 'viewer'] },
-  { hash: '#/admin', label: 'Admin', roles: ['admin', 'ops'] },
-];
-
-const DEFAULT_ROUTE = {
-  caller: '#/day', counsellor: '#/floor', mentor: '#/mentors', ops: '#/dash', admin: '#/floor', viewer: '#/dash',
-};
-
-const VIEWS = {
-  day, dial, fresh, inbound, reminders, retap, walkins, floor, overview, collections, advisory, mentors,
-  events, training, dash, leads, people, targets, score, attendance, admin, lead, team, history,
-};
+import * as admin from './views/admin.js';
 
 /**
- * Which training module explains each screen. The "?" beside the page title
- * deep-links here, so help is always one click from the thing you are looking
- * at rather than a search away.
+ * Four screens. The whole product fits in the left-hand column:
+ *
+ *   Dashboard - what happened and what needs attention
+ *   Leads     - the spreadsheet: every lead, filter and work it
+ *   Reminders - what is due now / today / next, per person
+ *   Admin     - accounts, sources, import (admins only)
+ *
+ * The only thing that ever pops up is a reminder whose time has come - once,
+ * with one soft chime - and the same reminder then sits in the Reminders tab
+ * until the call is logged. Nothing else interrupts anyone.
  */
-const HELP_FOR = {
-  day: 'the-callers-job', dial: 'the-callers-job', fresh: 'the-callers-job', inbound: 'the-callers-job',
-  reminders: 'the-callers-job', retap: 'the-callers-job',
-  walkins: 'the-counsellors-job', targets: 'the-counsellors-job',
-  floor: 'the-counsellors-job', overview: 'how-the-crm-works',
-  collections: 'the-counsellors-job', advisory: 'the-counsellors-job',
-  mentors: 'the-mentors-job', events: 'how-the-crm-works',
-  dash: 'how-the-crm-works', leads: 'the-callers-job',
-  people: 'the-counsellors-job', score: 'the-callers-job',
-  attendance: 'how-the-crm-works', admin: 'the-admins-job',
-  lead: 'the-callers-job', team: 'how-the-crm-works',
-  history: 'the-counsellors-job', training: null,
-};
+
+const NAV = [
+  { hash: '#/dash', label: 'Dashboard', roles: ['admin', 'caller', 'followup'] },
+  { hash: '#/leads', label: 'Leads', roles: ['admin', 'caller', 'followup'] },
+  { hash: '#/reminders', label: 'Reminders', roles: ['admin', 'caller', 'followup'], badge: true },
+  { hash: '#/admin', label: 'Admin', roles: ['admin'] },
+];
+
+const DEFAULT_ROUTE = { admin: '#/dash', caller: '#/leads', followup: '#/leads' };
+
+const VIEWS = { dash, leads, lead, reminders, admin };
 
 const TITLES = {
-  day: 'My Pipeline', dial: 'Power dial', fresh: 'Fresh leads', inbound: 'Inbound calls',
-  reminders: 'Alerts', retap: 'Re-tap',
-  walkins: 'Office visits', targets: 'Targets',
-  floor: 'Floor', overview: 'Overview', collections: 'Outstanding payments', advisory: 'Collections', mentors: 'Mentors',
-  events: 'Events', training: 'Training',
-  dash: 'Dashboards', leads: 'Find lead', people: 'Performance', score: 'My Score',
-  attendance: 'Attendance', admin: 'Admin', lead: 'Lead',
-  team: 'Team', history: 'Previous months',
+  dash: 'Dashboard',
+  leads: 'Leads',
+  reminders: 'Reminders',
+  admin: 'Admin',
+  lead: 'Lead',
 };
 
 let me = null;
 let showingLogin = false;
 
-/** Idempotent: a burst of 401s (boot + shift widget) renders login once. */
+/** Idempotent: a burst of 401s renders login once. */
 function showLogin() {
   if (showingLogin) return;
   showingLogin = true;
-  stopAlerts();
+  stopReminderWatch();
   me = null;
   renderLogin(document.getElementById('app'), () => {
     showingLogin = false;
@@ -124,14 +65,14 @@ async function boot() {
   showingLogin = false;
   renderShell(app);
   if (!location.hash || location.hash === '#/') {
-    location.hash = DEFAULT_ROUTE[me.role] ?? '#/attendance';
+    location.hash = DEFAULT_ROUTE[me.role] ?? '#/leads';
   } else {
     route();
   }
 }
 
 function renderShell(app) {
-  const items = NAV.filter((n) => n.roles.includes(me.role) && (!n.when || n.when(me)));
+  const items = NAV.filter((n) => n.roles.includes(me.role));
   app.innerHTML = '';
   app.appendChild(h(`
     <div class="shell">
@@ -140,32 +81,28 @@ function renderShell(app) {
           <img data-logo alt="" class="logo-mark">
           <span class="logo-text">5 Circles <b>CRM</b></span>
         </div>
-        ${items.map((n) => `<a class="nav" data-nav="${n.hash}" href="${n.hash}">${esc(n.label)}</a>`).join('')}
-        <div class="foot">Sales floor · IST</div>
+        ${items
+          .map(
+            (n) => `<a class="nav" data-nav="${n.hash}" href="${n.hash}">${esc(n.label)}${
+              n.badge ? ' <span class="nav-badge" id="reminder-badge" hidden></span>' : ''
+            }</a>`,
+          )
+          .join('')}
+        <div class="foot">Pan-India · IST</div>
       </nav>
       <div class="main">
         <div class="topbar">
           <h1 id="page-title"></h1>
-          <span class="live-badge" id="live-badge" title="This page refreshes itself — no F5 needed"><span class="live-dot"></span>Live</span>
-          <div class="shift" id="shift-widget"></div>
-          ${bellMarkup()}
-          <div class="userchip"><b>${esc(me.full_name)}</b>${esc(me.role)}${me.team_name ? ' · ' + esc(me.team_name) : ''}</div>
-          <button class="btn small" id="theme-btn" title="Light or dim">◐</button>
+          <div class="userchip"><b>${esc(me.full_name)}</b>${esc(roleLabel(me.role))}</div>
+          <button class="btn small" id="theme-btn" title="Light or dark">◐</button>
           <button class="btn small" id="pwd-btn" title="Change my password">Password</button>
           <button class="btn small" id="logout-btn">Log out</button>
         </div>
-        <div id="ticker-strip"></div>
-        <div id="freeze-banner"></div>
-        <div id="brief-banner"></div>
         <div class="content" id="outlet"></div>
       </div>
     </div>`));
 
-  // Dim theme: dark chrome, light cards - remembered per browser. The cards
-  // stay light because every chart colour was validated on a light surface.
-  // Two full themes, light and dark, both token-driven. "dim" (the old
-  // half-measure) maps to dark so nobody's saved choice breaks. Default
-  // follows the operating system.
+  // Two token-driven themes; default follows the operating system.
   const applyTheme = () => {
     let t = localStorage.getItem('crm-theme');
     if (t === 'dim') t = 'dark';
@@ -178,78 +115,26 @@ function renderShell(app) {
     const cur = applyTheme();
     localStorage.setItem('crm-theme', cur === 'dark' ? 'light' : 'dark');
     applyTheme();
-    route(); // charts read their colours at draw time, so redraw the page
+    route(); // charts read their colours at draw time
   });
 
   document.getElementById('pwd-btn').addEventListener('click', () => changeMyPassword());
-
   document.getElementById('logout-btn').addEventListener('click', async () => {
     await post('/auth/logout').catch(() => {});
-    stopAlerts();
+    stopReminderWatch();
     me = null;
     location.hash = '';
     boot();
   });
 
   wireLogoFallback(app);
-  applyRegistryTooltips();
-  wireBell();
-  startAlerts();
-  startLiveRefresh();
-  refreshShift();
-  startTicker();
-  startFreezeBanner();
-  drawBrief();
-  celebrate(me);
-  offerTour();
+  startReminderWatch();
 }
 
-/**
- * A new starter is walked round the screen once. The flag lives on the user
- * row rather than in localStorage, so logging in from a second machine does
- * not restart the tour. It is replayable from Training at any time.
- */
-/**
- * Tooltips come from the same registry file the Training glossary renders, so
- * the tooltip and the manual cannot drift apart - there is only one sentence,
- * and both read it. Nav items are matched by their #/hash.
- */
-async function applyRegistryTooltips() {
-  try {
-    const { entries } = await get('/training/registry');
-    const byKey = new Map(entries.map((e) => [e.key, e]));
-    document.querySelectorAll('.sidebar a.nav').forEach((a) => {
-      const e = byKey.get(`tab.${(a.dataset.nav ?? '').slice(2)}`);
-      if (e) a.title = `${e.does}\n\nWhen: ${e.when}`;
-    });
-    for (const [id, key] of [
-      ['shift-widget', 'btn.start_shift'], ['theme-btn', 'btn.theme'],
-      ['pwd-btn', 'btn.password'], ['ticker-strip', 'panel.ticker'],
-      ['brief-banner', 'panel.brief'],
-    ]) {
-      const el = document.getElementById(id);
-      const e = byKey.get(key);
-      if (el && e) el.title = `${e.does}\n\nWhen: ${e.when}`;
-    }
-  } catch { /* tooltips are a nicety; never break the shell over them */ }
+export function roleLabel(role) {
+  return { admin: 'Admin', caller: 'Caller', followup: 'Follow-up' }[role] ?? role;
 }
 
-async function offerTour() {
-  try {
-    const t = await get('/training');
-    if (!t.tourCompleted) setTimeout(() => startTour(me), 900);
-  } catch { /* the tour is never worth failing a page load over */ }
-}
-
-/**
- * Self-service password change, from anywhere in the app.
- *
- * This existed as an endpoint since day one and was reachable only through the
- * forced first-login flow - so the answer to "how do I change my password" was
- * "you can't, unless we make you". Forgetting it entirely is the other case:
- * the sign-in screen now says who to ask, and the admin's own lockout is
- * covered by the server-side rescue tool.
- */
 function changeMyPassword() {
   const bodyEl = h(`
     <div>
@@ -278,338 +163,117 @@ function changeMyPassword() {
   });
 }
 
-/* ---- the ticker strip: five numbers, deltas vs yesterday (WP A4) ---- */
+/* ---- the one popup: a reminder whose time has come -------------------- */
 
-const tickerDelta = (today, yday, fmt = (v) => String(v)) => {
-  const d = Number(today) - Number(yday);
-  const cls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat';
-  const glyph = d > 0 ? '\u25b2' : d < 0 ? '\u25bc' : '\u2022';
-  return `<span class="tk-num">${esc(fmt(today))}</span>
-          <span class="tk-delta ${cls}">${glyph} ${esc(fmt(Math.abs(d)))}</span>`;
-};
-
-async function drawTicker() {
-  const host = document.getElementById('ticker-strip');
-  if (!host) return;
-  try {
-    const t = await get('/dashboards/ticker');
-    const inr = (v) => '\u20b9' + Number(v).toLocaleString('en-IN');
-    host.innerHTML = `
-      <div class="ticker">
-        <span class="tk"><span class="tk-label">Collected today</span>${tickerDelta(t.collected_today, t.collected_yday, inr)}</span>
-        <span class="tk"><span class="tk-label">Fresh leads</span>${tickerDelta(t.leads_today, t.leads_yday)}</span>
-        <span class="tk"><span class="tk-label">Walk-ins</span>${tickerDelta(t.walkins_today, t.walkins_yday)}</span>
-        <span class="tk"><span class="tk-label">Conversions</span>${tickerDelta(t.deals_today, t.deals_yday)}</span>
-        <span class="tk"><span class="tk-label">On floor</span><span class="tk-num">${Number(t.on_floor)}</span></span>
-      </div>`;
-  } catch { host.innerHTML = ''; }
-}
-let tickerTimer = null;
-function startTicker() {
-  drawTicker();
-  if (tickerTimer) clearInterval(tickerTimer);
-  tickerTimer = setInterval(drawTicker, 60_000);
-  tickerTimer.unref?.();
-}
-
-/* ---- the daily accountability banner (WP E) ---- */
-
-const inrShort = (v) => {
-  const n = Number(v ?? 0);
-  if (!Number.isFinite(n)) return '₹0';
-  if (Math.abs(n) >= 1e7) return '₹' + (n / 1e7).toFixed(2).replace(/\.?0+$/, '') + 'Cr';
-  if (Math.abs(n) >= 1e5) return '₹' + (n / 1e5).toFixed(2).replace(/\.?0+$/, '') + 'L';
-  return '₹' + Math.round(n).toLocaleString('en-IN');
-};
+let reminderTimer = null;
 
 /**
- * One line, dismissible for the day: what today is costing and the pace the
- * month now needs. Same numbers as the reminder in the bell - both read
- * crm.v_daily_brief, so they cannot drift apart.
+ * Every minute: anything of mine now due pops ONCE (tracked per lead per due
+ * time, in this browser), with one soft chime. The badge on the Reminders nav
+ * item keeps the count visible after the popup is gone. Doing the work -
+ * logging the call - is what clears both.
  */
-async function drawBrief() {
-  const host = document.getElementById('brief-banner');
-  if (!host) return;
-  const today = new Date().toISOString().slice(0, 10);
-  const key = `crm-brief-hidden-${me.id}-${today}`;
-  if (localStorage.getItem(key)) { host.innerHTML = ''; return; }
-
-  let b;
-  let teams = [];
+async function checkReminders() {
+  if (!me) return;
+  let due = [];
   try {
-    const r = await get('/me/brief');
-    b = r.brief;
-    teams = r.teams ?? [];
-  } catch { host.innerHTML = ''; return; }
-
-  // Admin and ops carry no dial or revenue target of their own, so their
-  // banner is the floor's: the same arithmetic, summed over the teams.
-  if (!b && teams.length) {
-    const sum = (k) => teams.reduce((s, t) => s + Number(t[k] || 0), 0);
-    b = null;
-    host.innerHTML = `
-      <div class="brief">
-        <span class="brief-title">Floor today</span>
-        ${[
-          ['Collected', inrShort(sum('collected_today')), sum('collected_today') > 0],
-          ['Left this month', inrShort(sum('gap_to_target')), sum('gap_to_target') === 0],
-          ['Needed per day', inrShort(sum('required_per_day')), null],
-          ['Dials', sum('dials_today'), null],
-          ['Untouched', sum('untouched_now'), sum('untouched_now') === 0],
-          ['Overdue', sum('overdue_now'), sum('overdue_now') === 0],
-          ['Walk-ins', sum('walkins_today'), null],
-        ].map(([k, v, ok]) => `
-          <span class="brief-cell"><span class="brief-k">${esc(k)}</span>
-          <span class="brief-v ${ok === null ? '' : ok ? 'good' : 'bad'}">${esc(String(v))}</span></span>`).join('')}
-        <button class="brief-x" title="Hide until tomorrow" aria-label="Hide">✕</button>
-      </div>`;
-    host.querySelector('.brief-x').addEventListener('click', () => {
-      localStorage.setItem(key, '1');
-      host.innerHTML = '';
-    });
-    return;
-  }
-  if (!b) { host.innerHTML = ''; return; }
-
-  const cells = b.role === 'caller'
-    ? [
-        ['Dials today', `${b.dials_today} / ${b.dial_target ?? 0}`, Number(b.dials_today) >= Number(b.dial_target ?? 0)],
-        ['Untouched', b.untouched_now, Number(b.untouched_now) === 0],
-        ['Overdue', b.overdue_now, Number(b.overdue_now) === 0],
-        ['Callbacks due', b.callbacks_today, true],
-      ]
-    : [
-        ['Collected today', inrShort(b.collected_today), Number(b.collected_today) > 0],
-        ['Left this month', inrShort(b.gap_to_target), Number(b.gap_to_target) === 0],
-        ['Needed per day', `${inrShort(b.required_per_day)} × ${b.working_days_left}d`, null],
-        ['Pace so far', `${inrShort(b.current_per_day)} / day`, Number(b.pace_pct ?? 0) >= 95],
-        ['Overdue', b.overdue_now, Number(b.overdue_now) === 0],
-      ];
-
-  host.innerHTML = `
-    <div class="brief">
-      <span class="brief-title">Today</span>
-      ${cells.map(([k, v, ok]) => `
-        <span class="brief-cell">
-          <span class="brief-k">${esc(k)}</span>
-          <span class="brief-v ${ok === null ? '' : ok ? 'good' : 'bad'}">${esc(String(v))}</span>
-        </span>`).join('')}
-      <button class="brief-x" title="Hide until tomorrow" aria-label="Hide">✕</button>
-    </div>`;
-  host.querySelector('.brief-x').addEventListener('click', () => {
-    localStorage.setItem(key, '1');
-    host.innerHTML = '';
-  });
-}
-
-/* ---- circuit breaker banner during the lunch freeze (WP C) ---- */
-
-let freezeCfg = null;
-async function startFreezeBanner() {
-  try {
-    const cfg = await get('/meta/ui-settings');
-    freezeCfg = {
-      start: Number(cfg['freeze.start_minutes'] ?? 840),
-      end: Number(cfg['freeze.end_minutes'] ?? 870),
-    };
-  } catch { freezeCfg = { start: 840, end: 870 }; }
-  const tick = () => {
-    const host = document.getElementById('freeze-banner');
-    if (!host) return;
-    const ist = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60_000);
-    const mow = ist.getHours() * 60 + ist.getMinutes();
-    const inFreeze = ist.getDay() !== 0 && mow >= freezeCfg.start && mow < freezeCfg.end;
-    if (!inFreeze) { host.innerHTML = ''; return; }
-    const left = freezeCfg.end * 60 - (mow * 60 + ist.getSeconds());
-    const mm = String(Math.floor(left / 60)).padStart(2, '0');
-    const ss = String(left % 60).padStart(2, '0');
-    const until = `${Math.floor(freezeCfg.end / 60) % 12 || 12}:${String(freezeCfg.end % 60).padStart(2, '0')} pm`;
-    host.innerHTML = `<div class="freeze-banner">\u23f8 Circuit breaker \u2014 lunch hold.
-      Nothing moves and no SLA runs. Resumes ${esc(until)} \u00b7 <b class="mono">${mm}:${ss}</b></div>`;
-  };
-  tick();
-  setInterval(tick, 1000);
-}
-
-/* ---- once-a-day celebration (WP K) ---- */
-
-function celebrate(user) {
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
-  const key = `crm-pop-${user.id}-${today}`;
-  if (localStorage.getItem(key) || localStorage.getItem('crm-pop-off') === '1') return;
-  localStorage.setItem(key, '1');
-
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    toast('\ud83c\udf89 New day on the floor \u2014 go get it.');
-    return;
-  }
-  const host = h('<div class="confetti" aria-hidden="true"></div>');
-  document.body.appendChild(host);
-  const colours = ['#0281C2', '#076F9E', '#eda100', '#1baf7a', '#e87ba4'];
-  for (let i = 0; i < 80; i += 1) {
-    const bit = document.createElement('i');
-    bit.style.left = `${Math.random() * 100}vw`;
-    bit.style.background = colours[i % colours.length];
-    bit.style.animationDelay = `${Math.random() * 0.3}s`;
-    bit.style.transform = `rotate(${Math.random() * 360}deg)`;
-    host.appendChild(bit);
-  }
-  setTimeout(() => host.remove(), 1600);
-}
-
-async function refreshShift() {
-  const el = document.getElementById('shift-widget');
-  if (!el) return;
-  try {
-    const [profile, att] = await Promise.all([get('/me'), get('/me/attendance?days=1')]);
-    const today = Array.isArray(att) ? att[0] : null;
-    const mins = today?.logged_minutes ?? 0;
-    const on = Boolean(profile.on_shift);
-    el.className = `shift ${on ? 'on' : ''}`;
-    el.innerHTML = `
-      <span class="dot"></span>
-      <span>${on ? 'On floor' : 'Off floor'}</span>
-      <span class="mins">${minsLabel(mins)} / 9h</span>
-      <button class="btn small" id="shift-btn">${on ? 'End shift' : 'Start shift'}</button>`;
-    el.querySelector('#shift-btn').addEventListener('click', async () => {
-      try {
-        await post(on ? '/attendance/logout' : '/attendance/login');
-        toast(on ? 'Shift ended.' : 'Shift started — you are on the floor.');
-      } catch (err) {
-        toast(err.message, 'err');
-      }
-      refreshShift();
-    });
+    ({ due } = await get('/reminders/due'));
   } catch {
-    el.textContent = '';
+    return; // a failed poll is never worth an error popup
+  }
+
+  const badge = document.getElementById('reminder-badge');
+  if (badge) {
+    badge.hidden = due.length === 0;
+    badge.textContent = String(due.length);
+  }
+
+  let chimed = false;
+  for (const r of due) {
+    const key = `crm-popped-${r.id}-${r.next_follow_up_at}`;
+    if (localStorage.getItem(key)) continue;
+    localStorage.setItem(key, '1');
+    if (!chimed) { chime(); chimed = true; }
+    const note = r.follow_up_note ? ` — ${r.follow_up_note}` : '';
+    const el = h(`
+      <div class="toast reminder-toast" role="alert">
+        <b>⏰ ${esc(r.full_name ?? r.phone_e164)}</b>
+        <span>${esc(note)}</span>
+        <a href="#/lead/${r.id}">Open lead</a>
+      </div>`);
+    document.getElementById('toasts').appendChild(el);
+    el.querySelector('a').addEventListener('click', () => el.remove());
+    setTimeout(() => el.remove(), 30_000);
   }
 }
 
-/**
- * Render the current hash into the outlet.
- *
- * Two modes, and the difference is the whole fix for "the page keeps
- * refreshing": a NAVIGATION (soft = false) swaps the outlet immediately and
- * shows a spinner, because the user asked for a new page and feedback beats a
- * frozen screen. A LIVE REFRESH (soft = true) renders the new page into a
- * detached node first and swaps only once the data has arrived - the user
- * never sees a spinner, a blank flash, or a scroll jump, just numbers that
- * are suddenly current. If the refresh fails it keeps the page it has; stale
- * beats broken.
- */
-async function route(soft = false) {
+function startReminderWatch() {
+  stopReminderWatch();
+  checkReminders();
+  reminderTimer = setInterval(checkReminders, 60_000);
+}
+
+function stopReminderWatch() {
+  if (reminderTimer) clearInterval(reminderTimer);
+  reminderTimer = null;
+}
+
+/** One quiet two-tone chime. Never repeats for the same reminder. */
+function chime() {
+  try {
+    const ctx = new AudioContext();
+    const play = (freq, at, dur) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = 'sine';
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + at);
+      gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + at + dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(ctx.currentTime + at);
+      osc.stop(ctx.currentTime + at + dur + 0.05);
+    };
+    play(880, 0, 0.35);
+    play(1174.66, 0.18, 0.4);
+    setTimeout(() => ctx.close(), 1500);
+  } catch {
+    /* no audio permission: the toast still shows */
+  }
+}
+
+/* ---- routing ----------------------------------------------------------- */
+
+async function route() {
   if (!me) return;
   const outlet = document.getElementById('outlet');
   if (!outlet) return;
 
-  // A query after the path (#/dial?list=not_answered) is the view's own
-  // business; the route is the path alone.
   const parts = (location.hash || '#/').slice(2).split('?')[0].split('/');
-  const name = parts[0] || (DEFAULT_ROUTE[me.role] ?? '#/attendance').slice(2);
+  const name = parts[0] || (DEFAULT_ROUTE[me.role] ?? '#/leads').slice(2);
   const view = VIEWS[name];
 
   document.querySelectorAll('.sidebar a.nav').forEach((a) => {
-    a.classList.toggle('active', a.dataset.nav === `#/${name}`);
+    a.classList.toggle('active', a.dataset.nav === `#/${name}` || (name === 'lead' && a.dataset.nav === '#/leads'));
   });
-  const titleEl = document.getElementById('page-title');
-  titleEl.textContent = TITLES[name] ?? '5 Circles CRM';
-  // The contextual "?": one click from any screen to the module explaining it.
-  const helpSlug = HELP_FOR[name];
-  if (helpSlug) {
-    const dot = h(`<button class="help-dot" title="What is this screen for?" aria-label="Help">?</button>`);
-    dot.addEventListener('click', () => { location.hash = `#/training/${helpSlug}`; });
-    titleEl.appendChild(dot);
-  }
-  document.getElementById('live-badge')?.classList.toggle('show', LIVE_VIEWS.has(name));
+  document.getElementById('page-title').textContent = TITLES[name] ?? '5 Circles CRM';
 
   if (!view) {
-    location.hash = DEFAULT_ROUTE[me.role] ?? '#/attendance';
+    location.hash = DEFAULT_ROUTE[me.role] ?? '#/leads';
     return;
   }
 
   // Fresh outlet per render: views attach listeners to it, and reusing the
   // node would stack a new handler on every visit.
   const fresh = outlet.cloneNode(false);
-
-  if (!soft) {
-    outlet.replaceWith(fresh);
-    fresh.innerHTML = '<div class="spin"></div>';
-    try {
-      await view.render(fresh, me, parts.slice(1));
-    } catch (err) {
-      fresh.innerHTML = '';
-      fresh.appendChild(h(`<div class="panel"><h2>Could not load this page</h2><p class="hint">${esc(err.message)}</p></div>`));
-    }
-    refreshShift();
-    return;
-  }
-
+  outlet.replaceWith(fresh);
+  fresh.innerHTML = '<div class="spin"></div>';
   try {
     await view.render(fresh, me, parts.slice(1));
-  } catch {
-    return; // failed refresh: keep the page we have
+  } catch (err) {
+    fresh.innerHTML = '';
+    fresh.appendChild(h(`<div class="panel"><h2>Could not load this page</h2><p class="hint">${esc(err.message)}</p></div>`));
   }
-  // The world may have moved while the data was loading. If the user
-  // navigated away or opened a form mid-fetch, throw this render away.
-  const current = document.getElementById('outlet');
-  if (!current || currentViewName() !== name) return;
-  if (document.querySelector('.overlay, .modal')) return;
-  const scrollY = window.scrollY;
-  const scrollTop = current.scrollTop;
-  current.replaceWith(fresh);
-  fresh.scrollTop = scrollTop;
-  window.scrollTo(0, scrollY);
-  markLive();
-  refreshShift();
-}
-
-function markLive() {
-  const badge = document.getElementById('live-badge');
-  if (!badge) return;
-  const t = new Intl.DateTimeFormat('en-IN', {
-    timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  }).format(new Date());
-  badge.title = `Auto-refreshing — last update ${t} IST`;
-  badge.classList.remove('pulse');
-  void badge.offsetWidth; // restart the pulse animation
-  badge.classList.add('pulse');
-}
-
-/**
- * Redraw the current page on a timer, so a new lead appears without anyone
- * pressing F5. The floor was refreshing by hand to find out whether work had
- * arrived, which is both tedious and unreliable - a lead nobody refreshes for
- * is a lead nobody calls.
- *
- * Only the views that show live work refresh, the cadence is a setting
- * (ui.refresh_seconds), and the redraw is the seamless kind above. Redrawing
- * a page underneath someone who is typing, selecting text, or mid-form is
- * worse than a stale number, so all three suppress the tick.
- */
-const LIVE_VIEWS = new Set(['day', 'floor', 'collections', 'people', 'dash', 'team']);
-let liveTimer = null;
-
-function currentViewName() {
-  return (location.hash || '#/').slice(2).split('?')[0].split('/')[0];
-}
-
-async function startLiveRefresh() {
-  if (liveTimer) clearInterval(liveTimer);
-  let everyMs = 30_000;
-  try {
-    const cfg = await get('/meta/ui-settings');
-    const secs = Number(cfg['ui.refresh_seconds']);
-    if (Number.isFinite(secs) && secs >= 5) everyMs = secs * 1000;
-  } catch { /* the default above is sane */ }
-  liveTimer = setInterval(() => {
-    if (!me) return;
-    if (!LIVE_VIEWS.has(currentViewName())) return;
-    if (document.hidden) return;                    // not while the tab is in the background
-    if (document.querySelector('.overlay, .modal')) return;  // not mid-form
-    if (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-    if (String(window.getSelection() ?? '').length > 0) return; // not under a text selection
-    route(true);
-  }, everyMs);
 }
 
 window.addEventListener('hashchange', () => route());

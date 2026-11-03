@@ -763,3 +763,57 @@ button.chip:hover { border-color: #c8d4ea; }
 .alert-sum-item b {
   color: var(--ink); font-variant-numeric: tabular-nums; margin-left: 3px;
 }
+
+/* =====================================================================
+   v2 (pan-India reset): the four-screen UI
+   ===================================================================== */
+
+/* filter bar: controls size to content, not to the row */
+.filterbar { display: flex; flex-direction: column; gap: 10px; }
+.filterbar .frow { align-items: center; flex-wrap: wrap; }
+.filterbar .frow > * { flex: 0 1 auto; }
+.filterbar input[type="search"] { flex: 1 1 220px; }
+.filterbar input, .filterbar select {
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  font: inherit; color: var(--ink); background: var(--panel);
+}
+.filterbar .chips { margin-bottom: 0; }
+
+/* the reminder count on the nav item */
+.nav-badge {
+  display: inline-block; min-width: 18px; text-align: center;
+  background: var(--bad); color: #fff; border-radius: 999px;
+  font-size: 11.5px; font-weight: 700; padding: 1px 6px; margin-left: 6px;
+}
+
+/* lead table */
+.lead-table tbody tr { cursor: pointer; }
+.lead-table tbody tr:hover td { background: rgba(42, 120, 214, .06); }
+tr.row-overdue td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+tr.row-muted td { opacity: .55; }
+.t-red { color: var(--bad); font-weight: 600; }
+.t-green { color: var(--ok); }
+
+/* lead page */
+.lead-grid { grid-template-columns: 1.1fr 1fr; margin-bottom: 16px; }
+@media (max-width: 900px) { .lead-grid { grid-template-columns: 1fr; } }
+.table.kv td:first-child { color: var(--muted); width: 130px; font-weight: 600; font-size: 13px; }
+.chip.ck.on { background: var(--ok-bg, #e5f6ec); border-color: var(--ok); color: var(--ok); }
+
+/* timeline (div-based) */
+.tl-row { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.tl-row:last-child { border-bottom: 0; }
+.tl-icon { width: 24px; text-align: center; flex: none; }
+.tl-body { min-width: 0; }
+
+/* stat tiles grid */
+.stat-grid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+
+/* the one popup */
+.reminder-toast { display: flex; gap: 8px; align-items: baseline; }
+.reminder-toast a { color: inherit; text-decoration: underline; font-weight: 700; }
+
+:root[data-theme="dark"] .lead-table tbody tr:hover td { background: rgba(90, 150, 230, .12); }
+:root[data-theme="dark"] .filterbar input, :root[data-theme="dark"] .filterbar select {
+  background: #10192e; color: var(--ink); border-color: var(--line);
+}

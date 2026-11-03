@@ -21,25 +21,6 @@ declare module 'fastify' {
      * "this server has no importer" rather than reporting a false success.
      */
     syncSheetsNow?: () => Promise<unknown[]>;
-    /**
-     * Reconcile against Smartflo right now, same split as syncSheetsNow:
-     * present only when SERVICE_USER_ID and the Tata Tele credentials are
-     * configured. Resolves null when tata_tele.enabled is off.
-     */
-    tataTeleSyncNow?: (hours?: number) => Promise<unknown | null>;
-    /**
-     * The one Smartflo client, shared by click-to-call and the sync so they
-     * share the account's rate budget and token. Present only when the
-     * credentials are configured; the routes say so plainly when it is not.
-     */
-    tataTele?: {
-      baseUrl: string;
-      clickToCall(params: {
-        agentNumber: string;
-        destinationNumber: string;
-        callerId?: string;
-      }): Promise<{ refId: string | null; message: string }>;
-    };
   }
 }
 
@@ -56,10 +37,7 @@ function isPublicPath(url: string): boolean {
     path === '/' ||
     path === '/favicon.ico' ||
     path === '/ui' ||
-    path.startsWith('/ui/') ||
-    // Smartflo's cloud has no CRM session; the route authenticates every
-    // request itself with the shared webhook secret, in constant time.
-    path === '/integrations/tata-tele/webhook'
+    path.startsWith('/ui/')
   );
 }
 
@@ -120,24 +98,3 @@ export const contextPlugin = fp(
   },
   { name: 'crm-context' },
 );
-
-/**
- * Record that a user opened a lead record.
- *
- * This is what makes a quiet bulk scrape detectable - crm.detect_bulk_access()
- * reads it. Call it wherever lead PII leaves the API.
- */
-export async function logLeadAccess(
-  q: Querier,
-  userId: string,
-  leadIds: readonly string[],
-  context: 'detail' | 'list' | 'export' | 'api',
-  ip: string | null,
-): Promise<void> {
-  if (leadIds.length === 0) return;
-  await q.query(
-    `insert into crm.lead_access_log (user_id, lead_id, context, ip_address)
-     select $1, unnest($2::uuid[]), $3, $4`,
-    [userId, leadIds, context, ip],
-  );
-}

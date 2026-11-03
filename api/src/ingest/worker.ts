@@ -3,7 +3,7 @@ import { payloadHash, type RawRow, type SheetReader } from './source.ts';
 import { GoogleSheetReader } from './source.ts';
 
 /**
- * Google Sheets -> crm.ingested_rows -> crm.assign_lead.
+ * Google Sheets (or pasted CSV) -> crm.ingested_rows -> crm.leads.
  *
  * Three properties this pipeline has to have, in priority order:
  *
@@ -14,10 +14,13 @@ import { GoogleSheetReader } from './source.ts';
  *
  *  2. Nothing is ever dropped. A row with an undialable phone number is
  *     quarantined with a reason, not discarded - a mistyped number is a lead
- *     someone paid for, and ops can fix and replay it.
+ *     someone paid for.
  *
  *  3. One bad row cannot stop the run. Each row is its own transaction, so a
- *     single malformed record does not block the other 200 leads behind it.
+ *     single malformed record does not block the 200 leads behind it.
+ *
+ * Assignment needs no second pass: the lead-insert trigger hands each lead to
+ * the least-loaded caller as it lands.
  */
 
 export interface IngestSummary {
@@ -27,7 +30,6 @@ export interface IngestSummary {
   created: number;
   duplicate: number;
   quarantined: number;
-  assigned: number;
   errors: string[];
 }
 
@@ -37,20 +39,10 @@ interface SourceRow {
   spreadsheet_id: string | null;
   worksheet_name: string | null;
   column_map: Record<string, string>;
-  default_priority: 'immediate' | 'normal';
 }
 
 /** Canonical lead fields the mapper knows how to fill. */
-const MAPPABLE = [
-  'full_name',
-  'phone',
-  'email',
-  'city',
-  'campaign_name',
-  'adset_name',
-  'ad_name',
-  'form_name',
-] as const;
+const MAPPABLE = ['full_name', 'phone', 'email', 'city', 'campaign'] as const;
 
 type Mappable = (typeof MAPPABLE)[number];
 
@@ -58,20 +50,17 @@ type Mappable = (typeof MAPPABLE)[number];
  * Header names to try when the source has no explicit mapping for a field.
  *
  * A source configured without a column map would otherwise quarantine every
- * single row for having "no phone number", which looks like a data problem and
- * is actually a configuration one. Meta and the website forms use a small,
- * predictable set of header names, so try those before giving up. An explicit
- * mapping always wins - this only fills gaps.
+ * row for having "no phone number", which looks like a data problem and is a
+ * configuration one. Meta and the ChatGPT export use a small, predictable set
+ * of header names, so try those before giving up. An explicit mapping always
+ * wins - this only fills gaps.
  */
 const DEFAULT_ALIASES: Record<Mappable, string[]> = {
   full_name: ['full_name', 'full name', 'name', 'lead name', 'customer name'],
-  phone: ['phone', 'phone number', 'phone_number', 'mobile', 'mobile number', 'contact number'],
+  phone: ['phone', 'phone number', 'phone_number', 'mobile', 'mobile number', 'contact number', 'whatsapp number'],
   email: ['email', 'email address', 'email_address', 'e-mail'],
   city: ['city', 'town', 'location'],
-  campaign_name: ['campaign_name', 'campaign name', 'campaign'],
-  adset_name: ['adset_name', 'adset name', 'ad set name', 'adset'],
-  ad_name: ['ad_name', 'ad name', 'ad'],
-  form_name: ['form_name', 'form name', 'form'],
+  campaign: ['campaign_name', 'campaign name', 'campaign', 'ad_name', 'ad name', 'form_name', 'form name'],
 };
 
 function findByAlias(
@@ -124,18 +113,18 @@ export function mapRow(
 
 export class IngestWorker {
   private readonly db: Database;
-  /** Service account user id with the `ops` role; RLS runs as this user. */
-  private readonly opsUserId: string;
+  /** User the ingestion acts as: the service account, or the admin who clicked. */
+  private readonly actingUserId: string;
 
-  constructor(db: Database, opsUserId: string) {
+  constructor(db: Database, actingUserId: string) {
     this.db = db;
-    this.opsUserId = opsUserId;
+    this.actingUserId = actingUserId;
   }
 
   async runSource(sourceId: string, readerOverride?: SheetReader): Promise<IngestSummary> {
-    const source = await this.db.withUser(this.opsUserId, (q) =>
+    const source = await this.db.withUser(this.actingUserId, (q) =>
       q.one<SourceRow>(
-        `select id, name, spreadsheet_id, worksheet_name, column_map, default_priority
+        `select id, name, spreadsheet_id, worksheet_name, column_map
            from crm.lead_sources where id = $1 and is_active`,
         [sourceId],
       ),
@@ -149,7 +138,7 @@ export class IngestWorker {
         : null);
     if (!reader) throw new Error(`source ${source.name} has no sheet configured and no reader supplied`);
 
-    const runId = await this.db.withUser(this.opsUserId, async (q) => {
+    const runId = await this.db.withUser(this.actingUserId, async (q) => {
       const row = await q.one<{ id: string }>(
         `insert into crm.ingestion_runs (source_id) values ($1) returning id`,
         [sourceId],
@@ -164,7 +153,6 @@ export class IngestWorker {
       created: 0,
       duplicate: 0,
       quarantined: 0,
-      assigned: 0,
       errors: [],
     };
 
@@ -179,13 +167,12 @@ export class IngestWorker {
     summary.seen = rows.length;
 
     // If the configured tab name only matched loosely, write the real title
-    // back. Otherwise every future sync pays for the same two extra API calls
-    // to rediscover it, and the source keeps displaying a name that is not the
-    // one being read - which is exactly the confusion this set out to end.
+    // back, so future syncs skip the rediscovery and the admin screen shows
+    // the tab actually being read.
     if (reader instanceof GoogleSheetReader && reader.resolvedWorksheet) {
       const real = reader.resolvedWorksheet;
       if (real !== source.worksheet_name) {
-        await this.db.withUser(this.opsUserId, (q) =>
+        await this.db.withUser(this.actingUserId, (q) =>
           q.query('update crm.lead_sources set worksheet_name = $2 where id = $1', [sourceId, real]),
         );
       }
@@ -194,30 +181,14 @@ export class IngestWorker {
     for (const row of rows) {
       try {
         // One transaction per row: a single bad record cannot take the run down.
-        const outcome = await this.db.withUser(this.opsUserId, (q) =>
+        const outcome = await this.db.withUser(this.actingUserId, (q) =>
           this.ingestRow(q, source, runId, row),
         );
-        if (outcome === 'created') summary.created += 1;
-        else if (outcome === 'duplicate') summary.duplicate += 1;
-        else summary.quarantined += 1;
+        summary[outcome] += 1;
       } catch (err) {
         summary.errors.push(`${row.rowKey}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-
-    // Assign in a second pass so distribution sees the whole batch and can
-    // balance across it, rather than handing the first N leads to one caller.
-    summary.assigned = await this.db.withUser(this.opsUserId, async (q) => {
-      const row = await q.one<{ assign_pending_leads: number }>(
-        'select crm.assign_pending_leads($1) as assign_pending_leads',
-        [Math.max(rows.length, 100)],
-      );
-      // A re-enquiry that reopened a parked lead left it with no owner at
-      // all; those go to the team's counsellor (0066, owner decision) the
-      // moment the sync that revived them finishes.
-      await q.query('select crm.adopt_orphan_reenquiries(200)');
-      return row?.assign_pending_leads ?? 0;
-    });
 
     await this.finishRun(runId, summary, null);
     return summary;
@@ -249,7 +220,7 @@ export class IngestWorker {
     );
     const phone = normalised?.normalise_phone ?? null;
 
-    // Quarantine rather than drop: keep the row, record why, let ops fix it.
+    // Quarantine rather than drop: keep the row, record why, let the admin fix it.
     const reject =
       !rawPhone ? 'no phone number in the mapped column'
       : !phone ? `phone number is not dialable: ${rawPhone}`
@@ -266,48 +237,27 @@ export class IngestWorker {
       return 'quarantined';
     }
 
-    // A repeat enquiry attaches to the existing lead. Re-enquiry is a buying
-    // signal, not a duplicate to be silently discarded - it bumps priority
-    // and lands on the timeline.
-    //
-    // A LIVE lead matches at any age: the re-tap and nurture pools hold leads
-    // far past the dedupe window, and matching those only by created_at was
-    // how one person ended up as two live leads on two different teams. The
-    // window applies only to closed leads, where a fresh enquiry genuinely is
-    // a fresh lead. The unique index leads_one_live_per_phone_idx enforces the
-    // same rule at the schema level, so a race between two syncs errors
-    // loudly instead of duplicating quietly.
-    const existing = await q.one<{ id: string; caller_id: string | null }>(
-      `select id, caller_id from crm.leads
+    // A repeat enquiry attaches to the existing lead - never a second lead.
+    // A LIVE lead matches at any age; the dedupe window applies only to closed
+    // ones, where a fresh enquiry genuinely is a fresh lead. The unique index
+    // leads_one_live_per_phone_idx enforces the same rule at the schema level,
+    // so a race between two syncs errors loudly instead of duplicating quietly.
+    const existing = await q.one<{ id: string }>(
+      `select id from crm.leads
         where phone_e164 = $1
-          and (status in ('new', 'working', 'callback', 'qualified', 'negotiation', 'nurture')
+          and (stage in ('new', 'calling', 'qualified')
                or created_at > now() - make_interval(days => crm.setting_int('lead.dedupe_window_days', 90)))
-        order by (status in ('new', 'working', 'callback', 'qualified', 'negotiation', 'nurture')) desc,
-                 created_at desc
+        order by (stage in ('new', 'calling', 'qualified')) desc, created_at desc
         limit 1`,
       [phone],
     );
 
     if (existing) {
-      await q.query(
-        `update crm.leads
-            set reenquiry_count = reenquiry_count + 1,
-                priority = 'immediate',
-                next_action_at = least(coalesce(next_action_at, now()), now() + interval '15 minutes'),
-                next_action_note = 'Re-enquiry received',
-                status = case when status in ('nurture','lost') then 'working' else status end,
-                closed_at = case when status in ('nurture','lost') then null else closed_at end,
-                -- A parked lead that re-enquires goes back to live work.
-                pool = null,
-                retap_since = null
-          where id = $1`,
-        [existing.id],
-      );
-      await q.query(
-        `insert into crm.lead_events (lead_id, event_type, payload)
-         values ($1, 're_enquiry', $2)`,
-        [existing.id, JSON.stringify({ source_id: source.id, row_key: row.rowKey })],
-      );
+      await q.query('select crm.attach_enquiry($1, $2, $3)', [
+        existing.id,
+        source.id,
+        JSON.stringify({ row_key: row.rowKey }),
+      ]);
       await q.query(
         `insert into crm.ingested_rows
            (run_id, source_id, source_row_key, payload_hash, payload, status, reject_reason, lead_id)
@@ -318,7 +268,7 @@ export class IngestWorker {
           row.rowKey,
           hash,
           JSON.stringify(row.values),
-          'matched an existing lead within the dedupe window',
+          'matched an existing lead - recorded as a repeat enquiry',
           existing.id,
         ],
       );
@@ -327,10 +277,8 @@ export class IngestWorker {
 
     const lead = await q.one<{ id: string }>(
       `insert into crm.leads
-         (source_id, full_name, phone_e164, phone_raw, email, city,
-          campaign_name, adset_name, ad_name, form_name, extra, priority)
-       values ($1, $2, $3, $4, nullif($5,''), nullif($6,''),
-               nullif($7,''), nullif($8,''), nullif($9,''), nullif($10,''), $11, $12)
+         (source_id, full_name, phone_e164, phone_raw, email, city, campaign, extra)
+       values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), $8)
        returning id`,
       [
         source.id,
@@ -339,12 +287,8 @@ export class IngestWorker {
         rawPhone,
         mapped.email ?? '',
         mapped.city ?? '',
-        mapped.campaign_name ?? '',
-        mapped.adset_name ?? '',
-        mapped.ad_name ?? '',
-        mapped.form_name ?? '',
+        mapped.campaign ?? '',
         JSON.stringify(extra),
-        source.default_priority,
       ],
     );
 
@@ -363,7 +307,7 @@ export class IngestWorker {
     summary: IngestSummary,
     error: string | null,
   ): Promise<void> {
-    await this.db.withUser(this.opsUserId, (q) =>
+    await this.db.withUser(this.actingUserId, (q) =>
       q.query(
         `update crm.ingestion_runs
             set finished_at = now(), rows_seen = $2, rows_created = $3,
@@ -373,7 +317,7 @@ export class IngestWorker {
       ),
     );
     if (!error) {
-      await this.db.withUser(this.opsUserId, (q) =>
+      await this.db.withUser(this.actingUserId, (q) =>
         q.query('update crm.lead_sources set last_synced_at = now() where id = $1', [
           summary.sourceId,
         ]),
@@ -383,7 +327,7 @@ export class IngestWorker {
 
   /** Every active source with a sheet configured. */
   async runAll(): Promise<IngestSummary[]> {
-    const sources = await this.db.withUser(this.opsUserId, (q) =>
+    const sources = await this.db.withUser(this.actingUserId, (q) =>
       q.many<{ id: string }>(
         `select id from crm.lead_sources
           where is_active and spreadsheet_id is not null order by name`,

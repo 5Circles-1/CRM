@@ -1,540 +1,135 @@
-# 5 Circles Sales CRM
+# 5 Circles CRM — v2 (pan-India program)
 
-Internal sales-floor CRM for 5 Circles. PostgreSQL 16.
+A deliberately small CRM for a floor of two to four people. PostgreSQL 16,
+TypeScript/Fastify API, dependency-free web UI. This is the **v2 full reset**
+(owner decision, 3 Nov): the earlier Kanpur sales-floor build — teams,
+attendance, targets, scoring, tiers, escalation ladders, alerts engine,
+re-tap, office visits, deals/instalments, Tata Tele telephony, the Android
+companion app — was removed wholesale. Its history lives in git; do not
+re-grow it piecemeal.
 
-## Scope boundary — read this first
+## The product in one paragraph
 
-This is a **sales-floor CRM only**. Its job ends at *money collected* and a
-*clean handoff*. Everything about servicing a paying advisory client — KYC, KRA,
-MITC consent, e-sign, risk profiling, fee caps, research delivery, grievance
-registers, the five-year client interaction archive — belongs to the existing
-advisory pipeline and must **not** be built here.
+Leads arrive from ChatGPT and Meta (Google Sheets the importer polls, plus
+CSV paste and manual add). Fresh leads rotate between the **callers**
+(Sanya, Harsh) who make the first call. A call has exactly **five possible
+outcomes**: Qualified, Call back later, Not answered, Switched off, Not
+qualified ("no, don't call me" — the only way a lead closes as lost). A
+qualified lead passes automatically to the **follow-up** person (Aisha), who
+works it through the webinar checkpoints — invite sent, confirmed,
+**converted**. Everyone sees everything, like a shared Google Sheet; the
+admin additionally manages accounts and sources.
 
-| In scope | Out of scope (advisory pipeline) |
-|---|---|
-| Lead ingestion, distribution, teams and roles | Client KYC and onboarding |
-| Caller → counsellor pipeline, callbacks, reminders | Consent and agreements |
-| Attendance, scoring, targets, dashboards | Fee-cap and family limits |
-| Office visits, counselling response, conversion ratio | Advisory sessions with a paying client |
-| Deals, instalments, collections chasing | Service delivery and research |
-| Call QA — conduct and coaching | Long-term client records, grievances, audits |
+## The four screens
 
-Collections **stays here** even after handoff: the counsellor who closed the
-deal chases the instalments.
-
-The handoff runs both directions (`crm.handoff_outbox` / `crm.handoff_inbound`).
-The return leg carries onboarding, **refund/cancellation**, and renewal-due
-events. Without it, incentive clawback silently fails and renewals are never
-created.
-
-## The nine requirements this build serves
-
-1. Leads arrive from a Meta-connected Google Sheet and distribute alternately
-   between two teams, then alternately between setters.
-2. Dashboards for caller *and* counsellor performance.
-3. A caller can set a callback reminder when a client asks to be called back.
-4. Each caller sees their own pipeline for the day.
-5. An immediate lead is surfaced for contact as soon as possible.
-6. A 9-hour login (09:30–18:30 IST) is visible per person per day.
-7. Callers and counsellors are scored, for self-reflection.
-8. A lead that went Not Answered can be transferred to another caller — by the
-   counsellor, who is also the team lead.
-9. Interactive dashboards, no pipeline leakage, no data breach.
-
-Requirement → test mapping lives in `db/tests/test_requirements.sql`, tagged
-`R1`…`R9`. Every requirement has passing assertions. **If you change behaviour,
-change the test.**
+Dashboard (now + range numbers + funnel + who-did-what), Leads (the
+spreadsheet: filters by day / person / status / source / due), Reminders
+(overdue / today / upcoming, computed), Admin (team, sources, CSV import,
+quarantine). The **only popup** in the product is a reminder whose time has
+come: once, with one soft chime, then it sits in Reminders until the call is
+logged.
 
 ## Design decisions that are load-bearing
 
-Do not undo these without understanding why they exist.
+- **An open lead always has `next_follow_up_at`.** Check constraint
+  `leads_open_requires_next_action`, defaulted on insert, moved by every call
+  outcome. Reminders, the due buckets and the popup are all reads of this one
+  column — there is no reminder table and no alerts engine, so nothing can
+  drift. Clearing a reminder = logging the call.
 
-- **An open lead always has a `next_action_at`.** Enforced by the check
-  constraint `leads_open_requires_next_action`, defaulted on insert by
-  `crm.tg_lead_defaults`, and pushed forward automatically by the call-attempt
-  trigger. This is the mechanical guarantee against pipeline leakage — the UI
-  rule "you cannot close a call without a next action" is just its front end.
+- **Stage and last outcome are separate columns.** `stage` (new → calling →
+  qualified → converted | not_qualified) is where the lead stands;
+  `last_outcome` (+ `na_streak`) is what the latest call said. Folding them
+  together was how good leads used to vanish into "not answered" piles.
 
-- **Distribution is least-loaded-then-rotation, not a naive A-B-A-B counter.**
-  Strict alternation permanently starves whoever takes a break: the cursor lands
-  on them, they are skipped, they never catch up. Among callers actually on the
-  floor, the fewest-leads-today wins; rotation order breaks ties, which yields
-  exactly A-B-A-B when everyone is present and level. Catch-up is bounded by
-  `distribution.max_catchup_leads` so a returning caller is not flooded.
+- **Five outcomes, and not one more.** The dropdown IS the enum
+  `crm.call_outcome`. The owner's rule: not-qualified only on an explicit no;
+  everything else keeps the lead alive with a date.
 
-- **Only counsellors and admins can transfer leads.** If callers could push
-  leads off their own list, difficult leads would circulate forever and nobody
-  would own anything. Enforced inside `crm.transfer_lead`, not in the UI.
-  Capped at `lead.max_transfers` (2), then the lead goes to nurture.
-  **The "Give to" picker offers exactly what `crm.transfer_lead` accepts — every
-  active caller or counsellor** (a counsellor takes the lead into their own
-  counsellor queue, 0085; a paying client may only go to a counsellor, because
-  `caller_id` on a won lead is the win's credit). `/transfers/targets` used to
-  narrow that to the *acting*
-  user's team: an admin holds no team membership, so the comparison was
-  `= crm.current_user_team()` against NULL, the dropdown rendered empty, and
-  every Transfer button on Floor could only answer "No caller available to
-  receive it" while the floor was full. A counsellor could not hand a lead
-  across teams either, though the function does exactly that (it re-stamps
-  `team_id` to the new caller's team), and a caller whose membership row had
-  lapsed vanished from the list with no message saying why. A picker narrower
-  than the rule it fronts is the rule living in a second place. The lead's own
-  team is grouped first so crossing one stays a decision rather than a slip,
-  and a RESTRICTED caller stays on the list: that tier stops the *engine*
-  handing them fresh leads, never a human handing them one by name.
-  **A moved lead takes its pending callback with it** (0084, floor report
-  2 Oct): `callbacks.assigned_to` is what rings, and a transfer that left it
-  behind kept ringing the old caller — for a lead RLS no longer let them
-  open — while the new caller's first save collided with the stale pending
-  row and died on the floor as "new row violates row-level security policy
-  (USING expression)", blocking the dialler. `transfer_lead` and
-  `assign_unowned_lead` now re-point it exactly as `hand_over_leads` always
-  did, existing strays were repaired in the migration, and the
-  `callbacks_update` policy admits whoever may *work* the lead
-  (`crm.can_work_lead`, the `leads_update` rule as a predicate) — a caller
-  still cannot touch a callback on a lead that is not theirs.
+- **Converting is a checkpoint, never a call outcome** (`crm.set_checkpoint`),
+  so the win is recorded exactly once. Undoing a conversion is admin-only.
 
-- **A fresh lead with no caller can be assigned by an admin — by choice,
-  never on its own** (0079, owner request 29 Sep). A lead parked "no caller"
-  (nobody from its team on the floor, no counsellor to cover) waits for the
-  engine's next sweep, which can be a long time. On the Fresh tab the admin
-  gets an **Assign** picker on those rows — the same every-active-caller list
-  as Transfer — backed by `crm.assign_unowned_lead` (admin only, 42501; an
-  owned lead is refused by name, 23514, and moves by Transfer instead). It is
-  an assignment, not a transfer: the lead never had an owner, so it spends
-  none of `lead.max_transfers` and writes no `lead_transfers` row. The
-  original first-touch deadline is kept, so the Fresh tab stays honest about
-  how late the client's first call is; the choice is recorded as an
-  `assigned_by_admin` distribution event, never mistaken for the engine's.
-  Nothing automatic changed — absence is still covered forward.
-  **The lead's stage decides who may take it** (0080, owner decision 29 Sep):
-  Fresh also lists re-enquiries whatever their status, and a repeat enquiry
-  leaves a *won* lead won — so a paying client who enquired again showed "no
-  caller" with a button that could only be refused. new/working/callback go
-  to a caller or counsellor (0085); qualified/negotiation and paying clients
-  (won/handed_off) go
-  to a **counsellor**, preselected as the one who closed their latest deal
-  (`crm.last_deal_counsellor`). A won lead is never handed to a caller:
-  `leads.caller_id` is who gets credit for the win, so that would quietly
-  move a past sale. Status, `closed_at` and `caller_id` stay as they are;
-  the counsellor just owns the call-back. lost/invalid/nurture are refused —
-  reopen them first.
+- **Assignment is least-loaded-today among active callers, rotation order
+  breaking ties** (`crm.assign_next_caller`) — A-B-A-B when everyone is
+  present and level, and nobody is starved after a day off. No callers → the
+  follow-up person; nobody → the lead parks loudly as Unassigned. Admins
+  (and the System service account) never receive leads. The function is
+  deliberately VOLATILE: a STABLE one reads the statement snapshot and piles
+  a whole batch insert on one caller.
 
-- **A caller who has left hands over whole; one still on the floor never
-  does** (0081, owner request 30 Sep). Deactivating someone stops fresh leads
-  and nothing else, so their book stayed in their name, unworked, and their
-  clients' booked callbacks rang nobody. Transfer, one lead at a time, was
-  refused outright on any lead already moved twice. `crm.hand_over_leads`
-  (admin only, 42501; the leaver must already be deactivated, 23514) moves
-  every lead in their name to one active caller or counsellor (0085) — lost
-  and nurture included,
-  because a re-enquiry reopens those with their owner — **except paying
-  clients** (won/handed_off), whose `caller_id` is the win's credit. Nothing is
-  copied: call attempts, notes and the timeline hang off the lead, so the new
-  owner reads every response the client gave, marked with the leaver's name.
-  Follow-up dates stay as the leaver agreed them, pending callbacks are
-  re-pointed (`callbacks.assigned_to` is what rings), and no transfer is spent:
-  a departure is not a judgement about any lead. Each lead still gets a
-  `lead_transfers` row (`caller_unavailable`), so its page says where it came
-  from. The **Hand over N leads** button shows only on a deactivated caller's
-  or counsellor's row in Admin → Users; a departed counsellor's book is
-  counselling work and goes only to another counsellor.
+- **Qualified hands over automatically** (inside `crm.log_call`): a caller's
+  qualified call reassigns to the least-loaded active `followup` user. A
+  follow-up user's or admin's own qualified call keeps the lead.
 
-- **Two or three people are a whole floor — a counsellor receives leads like
-  a caller** (0085, owner decision 30 Oct; the reset itself is
-  `docs/small-team-refresh.md`). The floor shrank to 2–3 people who each work
-  a lead end to end, and the counsellor role is that role — it dials its own
-  queue, closes deals, records walk-ins, transfers — except it could not
-  *receive* a lead. Four caller-only assumptions fixed, all the same
-  assumption: cover now spreads across the on-floor counsellors
-  (least-covered-today then rotation, instead of first-in-rotation drowning);
-  the stuck→re-tap park applies only to leads the ladder actually escalated
-  (`escalated_at` is the mark — before this, a covering counsellor's FIRST
-  failed dial on a brand-new covered lead parked it); and Transfer, Assign
-  and Hand over all accept a counsellor, who takes the lead into their own
-  counsellor queue. Deliberately unchanged: distribution still prefers
-  callers whenever one is eligible, and the escalation ladder, tiers, the
-  ACE seat and the 15-day stale mover stay caller-only and simply idle on a
-  floor that has none — hire a caller and it all wakes up, nothing to undo.
+- **Transparency is the access model.** Every active user reads the whole
+  pipeline and may log a call on any lead (a 3-person floor covers for each
+  other); the append-only `crm.activities` table records who did what, and is
+  protected both by trigger (SQLSTATE 38000) and by revoking UPDATE from
+  `crm_app` — RLS filters before triggers fire, so a denied update would
+  otherwise read as success. Ownership moves only via the qualified handover
+  or `crm.assign_lead` (admin, or self-claim of an unassigned lead).
 
-- **Every refusal carries a SQLSTATE, or it reaches the floor as a crash**
-  (0073). `crm.transfer_lead` makes six checks. Three raised bare, and a bare
-  `raise exception` is `P0001`, which is in no map in `src/http/errors.ts` — so
-  an ordinary refusal fell through to the catch-all and the floor read
-  **"something went wrong"**: the same five words for a lead a colleague had
-  already moved, for a target who cannot receive leads, and for a lead id that
-  does not resolve. A 500 also asserts the server is broken, which sends people
-  to the wrong place entirely. The rules did not change; their SQLSTATE and
-  wording did — `no_data_found` → 404, `check_violation` → 409 — and the text
-  names the caller, because it is read on the floor mid-shift, where "that
-  caller" is a uuid's way of saying nothing. The Floor list reloads itself after
-  a refusal, since the usual cause is a snapshot older than the database and a
-  second supervisor working the same pile. **When adding a rule to a
-  `SECURITY`-sensitive function, give the raise an errcode or the API cannot
-  tell it from a crash.**
+- **RLS is still the boundary that matters**: no session or a deactivated
+  account sees nothing; credentials and api_sessions are unreadable by
+  `crm_app` entirely (narrow SECURITY DEFINER functions, migration 0002);
+  the server refuses to boot on a role that bypasses RLS.
 
-- **A team is changeable, because a screen that names a problem must offer a
-  button for it.** Admin → Users showed a person's team and badged a caller who
-  had none ("no team — gets no leads"), but `teamId` was accepted only when the
-  user was first created — so correcting it afterwards meant hand-written SQL
-  against the live database, by the one person least likely to be able to write
-  it. `PUT /admin/users/:id/team` (admin only) is the button behind that badge.
-  Membership is a *period*, not a flag: `crm.team_memberships` holds a daterange
-  per user under an exclusion constraint forbidding overlaps, and every "which
-  team is this person on" read asks `period @> current_date`. So a move closes
-  today's spell and opens the next, and last month still reads correctly. A
-  membership that only started **today** is corrected in place instead — that is
-  somebody fixing their own mistake, and closing it would strand a zero-length
-  range for ever, since the app cannot `DELETE`. Rotation order defaults to the
-  same expression `POST /admin/users` uses, so the two doors into a team cannot
-  disagree about where a newcomer lands. The button shows only for callers and
-  counsellors: admin and ops hold no team by design, and a "Set team" call to
-  action on them would invent a missing setting.
+- **A repeat enquiry never creates a second lead.** The importer matches a
+  live lead at any age (unique index `leads_one_live_per_phone_idx` backs
+  this at schema level) or any lead inside `lead.dedupe_window_days`, then
+  calls `crm.attach_enquiry`: enquiry_count++, follow-up pulled to NOW, a
+  closed lead reopens, timeline row added. Manual add answers 409 with the
+  existing lead's id so the UI opens it instead of dead-ending.
 
-- **Absence is covered forward, never sideways** (0056, owner decision). A
-  fresh lead whose team has no caller on the floor goes to an on-floor
-  counsellor of the team — the one who has received the fewest leads today,
-  rotation breaking ties (0085) — otherwise it parks visibly. The
-  escalation ladder hands up only to an on-floor counsellor — an absent
-  counsellor's share stays with the callers. Owned leads never move because
-  of an absence: only new work routes around an empty chair.
+- **Ingestion is idempotent and lossless.** Unique
+  (source_id, source_row_key, payload_hash); rows with undialable or
+  non-+91 phones are quarantined with the reason, never dropped; one bad row
+  is one row's transaction. No second assignment pass — the insert trigger
+  assigns. The importer runs as SERVICE_USER_ID (the seeded System user:
+  admin role, `is_service`, no credentials so it can never log in) or as the
+  admin who clicked Sync/Import.
 
-- **An inbound call is the one lead a caller may create** (0055), and only to
-  themselves — the fairness engine is untouched. Always immediate priority,
-  born first-touched, and its mandatory follow-up date is a pending callback,
-  so missing it rings.
+- **Every refusal carries a SQLSTATE** (42501 → 403, 23514 → 409, P0002 →
+  404…) and the message is written for the person on the floor. A bare
+  `raise exception` is P0001, which is in no map and surfaces as "something
+  went wrong" — never do that in `crm.*` functions.
 
-- **Leads do not move between callers on their own — except after 15 silent
-  days** (0049, 0066, both owner decisions). The ten-MINUTE untouched sweeper
-  and the cross-team mover stay disabled (`sla.untouched_reassign_minutes` =
-  0, `escalation.cross_team_days` = 0) and unscheduled; ownership at that
-  timescale is sacred. The 15-DAY horizon is different (owner, 3 Sep): an
-  open, **overdue** lead with not one dial in `sla.stale_reassign_days` (15)
-  moves to a different on-floor caller on its team — preferring one who never
-  tried it, because by then the number may be spam-flagged for the old
-  caller's SIM and a fresh caller ID may ring where theirs no longer does.
-  Leads with a future booked callback, counsellor-stage leads, and
-  previous-month history never move; capped by `sla.stale_reassign_max` (2).
-  The other automatic hand-up is caller → counsellor after two no-connect
-  attempts, bounded by `escalation.counsellor_daily_cap` (15/day) — past the
-  cap the lead stays with its caller wearing a visible "Not answered ×N" badge.
+- **Every tunable lives in `crm.settings`** (`follow_up.retry_hours`,
+  `lead.dedupe_window_days`, auth knobs).
 
-- **Popups interrupt only for appointments a person chose** — the callback a
-  client asked for and the reminder the lead's owner set (`alerts.popup_kinds`),
-  once each (`alerts.repeat_minutes` = 0), with one soft chime (`alerts.chime`).
-  The bell badge counts the same appointments plus the intake emergency
-  (`alerts.bell_kinds`) — zero is its healthy state. The intake alarm names
-  the failing source, never duplicates while unread, and stands itself down
-  with an `intake_recovered` all-clear the moment intake is healthy again
-  (0054, 0058) — an intake alarm on the bell is always a live problem. The full engine-raised
-  work list is never dropped: `/me/alerts?scope=work` serves it, the Alerts
-  tab offers it behind one click, and overdue work keeps its home in the
-  pipeline buckets.
+## API rules that matter
 
-- **A repeat enquiry never creates a second lead — and is worked like a fresh
-  one** (0042, 0064, 0065, owner decision). A form submission whose phone
-  matches a live lead (or any lead inside `lead.dedupe_window_days`) attaches
-  to that lead: priority jumps to immediate, the next action is pulled to
-  within 15 minutes, the timeline gets a `re_enquiry` event, and the owner is
-  notified on the Alerts work list. The owner's rule (3 Sep) is that every
-  enquiry lands on the Fresh tab — the earlier call may have hit a
-  spam-flagged number and never been picked up — so `crm.v_reenquired_leads`
-  rows render *inside* the fresh list with an "enquired again" badge, flagged
-  against the deadline the re-enquiry set, and leave only when a person acts
-  after the re-enquiry — a call attempt, a deliberate close, the admin's
-  archive (0086, 0087), or the client **arriving at the office** (0088, floor
-  report 3 Nov: for a paying client the walk-in is the only clearing act
-  there is, since nobody dials a client standing at the desk; the booking
-  alone is a promise and holds the row, and an undone "Walked in" resurfaces
-  it) — never for age. A re-enquiry that reopens a
-  parked lead **with no owner at all** is adopted by the team's counsellor
-  (`crm.adopt_orphan_reenquiries`, 0066, owner decision) — before that rule,
-  revived leads sat on the whole-floor list belonging to nobody. The bell
-  stays appointments-only (0052). Dedupe keys on the phone alone, so the same
-  human enquiring under a new number is a new lead — accepted, because the
-  phone is the dialing identity.
-
-- **A green lead never goes dark on its own** (0067, 0068, owner decisions).
-  "Will visit" on call one, "not answered" from call two used to re-file the
-  lead by its *last* outcome into the not-answered bulk piles — which is
-  where good leads died. Two named definitions now stand between potential
-  and the bulk machinery. `crm.visit_promise_open()` — "they said they would
-  come and have not yet come" — holds the `will_visit` bucket for as long as
-  the promise stands: never `breached`, no two-day window (a visit promised
-  for next Wednesday sits in Visits promised, dated), and the date is the
-  **caller's chosen date** — the API refuses a `will_visit` without one, the
-  chosen date becomes `walkin_expected_at`, and a re-promise moves it.
-  `crm.lead_green_reason()` is the wider rule — an open visit promise, or any
-  connect-grade positive conversation (`connected_interested`,
-  `callback_requested`, `will_visit`, `will_call_back_self`) — and while it
-  holds the lead keeps its overdue alerts past the quiet threshold, stays out
-  of `v_no_answer_pool`, is **never parked by the nine-attempt nurture cap or
-  the counsellor's stuck→re-tap park** (those caps still park the
-  never-engaged bulk they were written for), and wears a green badge (🚶 /
-  🟢) on every list, with a `green=yes` filter and a "🟢 Potential" preset on
-  Find lead. Green is one-way by design: silence never clears it; only a
-  walk-in, a deal, or an explicit close does — so a green lead leaves the
-  pipeline only by a person's decision. When logging an unreached outcome on
-  a green lead the UI requires the person to choose the next follow-up date
-  themselves. Still applying: the 15-day stale mover (a fresh caller ID may
-  ring where a spam-flagged one doesn't — the green light travels with the
-  lead) and the transfer rules. Green is identity and visibility, not
-  immortality.
-
-- **An office visit is a row, and a conversion is never typed twice** (0071,
-  owner decision 15 Sep). A walk-in used to be one nullable timestamp on the
-  lead, which can say a visit happened and nothing else — so "office visits to
-  conversions" was not a ratio anybody could compute: the numerator (deals) is
-  per counsellor and the denominator belonged to nobody. `crm.walkin_visits`
-  carries who sent them in, who sat with them, what was said and what it turned
-  into, through `expected → arrived → counselled`. Two doors, both the owner's:
-  the **caller books it** from the pipeline (`crm.assign_walkin`, a named day
-  required) and the **counsellor punches it in** at the desk
-  (`crm.record_walkin_arrival`, which completes a booking rather than opening a
-  second visit — one person in the office is one visit). The counselling
-  response is the counsellor's to write, never the caller's
-  (`crm.record_walkin_response`, 42501 like `transfer_lead`). **`converted` is
-  refused by hand**: booking the deal marks the visit converted and carries the
-  product and amount across, because a hand-typed conversion is a second record
-  of the money and two records of the same money always drift apart. A deal
-  closed before the client ever came in cancels the booked visit rather than
-  counting as an office visit. `leads.walked_in_at` keeps its meaning and is
-  set from this table, so every existing walk-in figure still reads — including
-  the lead page's own "Mark walked in", which now goes through the same
-  function so the two numbers cannot disagree.
-
-- **A target is one person's number** (0072, owner decision 15 Sep). A
-  counsellor carries a **revenue** target, a caller a **walk-in** target, in
-  `crm.user_targets` for a month. Revenue deliberately means *collected* — the
-  same figure the thermometer and the daily brief already use — rather than a
-  second booked-revenue number beside it, because a screen with two revenue
-  targets on it is a screen where nobody knows which one they are behind on. A
-  caller's number is walk-ins because the deal is not theirs to close, and it
-  is fair only because `crm.walkin_visits` credits the walk-in to whoever sent
-  the client in. Nobody needs a target for the screen to be honest: an unset
-  person carries their role's default (`crm.monthly_revenue_target`,
-  `crm.monthly_walkin_target`) and clearing one falls back to that default,
-  never to zero. The daily brief now reads the same default function, so the
-  brief and the Targets screen cannot quote different numbers at the same
-  person on the same morning.
-
-- **Two leaderboards, one per job** (owner decision 15 Sep). `crm.rate_standings`
-  normalises every component against the best rate *on the board*, so a board
-  holding both roles measures a caller's revenue against a counsellor's and a
-  counsellor's dials against a caller's — two jobs on one curve, and the loser
-  is whichever role the weights happen to suit less. `/performance/overall`
-  takes a `role`, and Floor and Performance render callers and counsellors as
-  separate boards, each ranked from 1 within itself. Still one formula: the
-  same function the nightly ACE pick uses. The volume trophies stay on raw
-  totals — "most calls" meaning most calls is a fact, not a ranking.
-
-- **Score components that had nothing to measure are excluded from both the
-  points earned and the weight available**, and the total is rescaled over what
-  applied. Awarding full marks for an empty component rewards idleness — before
-  this was fixed, a caller with zero dials out-scored an active one 29 to 26.
-
-- **A day nobody worked is not a bad day — it is not a day** (0061, 0062).
-  `crm.was_present()` is the single definition (real logged time by
-  `attendance.min_present_minutes`, or any dial, or any deal closed), and
-  everything that rates, averages or ranks a person divides by days that pass
-  it. Three things were wrong before, all the same arithmetic:
-  - **The ACE seat.** Each team's best caller holds
-    `distribution.ace_share_pct` (66.7%) of its fresh leads, picked nightly —
-    but on totals a week of leave was identical to a week of doing nothing, so
-    returning from five days off silently cost the floor's best caller two
-    thirds of her leads. `tier.min_dials_to_rank` is now measured at the
-    person's own pace, and a caller with fewer than `tier.min_days_to_rank`
-    (2) measured days is **not judged at all** — they keep the tier they
-    earned, so a returning ACE returns as the ACE. Two ACEs in a team is the
-    deliberate transitional state; they split evenly until the returner has
-    completed days to be ranked on.
-  - **The leaderboard.** `/performance/overall` summed totals over the window,
-    so the board and the ACE pick disagreed — one ranked volume, the other
-    rate. Both now call `crm.rate_standings()`, the one formula, normalised
-    within the floor or within a team. The volume trophies stay on raw totals:
-    "most calls" meaning most calls is a fact, not a ranking, and no leads
-    depend on it.
-  - **The daily score.** Four caller components are always applicable by
-    design, so `crm.snapshot_scores()` wrote a hard 0/100 for an absent day and
-    five days' leave put five zeroes into the seven-day average on the caller's
-    own My Score page. An absent day now gets no snapshot at all, and a zero
-    already recorded for one is cleared.
-
-  The share is on the Floor page (`v_lead_flow.fresh_share_pct`): a share that
-  moves on its own must be visible, or "why did all the leads go to her today?"
-  has no answer on any screen.
-
-- **A connect requires real talk time**, not just a connected disposition
-  (`dial.min_talk_seconds_for_connect`, default 30s). Otherwise disposition
-  accuracy is fiction and so is every conversion rate built on it.
-
-- **Tata Tele Smartflo is the dialler and the sensor, never a second CRM**
-  (0074, replacing Callyzer, which was retired wholesale before go-live —
-  owner decision 22 Sep). Two jobs only. It **places** the call:
-  `POST /leads/:id/call` bridges the caller's phone to the client's
-  (back-to-back calling, no number ever typed or exposed to the browser),
-  recording every click in `crm.telephony_calls` with Smartflo's `ref_id` —
-  a click that never became a call is a countable row, not silence. And it
-  **reports** the call: CDRs from the webhook and the rate-limited pull land
-  in `crm.device_call_logs` (source `tata_tele`, row-key prefix `tata:`, so
-  the in-house app and Smartflo can never double-count), tied back to the
-  click by `ref_id`, and `answered_seconds`/`billsec` is the stored talk
-  time — ring time verifying a connect is exactly the fiction the table
-  exists to prevent. Smartflo's lead ids, dispositions, broadcasts and
-  dialler campaigns are deliberately not connected: a second system
-  distributing leads would fight the fairness engine, RLS and the
-  `next_action_at` guarantee. The agent mapping IS `users.dialing_msisdn`
-  (one fact, one place — the number Smartflo rings first and reports back).
-  **The softphone rings in the browser by choice, per person** (0082, owner
-  request 1 Oct): with `users.ring_softphone` on (the 🎧 checkbox in the SIM
-  modal), click-to-call sends the roster's *agent identity* instead of the
-  number — a phone number passed as the agent leg rings that number
-  literally, whatever the agent's own "Route Agent Through" says — so
-  Smartflo applies their routing and the headset rings. **Where an
-  agent-identity leg rings is Smartflo's per-agent "Route Agent Through"
-  setting (Extension / Mobile Number / Both), changeable only in the
-  Smartflo portal**: left on Mobile Number, the phone keeps ringing with the
-  🎧 on and no error anywhere — the CRM cannot read or set it, so the SIM
-  modal names the requirement instead. The phone is the
-  automatic fallback when the softphone leg is refused, named in the toast,
-  so switching it on can never make a person unreachable — and a 🎧 switched
-  on for someone Smartflo has no agent identity for is named the same way,
-  never silently downgraded to the plain phone message. The Power dial
-  screen shows the server's own ringing message (which leg, and why) rather
-  than asserting "your phone", and each click's `lead_events` payload
-  records which leg rang. **Some of the floor is outside cloud calling by
-  choice** (0083, owner request 2 Oct): they call from office or personal
-  phones, hold no Smartflo line, and the owner wants no personal numbers
-  stored for them — but the coverage panel named each of them a problem
-  ("no Dialing number") forever, and an alarm that can never clear teaches
-  the admin to ignore the panel. `users.cloud_calling` off records the
-  choice: they leave `v_tata_tele_coverage` (the health counts and watchdog
-  follow the view), `/me` hides their Call button and Power dial, and
-  `POST /leads/:id/call` refuses them with a 409 that says why, so a stale
-  tab cannot ring anyone. Working leads and "Log a call" are untouched —
-  their dials simply stay unverified, which is true. The 📵 switch is in
-  the SIM modal and one click on the panel's coverage rows; flipping it
-  never touches the stored number. A CDR answered on
-  a softphone reports the *extension*, no one's Dialing number, so the
-  ingester resolves agent identifiers through the roster cache before
-  quarantining, and stores the person's own msisdn — the mapping stays one
-  fact in one place;
-  rows that cannot be placed are quarantined whole and re-ingest themselves
-  once the cause is fixed, except the inbound call no agent ever answered,
-  which names nobody, has no fix that ever places it, and is counted rather
-  than parked in quarantine forever. They re-ingest **the moment the cause
-  is fixed** (0076): saving a Dialing number runs
-  `crm.tata_tele_reconcile()`, which re-maps the agent roster and replays
-  every held record however old — the pull reaches back only 26 hours, so a
-  number fixed on Monday for calls held since Friday used to release
-  nothing. The panel **names** who Smartflo cannot serve
-  (`crm.v_tata_tele_coverage`, which the health counts are read from, so the
-  number on a banner and the names under it are one definition) and puts the
-  fix beside each name: an unmatched agent is attached to its person in one
-  click, a name match preselected. A refused webhook delivery is written
-  down with why and from where, because "never reached us" and "reached us
-  and was turned away" need different fixes and both used to read as a
-  dash. Stamps arrive zoneless and are read in
-  `tata_tele.timezone`, because a wrong zone moves calls across
-  `crm.ist_date()` boundaries. `tata_tele.enabled` ships off; the watchdog
-  (`crm.check_tata_tele_health`) raises a named bell alarm — Smartflo's
-  90-day password rotation by name — and stands itself down, like the intake
-  alarm. Recordings are coaching material for counsellors and admin, never
-  shown to the caller themselves. Historical `callyzer` rows in
-  `device_call_logs` stay: they verified real attempts, and deleting them
-  would falsify every past dial count.
-
-- **Power dialling works the due list; the outcome between calls stays
-  human** (0075, owner request 23 Sep). The Power dial screen (`#/dial`, or
-  "▶ Power dial my list" on My Pipeline) rings the next due lead after a
-  `power_dial.countdown_seconds` countdown, and the next one the moment the
-  outcome is saved — no picking, no Call button. *What is due, in what order*
-  is `crm.v_dial_queue`, never the browser: immediate, then a **callback whose
-  time has come** (the client chose it, and it is marked missed after
-  `sla.callback_grace_minutes`), then fresh work and re-enquiries alike, then
-  due visit follow-ups, overdue, breached; within a rank the pipeline
-  screen's own order. Work agreed for later is never rung early. A lead
-  called within `power_dial.redial_gap_minutes` is held back — `wrong_person`
-  and `language_barrier` leave an overdue lead overdue, and without the gap
-  the dialler would ring the same client straight back — except a due
-  callback and an undialled re-enquiry, which are appointments. Auto-dialling
-  keeps to `power_dial.start_hour`–`end_hour` IST (TRAI's 09:00–21:00); one
-  press of Call on a lead never does. The outcome is never skipped: it sets
-  the follow-up, fires callbacks, keeps green leads green and feeds every
-  score, so the dialler waits for it — with no pre-chosen answer, because a
-  default "Connected — interested" saved by reflex invents a green lead. A
-  save gives Tata Tele's call record up to 15 s to land and links it (matched
-  by the click's server time, `?since=`, so an older unlogged call is never
-  taken for this one), because an unverified dial reads as a fabricated one.
-  Safe unattended: Smartflo rings the *caller* first, so a client is only
-  dialled when someone answers; a second click inside
-  `tata_tele.click_cooldown_seconds` is refused (409); leaving the screen
-  stops the loop. The dialler is its own route because My Pipeline redraws
-  itself every 30 s, which would throw away an outcome form mid-call.
-  **The caller chooses the list** (0077, owner request 28 Sep): everything
-  due (the default), or one slice of it — fresh, callbacks due, follow-ups
-  and overdue — or **Not answered**, narrowed to one source, and for Not
-  answered to "N+ in a row" and "last tried N+ hours ago". Membership and
-  order are `crm.dial_list()` (the due list IS `v_dial_queue`; the slices
-  are cut by `crm.dial_list_of()`, so a slice and its count on the picker
-  cannot disagree). Not answered is the one deliberate exception to "never
-  early": a no-answer's next action is the trigger's retry, not an
-  agreement, so a caller who chose to re-tap gets them now — but a
-  callback the client booked for later is never in that list, the re-dial
-  gap still holds, and a session never rings the same lead twice.
-
-- **A client who rang the office is never lost** (0078, found cross-checking
-  inbound calls, 28 Sep). A missed inbound call used to vanish: one no agent
-  answered "named nobody" and was only counted, and one that rang an agent
-  who did not pick up became that agent's missed ring and nothing more.
-  `crm.intake_missed_call` now runs the repeat-enquiry rule on it, exactly
-  as for a form: a number with a live lead (or any lead inside
-  `lead.dedupe_window_days`) is a `re_enquiry` on it — immediate, next action
-  within 15 minutes, the owner told the client "rang the office - nobody
-  answered", top of Fresh and first in the dialler — and a new number is an
-  immediate lead from the Inbound call source, handed out by the fairness
-  engine. Never for a colleague's number or a call older than
-  `tata_tele.missed_call_lead_days` (a replayed held record); once per call
-  id however often Smartflo delivers it (`crm.telephony_missed_calls`). An
-  inbound call somebody **answered** from a number no lead has is shown to
-  that person (`crm.inbound_calls_to_log()`, My Pipeline and Inbound calls)
-  with the number filled in, until they log the lead or mark it "not a
-  client" — the call was in the CRM all along, the client was not.
-
-- **Row-level security is the access control, not the API.** The app connects as
-  `crm_app` (no BYPASSRLS, not the table owner) and sets `app.user_id` per
-  request. A missing `WHERE` clause in a route handler is then a bug that
-  returns too few rows, never one that leaks the lead book.
-
-- **Append-only tables have `UPDATE` revoked at the privilege level**, not only
-  blocked by trigger. RLS filters before triggers fire, so a denied update would
-  otherwise silently affect zero rows and read as success.
-
-- **Engine functions run by the scheduler are `SECURITY DEFINER`** (migration
-  0014): payment rollups, callback expiry, score snapshots, security detection.
-  Run as the invoker they silently under-execute — the ops account cannot read
-  the admin-only access log, so bulk-read detection would never fire. Authority-
-  checking functions (`crm.transfer_lead`) deliberately stay invoker-rights.
-
-- **Every tunable number lives in `crm.settings`**, not in code — SLA minutes,
-  dial targets, breakeven, transfer caps. Changing a target is an ops action.
+- **The API never filters by ownership** and never re-implements a SQL rule.
+  Routes call `crm.log_call` / `crm.set_checkpoint` / `crm.assign_lead` /
+  `crm.reopen_lead` / `crm.attach_enquiry` and map SQLSTATEs
+  (`api/src/http/errors.ts`).
+- **All query access goes through `Database.withUser()`** (RLS session
+  contract, `api/src/db/pool.ts`); there is no way to query outside it.
+- **The server refuses to boot on a role that bypasses RLS.**
+- `bigint` → JS number; `numeric` stays a string.
+- Lead lists read `crm.v_lead_list` (security_invoker), so every screen shows
+  the same shape.
 
 ## Layout
 
 ```
 db/
-  migrations/    forward-only, applied in filename order
-  seed/          dev seed: 2 teams, 4 callers, 2 counsellors
-  tests/         requirement tests, tagged R1..R9
-  rebuild.sh     drop + recreate + migrate + seed [+ test]
-api/             TypeScript / Node 22 / Fastify. See api/README.md
-  src/db/        the RLS session contract - read this first
-  src/routes/    one file per requirement area
-  src/ingest/    Google Sheets -> ingested_rows -> assign_lead
-  src/jobs/      scheduled calls into the database engines
-  public/        the web UI: dependency-free ES modules, no build step
-  test/          API integration tests + Playwright browser flows
-docs/            requirement traceability, open questions
+  migrations/   0001 foundation · 0002 users+auth · 0003 leads+rules ·
+                0004 RLS · 0005 views   (forward-only)
+  seed/         dev seed: Admin, System, Sanya, Harsh, Aisha + 3 sources
+  tests/        test_core.sql — run by rebuild.sh --with-tests
+  rebuild.sh    DEV ONLY: drop + recreate + migrate + seed [+ tests]
+  migrate.sh    production runner: applies pending migrations exactly once
+  diagnose.sh   "why are no leads arriving?" — read-only, run on the server
+api/
+  src/db/       the RLS session contract — read this first
+  src/routes/   auth · me(+reminders) · leads · dashboard · admin
+  src/ingest/   Google Sheets / CSV -> ingested_rows -> leads
+  src/tools/    bootstrap.ts (first admin + System), reset-password.ts
+  public/       the UI: ES modules, no build step; views/ = 4 screens + lead
+  test/         api.test.ts (integration) · e2e.test.ts (Playwright)
+docs/           product-brief.md — the owner's brief this build serves
+deploy/         Caddyfile, systemd unit, update.sh, backup.sh
 ```
 
 ## Running
@@ -548,57 +143,19 @@ npm run test:e2e                    # real Chromium driving the real UI
 npm start                           # serves API + UI on one port; open /ui/
 ```
 
-## API rules that matter
-
-- **The API never filters by ownership.** RLS does. A route that adds its own
-  `WHERE owner = me` puts the rule in a second place where it will drift. A lead
-  the user cannot see reads as 404, which is the correct behaviour.
-- **All query access goes through `Database.withUser()`**, which sets
-  `app.user_id` transaction-locally. There is no exported way to query outside
-  it, so a pooled connection cannot leak one user's identity into the next
-  request.
-- **The server refuses to boot on a role that bypasses RLS** — superuser,
-  `BYPASSRLS`, or table owner. That misconfiguration is otherwise silent and
-  total.
-- **Business rules stay in SQL.** Routes call `crm.transfer_lead()` and map the
-  SQLSTATE (`42501 → 403`, `23514 → 409`) rather than re-implementing the check.
-- **`bigint` is parsed to a JS number; `numeric` is not.** Money stays an exact
-  string — turning INR into a float is the mistake the schema exists to avoid.
-
-`rebuild.sh` **drops the database**. It is a development tool; never point it at
-anything real.
+**v2 needs a fresh database.** The v1 production database (if any survives)
+is not migratable — the owner reset the product. Create an empty database,
+run `db/migrate.sh`, then `npm run bootstrap` for the first admin +
+SERVICE_USER_ID.
 
 ## Conventions
 
-- All timestamps are `timestamptz`. Business dates use `crm.ist_date()`
+- Timestamps are `timestamptz`; business dates use `crm.ist_date()`
   (Asia/Kolkata) — never the UTC date, or daily rollups shift by 5.5 hours.
-- Money is `numeric(12,2)` in INR. Never floats.
-- Phone numbers are canonicalised by `crm.normalise_phone()` on insert. It
-  returns NULL for undialable input — quarantine those rows, never drop them.
-- Migrations are forward-only. Add a new numbered file; do not edit an applied
-  one once it has run anywhere real.
-- Nothing is hard-deleted by the application; `DELETE` is revoked from `crm_app`.
-
-## Build status
-
-Everything is built: database, engines, HTTP API, ingestion worker, web UI
-(431 database assertions, 365 API tests, 23 browser E2E flows), the
-**Android call-log companion app** (`android/` — plain Java, zero
-third-party dependencies, compiles to a verified APK), and the **Tata Tele
-Smartflo integration** (migration 0074, `api/src/integrations/tata_tele/`) —
-click-to-call from the lead page and My Pipeline cards, plus webhook +
-rate-limited scheduled CDR pull feeding the same `device_call_logs` table and
-the same `is_verified` flip as the app. The log-call form offers the matching
-call record and one click makes the attempt `is_verified`. **Power dialling**
-(0075, `public/js/views/dial.js`) works a caller's due list back to back on
-top of it, sharing one call-outcome form with the lead page
-(`public/js/callform.js`). The earlier Callyzer integration (0063) was
-retired in 0074, before it ever went live.
-
-Not verifiable from this repository: the app running on a physical handset
-(ten-minute test in android/README.md), Smartflo against the live account
-(click-to-call, webhook delivery and the CDR pull need the paid Smartflo
-plan, agents configured, and API access enabled by TTBS; the contract is
-tested against their documented v1 shapes with a fake Smartflo server), and
-anything in the go-live runbook that needs a real server. iOS cannot run the
-companion app (no call-log access) — see docs/open-questions.md question 2.
+- Phones are canonicalised by `crm.normalise_phone()`; NULL means quarantine,
+  never drop.
+- Migrations are forward-only once applied anywhere real.
+- Nothing is hard-deleted by the application; `DELETE` is revoked from
+  `crm_app`.
+- If you change behaviour, change the tests (`db/tests/test_core.sql`,
+  `api/test/api.test.ts`).
